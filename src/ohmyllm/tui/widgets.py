@@ -16,6 +16,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Input, Label, Static
 
 from ..safety import ApprovalOutcome, ApprovalRequest
+from ..verbs import verb
 
 
 class StatusBar(Static):
@@ -51,7 +52,7 @@ class StatusBar(Static):
         ctx = st.get("ctx_pct", 0)
         saved = "saved" if st.get("saved") else "unsaved"
         mem = ("🧠 " if w >= 86 else "") + ("on" if st.get("memory", True) else "off")
-        busy = " ⚒ working" if st.get("busy") else ""
+        busy = f" ⚒ {verb()}" if st.get("busy") else ""
         model = str(st.get("model", "—"))[: (34 if w >= 110 else 18)]
         chat = f" · chat {st.get('session', '…')}" if w >= 100 else ""
         mid = f"ctx {ctx}%  {vram}  " if w >= 104 else (f"ctx {ctx}%  " if w >= 70 else "")
@@ -143,11 +144,11 @@ class ToolPanel(Static):
             line.append(f"retry: {str(ev.get('reason'))[:60]}", style="yellow")
             self._push(line)
         elif t == "thinking":
-            label = f"💭 thinking (step {ev.get('step', '?')})"
-            if self._lines and self._lines[-1].plain == label:
+            step_tag = f"(step {ev.get('step', '?')})"
+            if self._lines and self._lines[-1].plain.endswith(step_tag):
                 return  # retry within the same step: don't stack duplicates
             line = Text()
-            line.append(label, style="dim")
+            line.append(f"💭 {verb()} {step_tag}", style="dim")
             self._push(line)
         elif t == "compaction":
             line = Text()

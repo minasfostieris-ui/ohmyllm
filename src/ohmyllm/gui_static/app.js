@@ -154,7 +154,7 @@ function liveThink(t) {
   state.reasonBuf = (state.reasonBuf || "") + t;
   if (!state.thinkNode || state.thinkNode === "sealed") {
     const det = document.createElement("details"); det.open = true; det.className = "think-details";
-    const sm = document.createElement("summary"); sm.textContent = "💭 thinking…";
+    const sm = document.createElement("summary"); sm.textContent = "💭 " + thinkVerb() + "…";
     const pre = document.createElement("pre"); pre.className = "think-body";
     det.append(sm, pre); $("#stream").append(det);
     state.thinkNode = { det, sm, pre };
@@ -186,6 +186,22 @@ function liveFileProgress(d) {
   state.fileNode.pre.textContent = lines;
   scrollBottom();
 }
+const VERBS = ["pondering", "ruminating", "cogitating", "mulling", "contemplating", "perusing", "deliberating", "noodling", "thinking hard", "finding x", "divining", "untangling", "synapsing", "connecting dots", "reading tea leaves", "consulting the oracle", "vibing", "crunching", "riffing", "waxing philosophical", "holding court", "warming up", "spinning up", "cracking knuckles", "squinting", "deep-diving", "following the white rabbit", "asking the void", "feeding the hamster", "oiling the gears", "summoning context", "unfolding", "digesting", "reflecting", "brooding", "scheming", "daydreaming", "muttering", "pacing", "counting to ten", "checking assumptions", "double-checking", "triple-checking", "brainstorming", "whiteboarding", "rubber-ducking", "reading the fine print", "hitting the books", "putting on glasses", "sharpening pencils", "unrolling the map", "stirring the pot", "steeping the tea", "spinning the globe", "flipping pages", "cross-referencing", "triangulating", "extrapolating", "hypothesizing", "theorizing", "philosophizing", "epiphanizing", "overthinking", "second-guessing", "third-guessing", "panicking (productively)", "sweating", "calculating", "estimating", "gesturing vaguely", "nodding slowly", "stroking the beard", "pondering the orb", "questioning reality", 'asking "but why?"', 'asking "and then what?"', "stacking context", "tidying the desk", "brewing", "marinating", "fermenting", "kneading", "rising", "buffering dramatically", "channeling the machine spirit", "negotiating with the tokens"];
+function _pick(w) {
+  let h = Math.imul(w + 1, 2654435761) >>> 0;
+  h = (h ^ (h >>> 13)) >>> 0;
+  return VERBS[h % VERBS.length];
+}
+function thinkVerb() {
+  const w = Math.floor(Date.now() / 2700);
+  let v = _pick(w);
+  if (v === _pick(w - 1)) v = _pick(w + 1);  // never twice in a row
+  return v;
+}
+setInterval(() => {
+  const n = state.thinkNode;
+  if (n && n !== "sealed" && n.sm) n.sm.textContent = "💭 " + thinkVerb() + "…";
+}, 1000);
 const ACTION = {
   write_file: ["write", "📝"], patch_file: ["edit", "✏️"], run_command: ["exec", "⚡"],
   read_file: ["read", "📖"], list_dir: ["ls", "📂"], glob: ["find", "🔎"], grep: ["find", "🔎"],
@@ -315,7 +331,7 @@ function handleEvent(ev, d) {
     case "compaction": addEvline("ctx", `🗜 compacted ${d.before}→${d.after} messages`, "dim"); break;
     case "interjection": addMsg("user", d.text || ""); break;
     case "retry": addEvline("retry", d.reason || "", "warn"); break;
-    case "thinking": state.reasonBuf = ""; state.thinkNode = null; addEvline("think", `💭 reasoning (step ${d.step || "?"})`, "dim"); break;
+    case "thinking": state.reasonBuf = ""; state.thinkNode = null; addEvline("think", `💭 ${thinkVerb()} (step ${d.step || "?"})`, "dim"); break;
     case "thinking_text": liveThink(d.text || ""); break;
     case "error": sealLive(); addEvline("error", d.message || "", "err"); break;
     case "approval_request": queueApproval(d); break;

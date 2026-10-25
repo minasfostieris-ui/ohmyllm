@@ -15,6 +15,16 @@ exact-phrase confirmation. Every gated decision is journaled to
 | `dangerous` | mostly auto | auto outside workspace unless sensitive | auto except catastrophic/high risk | gated approvals | for trusted work |
 | `full_access` | auto | auto | auto, except catastrophic | auto | **no approvals at all** |
 
+## Honest limitations
+
+The engine inspects tool arguments with regex and path analysis. That makes
+it good at stopping accidents, typos, and careless agents — it is **not** a
+security boundary. Shell syntax is slippery (obfuscation, encodings, nested
+expansion), and a model determined enough to craft a bypass plus a user who
+approves the call = game over by design: the human approval is the boundary.
+If you need containment against hostile content, run OhMyLLM inside an OS
+sandbox or VM; `sandboxed` mode is the strongest the engine itself offers.
+
 ## Cross-mode invariants
 
 These hold in **every** mode, including `full_access`:

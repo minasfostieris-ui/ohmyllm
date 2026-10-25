@@ -159,3 +159,29 @@ issues, and where the logs live (`~/.ohmyllm/logs/`).
 The fastest way to reach me: **Discord — `gonber0606`**. Bug reports and
 feature requests are welcome there; GitHub issues work too but I see them
 later.
+
+## Disclaimer
+
+OhMyLLM is provided **as is, without warranty of any kind**, under the MIT
+license. In particular:
+
+- **AI output can be wrong, harmful, or unsafe to act on.** You are
+  responsible for what you let the agent do with it.
+- **The permission engine is a guardrail, not a security boundary.** Mode
+  checks, risk scoring, and command allowlists are best-effort heuristics
+  (regex + path analysis). `dangerous` and `full_access` let the model run
+  real commands on your real machine — that is the point, and that is the
+  risk. Do not run them on machines or accounts you cannot afford to lose,
+  and do not feed untrusted content (web pages, files from strangers) to an
+  agent that has execution rights.
+- **Third-party models are your responsibility.** OhMyLLM ships no models.
+  Whatever you download from Ollama, LM Studio, or Hugging Face carries its
+  own license and behavior; you must comply with it yourself.
+- **No affiliation.** OhMyLLM is an independent hobby project. It is not
+  affiliated with, endorsed by, or sponsored by Ollama, LM Studio,
+  Cloudflare, ggml-org, or any model provider. All trademarks and names are
+  the property of their respective owners, used here only to describe
+  compatibility.
+
+By using this software you accept these terms; by redistributing it you keep
+this notice and the MIT license intact.
