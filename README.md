@@ -151,3 +151,9 @@ every mode below `full_access`, your approval.
 See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) — backend won't
 start, models too big for VRAM, approvals not appearing, GUI port/token
 issues, and where the logs live (`~/.ohmyllm/logs/`).
+
+## Feedback & feature requests
+
+The fastest way to reach me: **Discord — `gonber0606`**. Bug reports and
+feature requests are welcome there; GitHub issues work too but I see them
+later.
