@@ -141,6 +141,8 @@ class SettingsScreen(Screen):
                     with Vertical(classes="st-field"):
                         yield from _field("Native tool calling", "st-native_tools",
                                           cfg.agent.native_tools, hint="auto | force | off")
+                    yield from _switch("Stream live thinking", "st-thinking_visible",
+                                       cfg.agent.thinking_visible, hint="Ctrl+T in chat")
 
             # --------------------------------------------------------- memory
             with Vertical(classes="st-section"):
@@ -287,6 +289,7 @@ class SettingsScreen(Screen):
                 "max_steps": num(q("st-max_steps"), int),
                 "tool_timeout": num(q("st-tool_timeout"), float),
                 "native_tools": nt,
+                "thinking_visible": s("st-thinking_visible"),
             },
             "memory": {
                 "enabled": s("st-mem_enabled"),

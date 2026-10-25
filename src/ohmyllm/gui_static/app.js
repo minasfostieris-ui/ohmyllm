@@ -137,7 +137,12 @@ function addEvline(tag, text, cls = "", dur) {
   scrollBottom();
   return el;
 }
-function scrollBottom() { const s = $("#stream"); s.scrollTop = s.scrollHeight; }
+function scrollBottom(force) {
+  const s = $("#stream");
+  // follow the stream only while the user is at the bottom; scrolling up to
+  // read must not be yanked back by the next token
+  if (force || s.scrollHeight - s.scrollTop - s.clientHeight < 48) s.scrollTop = s.scrollHeight;
+}
 
 let liveNode = null, liveText = "";
 function ensureLive() {
@@ -152,6 +157,17 @@ function updateLive(chunk) {
 function sealLive() { liveNode = null; liveText = ""; sealThinkLive(); }
 function liveThink(t) {
   state.reasonBuf = (state.reasonBuf || "") + t;
+  if (state.config && state.config.agent && state.config.agent.thinking_visible === false) {
+    const k = Math.max(1, Math.round(state.reasonBuf.length / 100) / 10);
+    const label = `💭 thinking · hidden · ${k}k chars`;
+    if (!state.thinkNode || state.thinkNode === "sealed") {
+      state.thinkNode = { hidden: true, el: addEvline("think", label, "dim") };
+    } else if (state.thinkNode.el) {
+      state.thinkNode.el.querySelector(".txt").textContent = label;
+    }
+    scrollBottom();
+    return;
+  }
   if (!state.thinkNode || state.thinkNode === "sealed") {
     const det = document.createElement("details"); det.open = true; det.className = "think-details";
     const sm = document.createElement("summary"); sm.textContent = "💭 " + thinkVerb() + "…";
@@ -186,7 +202,7 @@ function liveFileProgress(d) {
   state.fileNode.pre.textContent = lines;
   scrollBottom();
 }
-const VERBS = ["pondering", "ruminating", "cogitating", "mulling", "contemplating", "perusing", "deliberating", "noodling", "thinking hard", "finding x", "divining", "untangling", "synapsing", "connecting dots", "reading tea leaves", "consulting the oracle", "vibing", "crunching", "riffing", "waxing philosophical", "holding court", "warming up", "spinning up", "cracking knuckles", "squinting", "deep-diving", "following the white rabbit", "asking the void", "feeding the hamster", "oiling the gears", "summoning context", "unfolding", "digesting", "reflecting", "brooding", "scheming", "daydreaming", "muttering", "pacing", "counting to ten", "checking assumptions", "double-checking", "triple-checking", "brainstorming", "whiteboarding", "rubber-ducking", "reading the fine print", "hitting the books", "putting on glasses", "sharpening pencils", "unrolling the map", "stirring the pot", "steeping the tea", "spinning the globe", "flipping pages", "cross-referencing", "triangulating", "extrapolating", "hypothesizing", "theorizing", "philosophizing", "epiphanizing", "overthinking", "second-guessing", "third-guessing", "panicking (productively)", "sweating", "calculating", "estimating", "gesturing vaguely", "nodding slowly", "stroking the beard", "pondering the orb", "questioning reality", 'asking "but why?"', 'asking "and then what?"', "stacking context", "tidying the desk", "brewing", "marinating", "fermenting", "kneading", "rising", "buffering dramatically", "channeling the machine spirit", "negotiating with the tokens"];
+const VERBS = ['pondering', 'ruminating', 'contemplating', 'deliberating', 'thinking hard', 'finding x', 'divining', 'untangling', 'synapsing', 'connecting dots', 'reading tea leaves', 'consulting the oracle', 'vibing', 'crunching', 'warming up', 'spinning up', 'cracking knuckles', 'squinting', 'deep-diving', 'following the white rabbit', 'asking the void', 'feeding the hamster', 'oiling the gears', 'summoning context', 'unfolding', 'digesting', 'reflecting', 'brooding', 'scheming', 'daydreaming', 'muttering', 'pacing', 'counting to ten', 'checking assumptions', 'double-checking', 'triple-checking', 'brainstorming', 'whiteboarding', 'rubber-ducking', 'reading the fine print', 'hitting the books', 'putting on glasses', 'sharpening pencils', 'unrolling the map', 'stirring the pot', 'steeping the tea', 'spinning the globe', 'flipping pages', 'cross-referencing', 'triangulating', 'extrapolating', 'hypothesizing', 'theorizing', 'overthinking', 'second-guessing', 'third-guessing', 'panicking (productively)', 'sweating', 'calculating', 'estimating', 'gesturing vaguely', 'nodding slowly', 'stroking the beard', 'pondering the orb', 'questioning reality', "asking \"but why?\"", "asking \"and then what?\"", 'stacking context', 'tidying the desk', 'brewing', 'marinating', 'buffering dramatically', 'channeling the machine spirit', 'negotiating with the tokens'];
 function _pick(w) {
   let h = Math.imul(w + 1, 2654435761) >>> 0;
   h = (h ^ (h >>> 13)) >>> 0;
@@ -232,6 +248,7 @@ function liveThinkProgress(name, chars) {
 }
 function sealThinkLive() {
   if (state.thinkNode && state.thinkNode !== "sealed") {
+    if (state.thinkNode.hidden) { state.thinkNode = "sealed"; return; }
     if (!state.thinkNode.pre.textContent.trim()) {
       state.thinkNode.det.remove();
       state.thinkNode = null;
@@ -641,6 +658,7 @@ const SCHEMA = [
   ["agent.tool_timeout", "tool timeout s", "num"],
   ["agent.native_tools", "native tools", "select", ["auto", "force", "off"]],
   ["agent.react_fallback", "ReAct fallback", "bool"],
+  ["agent.thinking_visible", "stream live thinking", "bool"],
   ["§", "memory"],
   ["memory.enabled", "soul memory enabled", "bool"], ["memory.agent_writes", "agent may write memories", "bool"],
   ["memory.require_explicit_save", "require explicit save intent", "bool"],
@@ -780,6 +798,7 @@ $("#composer").addEventListener("submit", async (e) => {
   $("#input").value = ""; autoGrow(); $("#slash-hint").hidden = true;
   if (text.startsWith("/") && !text.startsWith("/remember")) { handleSlash(text); return; }
   addMsg("user", text);
+  scrollBottom(true);  // the user's own send always jumps to the new message
   if (text.startsWith("/remember")) $("#input").value = "";
   state.streaming = true;
   $("#send").disabled = true; $("#cancel").hidden = false;

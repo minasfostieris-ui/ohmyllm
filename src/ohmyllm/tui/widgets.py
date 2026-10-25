@@ -187,6 +187,17 @@ class ToolPanel(Static):
         block = Text("\n").join(self._lines) if self._lines else Text("[dim]no tool activity yet[/dim]", style="dim")
         self.update(block)
 
+    def rotate_thinking(self) -> None:
+        """Re-verb the trailing thinking line while a turn runs (1 s tick)."""
+        if not self._lines or not self._lines[-1].plain.startswith("💭 "):
+            return
+        plain = self._lines[-1].plain
+        tag = plain[plain.rindex("(step"):] if "(step" in plain else ""
+        line = Text()
+        line.append(f"💭 {verb()} {tag}".rstrip(), style="dim")
+        self._lines[-1] = line
+        self.update(Text("\n").join(self._lines))
+
     def render_header(self, count: int) -> None:  # pragma: no cover - cosmetic
         pass
 

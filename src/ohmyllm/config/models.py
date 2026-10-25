@@ -159,6 +159,7 @@ class AgentSettings(BaseModel):
     react_fallback: bool = True
     compact: bool = Field(True, description="auto-summarize old history when context fills up")
     compact_ratio: float = Field(0.75, gt=0.2, le=0.95, description="compact when est prompt tokens exceed ratio*num_ctx")
+    thinking_visible: bool = Field(True, description="stream the model's reasoning live in chat (/think hide, Ctrl+T)")
 
 
 class UiSettings(BaseModel):
@@ -196,13 +197,21 @@ class Config(BaseModel):
     model_settings: dict[str, GenerationSettings] = Field(default_factory=dict)
 
     def settings_for(self, backend: BackendName, model: str) -> GenerationSettings:
-        """Effective generation settings: global defaults + per-model overrides."""
+        """Effective generation settings: global defaults + per-model overrides.
+
+        ``thinking``/``ultrathink`` are session-level toggles (``/think``,
+        ``/ultrathink``): a stored per-model override must never shadow them,
+        or the global toggle silently does nothing for models that have one.
+        """
         override = self.model_settings.get(f"{backend.value}:{model}")
         if override is None:
             return self.generation.model_copy()
         base = self.generation.model_dump()
         merged = {k: v for k, v in override.model_dump().items() if v is not None}
-        return GenerationSettings.model_validate({**base, **merged})
+        eff = GenerationSettings.model_validate({**base, **merged})
+        eff.thinking = self.generation.thinking
+        eff.ultrathink = self.generation.ultrathink
+        return eff
 
     def set_model_settings(
         self, backend: BackendName, model: str, settings: GenerationSettings

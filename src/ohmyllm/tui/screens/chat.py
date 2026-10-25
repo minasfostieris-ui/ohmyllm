@@ -45,6 +45,7 @@ class ChatScreen(Screen):
         Binding("up", "slash_prev", "", show=False, priority=False),
         Binding("down", "slash_next", "", show=False, priority=False),
         Binding("tab", "slash_complete", "", show=False, priority=False),
+        Binding("ctrl+t", "toggle_thinking", "hide/show live thinking", priority=True),
     ]
 
     def _menu(self) -> OptionList | None:
@@ -124,6 +125,7 @@ class ChatScreen(Screen):
         self._turn_model = ""
         self._reasoning = ""
         self._think_md: Markdown | None = None
+        self._think_hidden: Static | None = None
         self._think_buf = ""
         self._think_flush = 0.0
         self._file_live: Static | None = None
@@ -141,8 +143,12 @@ class ChatScreen(Screen):
             hist = self.query_one("#history", VerticalScroll)
             if self.app.turn_thinking:
                 self._think_buf = self.app.turn_thinking
-                self._think_md = Markdown(self._think_buf, classes="msg-think")
-                hist.mount(self._think_md)
+                if self.app.svc.config.agent.thinking_visible:
+                    self._think_md = Markdown(self._think_buf, classes="msg-think")
+                    hist.mount(self._think_md)
+                else:
+                    self._think_hidden = Static(self._think_count(), classes="msg-system")
+                    hist.mount(self._think_hidden)
             if self.app.turn_text:
                 self._buffer = self.app.turn_text
                 self._stream_md = Markdown(self._buffer, classes="msg-assistant")
@@ -199,6 +205,39 @@ class ChatScreen(Screen):
         bar = self.query(StatusBar)
         for b in bar:
             b.render_state(self.app.status_state())
+        if self.app.busy:
+            for panel in self.query(ToolPanel):
+                panel.rotate_thinking()
+
+    def _think_count(self) -> str:
+        return f"💭 thinking · hidden ({len(self._think_buf)} chars) — Ctrl+T to show"
+
+    def _follow(self, hist: VerticalScroll | None = None, force: bool = False) -> None:
+        """Stick to the bottom only while the user is AT the bottom: scrolling
+        up mid-stream must not be yanked back by the next token."""
+        try:
+            h = hist or self.query_one("#history", VerticalScroll)
+        except NoMatches:
+            return
+        if force or h.scroll_y >= h.max_scroll_y - 2:
+            h.scroll_end(animate=False)
+
+    def action_toggle_thinking(self) -> None:
+        cfg = self.app.svc.config.agent
+        cfg.thinking_visible = not cfg.thinking_visible
+        self.app.svc.save_config()
+        if not cfg.thinking_visible and self._think_md is not None:
+            self._think_md.remove()
+            self._think_md = None
+            self._think_hidden = Static(self._think_count(), classes="msg-system")
+            self.query_one("#history", VerticalScroll).mount(self._think_hidden)
+        elif cfg.thinking_visible and self._think_hidden is not None:
+            self._think_hidden.remove()
+            self._think_hidden = None
+            if self._think_buf:
+                self._think_md = Markdown(self._think_buf, classes="msg-think")
+                self.query_one("#history", VerticalScroll).mount(self._think_md)
+        self.app.notify(f"live thinking {'shown' if cfg.thinking_visible else 'hidden'}")
 
     def _sysline(self, text: str, style: str = "system") -> None:
         try:
@@ -304,11 +343,26 @@ class ChatScreen(Screen):
             elif now - self._last_flush > 0.06:
                 self._last_flush = now
                 self._stream_md.update(self._buffer)
+            self._follow()
         elif t == "thinking_text":
             chunk_txt = str(ev.get("text", ""))
             self._reasoning = (self._reasoning + chunk_txt)[:20000]
             self._think_buf += chunk_txt
             now = time.monotonic()
+            if not self.app.svc.config.agent.thinking_visible:
+                if self._think_md is not None:
+                    self._think_md.remove()
+                    self._think_md = None
+                if self._think_hidden is None:
+                    self._think_hidden = Static(self._think_count(), classes="msg-system")
+                    self.query_one("#history", VerticalScroll).mount(self._think_hidden)
+                elif now - self._think_flush > 0.4:
+                    self._think_flush = now
+                    self._think_hidden.update(self._think_count())
+                return
+            if self._think_hidden is not None:
+                self._think_hidden.remove()
+                self._think_hidden = None
             if self._think_md is None:
                 self._think_md = Markdown(self._think_buf, classes="msg-think")
                 self.query_one("#history", VerticalScroll).mount(self._think_md)
@@ -316,10 +370,7 @@ class ChatScreen(Screen):
             elif now - self._think_flush > 0.08:
                 self._think_flush = now
                 self._think_md.update(self._think_buf)
-            try:
-                self.query_one("#history", VerticalScroll).scroll_end(animate=False)
-            except Exception:  # noqa: BLE001
-                pass
+            self._follow()
         elif t == "tool_stream":
             panel.add_event(ev)
             self._file_preview(ev)
@@ -434,10 +485,7 @@ class ChatScreen(Screen):
             hist.mount(self._file_live)
         else:
             self._file_live.update(body)
-        try:
-            hist.scroll_end(animate=False)
-        except Exception:  # noqa: BLE001
-            pass
+        self._follow(hist)
 
     def _seal_file_live(self) -> None:
         self._tool_live_active = False
@@ -474,11 +522,14 @@ class ChatScreen(Screen):
 
     def _seal_thinking(self) -> None:
         """Replace the live thinking stream with a collapsed, expandable block."""
-        if self._think_md is None:
+        if self._think_md is None and self._think_hidden is None:
             return
         body = self._think_buf
         live = self._think_md
         self._think_md = None
+        if self._think_hidden is not None:
+            self._think_hidden.remove()
+            self._think_hidden = None
         self._think_buf = ""
         try:
             self.query_one("#history", VerticalScroll)
@@ -555,7 +606,7 @@ class ChatScreen(Screen):
         elif force_text:
             hist.mount(Markdown(force_text, classes="msg-assistant"))
         self._buffer = ""
-        hist.scroll_end(animate=False)
+        self._follow(hist)
 
     # --------------------------------------------------------------- slash
     @work(exclusive=True)
@@ -678,6 +729,11 @@ class ChatScreen(Screen):
                 app._health_probe()
                 app.notify(f"backend → {arg}")
             app.replace_screen("backend")
+        elif cmd == "think" and arg.lower() in ("hide", "show"):
+            cfg = app.svc.config.agent
+            cfg.thinking_visible = arg.lower() == "show"
+            app.svc.save_config()
+            app.notify(f"live thinking {'shown' if cfg.thinking_visible else 'hidden'} (Ctrl+T toggles)")
         elif cmd == "think":
             cur = app.svc.config.generation.thinking
             want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
