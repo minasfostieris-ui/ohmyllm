@@ -64,7 +64,8 @@ async def main() -> None:
     # permission enforcement: sandbox must block network + outside writes
     d_net = policy.evaluate("http_fetch", {"url": "http://example.com"})
     assert not d_net.allowed
-    d_out = policy.evaluate("write_file", {"path": "/etc/passwd", "content": "x"})
+    sys_file = r"C:\Windows\System32\drivers\hosts" if os.name == "nt" else "/etc/passwd"
+    d_out = policy.evaluate("write_file", {"path": sys_file, "content": "x"})
     assert not d_out.allowed
     d_cmd = policy.evaluate("run_command", {"command": "rm -rf /"})
     assert not d_cmd.allowed

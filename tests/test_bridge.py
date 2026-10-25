@@ -59,7 +59,7 @@ def bridge(oml_env, svc):
     th = threading.Thread(target=run, daemon=True)
     th.start()
     port_file = oml_env["home"] / "p.port"
-    deadline = time.time() + 20
+    deadline = time.time() + 60  # macOS CI runners can take ~30s cold
     while time.time() < deadline:
         if port_file.exists():
             info = port_file.read_text().strip()
