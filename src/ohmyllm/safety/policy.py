@@ -98,7 +98,7 @@ class PolicyEngine:
         rx = (
             r"^/etc(/|$)", r"^/usr(/|$)", r"^/bin(/|$)", r"^/sbin(/|$)", r"^/boot(/|$)",
             r"^/sys(/|$)", r"^/proc(/|$)", r"^/dev(/|$)", r"^/lib(/|$)", r"^/lib64(/|$)",
-            r"^/var(/|$)", r"^/run(/|$)", r"^/root(/|$)", r"[\\:]\\windows(\\|$)",
+            r"^/var(/|$)", r"^/run(/|$)", r"^/root(/|$)", r"^/private(/|$)", r"[\\:]\\windows(\\|$)",
             r"[\\:]\\program files(\\|$)", r"[\\:]\\programdata(\\|$)",
         )
         return any(re.search(r, p) for r in rx)

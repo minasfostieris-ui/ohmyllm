@@ -24,7 +24,7 @@ def _resource_files() -> list[str]:
         root = SRC / "ohmyllm"
         if root not in f.parents:
             continue
-        out.append(str(f.relative_to(root)))
+        out.append(f.relative_to(root).as_posix())
     return out
 
 

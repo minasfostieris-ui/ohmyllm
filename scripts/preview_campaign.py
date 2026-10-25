@@ -134,7 +134,7 @@ async def run_scenario(app, pilot, n: int) -> str | None:
             return f"scen{n} mode{mode}: no growth {growth[:2]}->{growth[-1:]}"
     await pilot.pause(0.15)
     svg = app.export_screenshot()
-    (IMG / f"scen{n}.svg").write_text(svg)
+    (IMG / f"scen{n}.svg").write_text(svg, encoding="utf-8")
     err = check_svg(n, svg)
     if err:
         return err

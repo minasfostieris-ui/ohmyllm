@@ -37,6 +37,7 @@ def test_lms_cli_windows_name(tmp_path, monkeypatch):
     assert be.lms_cli() == str(bindir / "lms.exe")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX layout only")
 def test_lms_cli_posix_name(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr("shutil.which", lambda n: None)
