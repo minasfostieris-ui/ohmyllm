@@ -120,6 +120,12 @@ agent_writes = true
 [safety]
 http_fetch_enabled = false
 workspace_write_requires_confirmation = true
+
+[guard]                          # optional Clef-Flash danger flagger
+enabled = false                  # for dangerous/full_access modes
+base_url = "http://127.0.0.1:9931"  # llama-server -ngl 0 (CPU+RAM only)
+model = "clef-flash"
+danger_threshold = 0.55
 ```
 
 ## Development
