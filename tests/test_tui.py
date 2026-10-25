@@ -428,10 +428,11 @@ async def test_thinking_streams_live_then_seals(oml_env, svc):
         scr._on_event({"type": "thinking_text", "text": "ponder two"})
         scr._on_event({"type": "token", "text": "the answer"})
         await pilot.pause(0.2)
-        assert not [w for w in scr.walk_children() if "msg-think" in (w.classes or set())], \
-            "live thinking block must be replaced once the answer starts"
         cols = [w for w in scr.walk_children() if isinstance(w, Collapsible)]
         assert cols, "sealed thinking collapsible missing"
+        sealed = [c for c in cols if c.title == "thinking process"]
+        assert sealed, "the live block must seal IN PLACE, not vanish"
+        assert all(c.collapsed for c in sealed), "sealed thinking must be collapsed once the answer starts"
 
 
 @pytest.mark.asyncio()

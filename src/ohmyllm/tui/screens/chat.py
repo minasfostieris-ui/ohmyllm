@@ -17,6 +17,7 @@ from textual.widgets import Collapsible, Input, Markdown, OptionList, Static
 from textual.widgets._option_list import Option
 
 from ... import paths
+from ...verbs import verb
 from ...agents.runtime import AgentCancelled
 from ...sessions import make_title
 from ..widgets import ModeBanner, SepBar, StatusBar, ToolPanel
@@ -125,6 +126,7 @@ class ChatScreen(Screen):
         self._turn_model = ""
         self._reasoning = ""
         self._think_md: Markdown | None = None
+        self._think_col: Collapsible | None = None
         self._think_hidden: Static | None = None
         self._think_buf = ""
         self._think_flush = 0.0
@@ -145,7 +147,9 @@ class ChatScreen(Screen):
                 self._think_buf = self.app.turn_thinking
                 if self.app.svc.config.agent.thinking_visible:
                     self._think_md = Markdown(self._think_buf, classes="msg-think")
-                    hist.mount(self._think_md)
+                    self._think_col = Collapsible(self._think_md, title=f"💭 {verb()} · thinking…",
+                                                  collapsed=False, collapsed_symbol="+", expanded_symbol="-")
+                    hist.mount(self._think_col)
                 else:
                     self._think_hidden = Static(self._think_count(), classes="msg-system")
                     hist.mount(self._think_hidden)
@@ -208,6 +212,8 @@ class ChatScreen(Screen):
         if self.app.busy:
             for panel in self.query(ToolPanel):
                 panel.rotate_thinking()
+            if self._think_col is not None:
+                self._think_col.title = f"💭 {verb()} · thinking…"
 
     def _think_count(self) -> str:
         return f"💭 thinking · hidden ({len(self._think_buf)} chars) — Ctrl+T to show"
@@ -226,8 +232,10 @@ class ChatScreen(Screen):
         cfg = self.app.svc.config.agent
         cfg.thinking_visible = not cfg.thinking_visible
         self.app.svc.save_config()
-        if not cfg.thinking_visible and self._think_md is not None:
-            self._think_md.remove()
+        if not cfg.thinking_visible and (self._think_md is not None or self._think_col is not None):
+            if self._think_col is not None:
+                self._think_col.remove()
+                self._think_col = None
             self._think_md = None
             self._think_hidden = Static(self._think_count(), classes="msg-system")
             self.query_one("#history", VerticalScroll).mount(self._think_hidden)
@@ -236,7 +244,9 @@ class ChatScreen(Screen):
             self._think_hidden = None
             if self._think_buf:
                 self._think_md = Markdown(self._think_buf, classes="msg-think")
-                self.query_one("#history", VerticalScroll).mount(self._think_md)
+                self._think_col = Collapsible(self._think_md, title=f"💭 {verb()} · thinking…",
+                                              collapsed=False, collapsed_symbol="+", expanded_symbol="-")
+                self.query_one("#history", VerticalScroll).mount(self._think_col)
         self.app.notify(f"live thinking {'shown' if cfg.thinking_visible else 'hidden'}")
 
     def _sysline(self, text: str, style: str = "system") -> None:
@@ -350,8 +360,10 @@ class ChatScreen(Screen):
             self._think_buf += chunk_txt
             now = time.monotonic()
             if not self.app.svc.config.agent.thinking_visible:
+                if self._think_col is not None:
+                    self._think_col.remove()
+                    self._think_col = None
                 if self._think_md is not None:
-                    self._think_md.remove()
                     self._think_md = None
                 if self._think_hidden is None:
                     self._think_hidden = Static(self._think_count(), classes="msg-system")
@@ -365,7 +377,9 @@ class ChatScreen(Screen):
                 self._think_hidden = None
             if self._think_md is None:
                 self._think_md = Markdown(self._think_buf, classes="msg-think")
-                self.query_one("#history", VerticalScroll).mount(self._think_md)
+                self._think_col = Collapsible(self._think_md, title=f"💭 {verb()} · thinking…",
+                                              collapsed=False, collapsed_symbol="+", expanded_symbol="-")
+                self.query_one("#history", VerticalScroll).mount(self._think_col)
                 self._think_flush = now
             elif now - self._think_flush > 0.08:
                 self._think_flush = now
@@ -521,12 +535,14 @@ class ChatScreen(Screen):
             return
 
     def _seal_thinking(self) -> None:
-        """Replace the live thinking stream with a collapsed, expandable block."""
-        if self._think_md is None and self._think_hidden is None:
+        """Collapse the live thinking block in place: same widget the user has
+        been watching, so the affordance never disappears mid-turn."""
+        if self._think_md is None and self._think_hidden is None and self._think_col is None:
             return
         body = self._think_buf
-        live = self._think_md
+        col = self._think_col
         self._think_md = None
+        self._think_col = None
         if self._think_hidden is not None:
             self._think_hidden.remove()
             self._think_hidden = None
@@ -536,8 +552,14 @@ class ChatScreen(Screen):
             self.query_one("#chat-input")  # liveness probe
         except NoMatches:
             return
-        if live is not None:
-            live.remove()
+        if col is not None:
+            if body.strip():
+                col.title = "thinking process"
+                col.collapsed = True
+            else:
+                col.remove()
+            self._reasoning = ""  # already shown as a block
+            return
         if body.strip():
             self.query_one("#history", VerticalScroll).mount(
                 Collapsible(Markdown(body[:4000], classes="msg-system"),
