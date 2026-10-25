@@ -41,7 +41,9 @@ def test_sandboxed_workspace_confinement(cfg):
     pe = engine(cfg, PermissionMode.SANDBOXED)
     assert pe.evaluate("write_file", {"path": "inside.txt", "content": "x"}).allowed
     assert pe.evaluate("write_file", {"path": "inside.txt", "content": "x"}).requires_approval
-    assert not pe.evaluate("write_file", {"path": "/etc/passwd", "content": "x"}).allowed
+    import os
+    sys_file = r"C:\Windows\System32\drivers\hosts" if os.name == "nt" else "/etc/passwd"
+    assert not pe.evaluate("write_file", {"path": sys_file, "content": "x"}).allowed
     # sandboxed ASKS for anything outside the workspace; it no longer forbids it
     d = pe.evaluate("read_file", {"path": "/etc/hosts"})
     assert d.allowed and d.requires_approval
@@ -59,7 +61,9 @@ def test_sandboxed_command_allowlist(cfg):
     assert not pe.evaluate("run_command", {"command": "rm -rf /"}).allowed
     assert not pe.evaluate("run_command", {"command": "git push --force"}).allowed
     assert pe.evaluate("run_command", {"command": "git status"}).allowed
-    assert not pe.evaluate("run_command", {"command": "cat f > /etc/out"}).allowed
+    import os
+    sys_out = r"C:\Windows\System32\out.txt" if os.name == "nt" else "/etc/out"
+    assert not pe.evaluate("run_command", {"command": f"cat f > {sys_out}"}).allowed
 
 
 def test_dangerous_needs_approvals(cfg):

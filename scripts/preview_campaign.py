@@ -156,7 +156,9 @@ async def size_worker(size, ids, results: list, done: list) -> None:
                     results.append(r)
                     print("FAIL", r, flush=True)
             except Exception as exc:  # noqa: BLE001
-                results.append(f"scen{n}: CRASH {type(exc).__name__}: {exc}")
+                msg = f"scen{n}: CRASH {type(exc).__name__}: {exc}"
+                results.append(msg)
+                print("FAIL", msg, flush=True)
             finally:
                 done.append(1)
                 if len(done) % 200 == 0:

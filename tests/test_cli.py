@@ -20,7 +20,8 @@ def test_version_and_init(oml_env):
     assert "already present" in r3.output  # idempotent without --force
 
 
-def test_models_and_backend(oml_env):
+def test_models_and_backend(oml_env, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "200")
     runner.invoke(app, ["init", "--backend", "mock"])
     r = runner.invoke(app, ["models"])
     assert r.exit_code == 0 and "mock-tool-7b" in r.output

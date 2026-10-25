@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from typing import Any
 
@@ -637,6 +638,8 @@ class ChatScreen(Screen):
                     port, token = info.split(" ")
                     url = f"http://127.0.0.1:{port}/?t={token}"
                     urlf.write_text(url)
+                    with contextlib.suppress(OSError):
+                        (home / "gui-web.url").write_text(url)
                     webbrowser.open(url)
                     self.app._notice(f"console up → {url}")
                     return

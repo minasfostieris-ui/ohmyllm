@@ -80,7 +80,8 @@ def test_selfinstall_shims_and_path_text(oml_env, tmp_path, monkeypatch):
 
     res = selfinstall.ensure_aliases(interpreter=sys.executable)
     assert all(r.ok for r in res)
-    shim = tmp_path / "bin" / "ohmyllm"
+    import os
+    shim = tmp_path / "bin" / ("ohmyllm" + (".bat" if os.name == "nt" else ""))
     assert shim.is_file() and "-m ohmyllm" in shim.read_text()
     instr = selfinstall.path_instructions([tmp_path / "bin"])
     joined = "\n".join(sum(instr.values(), []))
