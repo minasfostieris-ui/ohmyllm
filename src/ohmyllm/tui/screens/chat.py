@@ -17,9 +17,9 @@ from textual.widgets import Collapsible, Input, Markdown, OptionList, Static
 from textual.widgets._option_list import Option
 
 from ... import paths
-from ...verbs import verb
 from ...agents.runtime import AgentCancelled
 from ...sessions import make_title
+from ...verbs import verb
 from ..widgets import ModeBanner, SepBar, StatusBar, ToolPanel
 
 
