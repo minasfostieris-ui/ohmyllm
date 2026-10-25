@@ -31,6 +31,7 @@ class ChatScreen(Screen):
         ("/help", "", "this help screen"), ("/model", "[name]", "set or pick the default model"), ("/modelsettings", "", "per-model settings for the current model"),
         ("/backend", "[ollama|lmstudio|mock]", "switch backend"), ("/mode", "[name]", "permission mode"),
         ("/think", "[on|off]", "reasoning channel for thinking models"),
+        ("/ultrathink", "[on|off]", "deep reasoning: think much longer and harder"),
         ("/memory", "", "soul.md editor"), ("/soul", "", "soul.md editor"), ("/doctor", "", "diagnostics"),
         ("/settings", "", "all settings"), ("/chats", "", "browse chats"), ("/new", "", "fresh chat"),
         ("/clear", "", "fresh chat"), ("/rename", "<title>", "rename this chat"),
@@ -683,6 +684,14 @@ class ChatScreen(Screen):
             app.svc.config.generation.thinking = want == "on"
             app.svc.save_config()
             app.notify(f"thinking {'enabled' if want == 'on' else 'off'} — applies from the next turn")
+        elif cmd == "ultrathink":
+            cur = app.svc.config.generation.ultrathink
+            want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
+            app.svc.config.generation.ultrathink = want == "on"
+            if want == "on":
+                app.svc.config.generation.thinking = True
+            app.svc.save_config()
+            app.notify(f"ultrathink {'ON — the agent will think this through properly' if want == 'on' else 'off'} · applies from the next turn")
         elif cmd == "mode":
             if arg:
                 self._set_mode(arg)

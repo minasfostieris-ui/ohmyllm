@@ -52,6 +52,7 @@ class StatusBar(Static):
         ctx = st.get("ctx_pct", 0)
         saved = "saved" if st.get("saved") else "unsaved"
         mem = ("🧠 " if w >= 86 else "") + ("on" if st.get("memory", True) else "off")
+        ultra = " 🌀ultra" if st.get("ultrathink") and w >= 60 else ""
         busy = f" ⚒ {verb()}" if st.get("busy") else ""
         model = str(st.get("model", "—"))[: (34 if w >= 110 else 18)]
         chat = f" · chat {st.get('session', '…')}" if w >= 100 else ""
@@ -62,7 +63,7 @@ class StatusBar(Static):
             f"[{mstyle}] {mode} [/]  "
             + mid
             + (f"[magenta]{toks:.1f} tok/s[/]  " if toks and w >= 78 else "")
-            + f"[dim]{mem} · {saved}[/]" + chat
+            + f"[dim]{mem} · {saved}[/]" + chat + f"[magenta]{ultra}[/]"
             + busy
         )
 

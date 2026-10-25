@@ -193,6 +193,7 @@ class Services:
             "backend": self.config.default_backend.value,
             "model": self.current_model() or "—",
             "mode": self.config.permission_mode.value,
+            "ultrathink": gen.ultrathink,
             "num_ctx": gen.num_ctx,
             "ctx_used": ctx_used,
             "ctx_pct": round(100 * ctx_used / max(1, gen.num_ctx)),

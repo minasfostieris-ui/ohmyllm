@@ -75,7 +75,10 @@ Inside the TUI: `Ctrl+K` command palette, `Ctrl+O` chats, `Ctrl+M` models,
 `Ctrl+B` backend, `Ctrl+P` permission mode, `Ctrl+S` memory, `Ctrl+D`
 doctor, `Ctrl+G` settings, `Ctrl+N` new chat, `Ctrl+X` stop, `Ctrl+H` help,
 `Ctrl+Q` quit. `/remember <fact>` writes straight into soul.md; `/forget`,
-`/rename`, `/export`, `/mode`, `/model` do what they say.
+`/rename`, `/export`, `/mode`, `/model` do what they say. `/ultrathink` (also
+`/think`) turns on deep reasoning: the model gets a thorough-deliberation
+directive, the reasoning channel, high reasoning effort, and a 16k-token
+thinking budget — it thinks about WAY more, for WAY longer.
 
 ## GUI
 

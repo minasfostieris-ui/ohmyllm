@@ -711,6 +711,7 @@ function renderHelp() {
   <h3>slash commands</h3>
   <table>
   <tr><td><code>/remember &lt;fact&gt;</code></td><td>write a durable memory to soul.md</td></tr>
+  <tr><td><code>/ultrathink [on|off]</code></td><td>deep reasoning: the agent thinks much longer and harder</td></tr>
   <tr><td><code>/new</code></td><td>start a fresh session</td></tr>
   <tr><td><code>/rename &lt;title&gt;</code></td><td>rename the current chat</td></tr>
   <tr><td><code>/export [md|json]</code></td><td>export the current chat</td></tr>
@@ -736,6 +737,7 @@ const SLASHES = [
   ["/remember", "write a memory"], ["/new", "fresh chat"], ["/rename", "rename chat"],
   ["/export", "export chat"], ["/models", "model list"], ["/mode", "permission mode"],
   ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"],
+  ["/ultrathink", "deep reasoning on/off"],
 ];
 $("#input").addEventListener("input", () => {
   autoGrow();
@@ -788,7 +790,7 @@ $("#composer").addEventListener("submit", async (e) => {
 });
 $("#cancel").onclick = () => post("/api/cancel", {});
 
-function handleSlash(text) {
+async function handleSlash(text) {
   const [cmd, ...rest] = text.split(" ");
   const arg = rest.join(" ");
   switch (cmd.toLowerCase()) {
@@ -800,6 +802,20 @@ function handleSlash(text) {
     case "/rename": if (state.session) patch(`/api/chats/${state.session}`, { title: arg || "renamed" }).then(refreshStatus); break;
     case "/export": if (state.session) post(`/api/chats/${state.session}/export`, { format: arg.includes("json") ? "json" : "markdown" }).then((r) => toast(`exported → ${r.path}`)); break;
     case "/mode": setModeUi(arg); break;
+    case "/ultrathink": {
+      const cur = !!(state.config && state.config.generation && state.config.generation.ultrathink);
+      const want = arg === "on" ? true : arg === "off" ? false : !cur;
+      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
+      merged.generation = merged.generation || {};
+      merged.generation.ultrathink = want;
+      if (want) merged.generation.thinking = true;
+      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
+      if (r && r.error) { toast(`ultrathink: ${r.error}`); break; }
+      state.config = r.config;
+      toast(want ? "ultrathink ON — deep thinking from the next turn" : "ultrathink off");
+      refreshStatus();
+      break;
+    }
     default: addEvline("note", `unknown command ${cmd}`);
   }
 }
@@ -858,7 +874,7 @@ async function refreshStatus() {
     dot.className = `pulse ${s.backend_ready ? "on" : "off"}`;
     $("#brand-sub").textContent = `${s.backend} · ${s.workspace.split("/").pop() || s.workspace}`;
     $("#version").textContent = `v${s.version} · soul: ${s.soul.split("/").pop()}`;
-    $("#chip-model").textContent = s.model || "no model";
+    $("#chip-model").textContent = (s.model || "no model") + (s.ultrathink ? " 🌀" : "");
     $("#chip-model").title = `model · ${s.backend}`;
     const mode = $("#chip-mode");
     mode.textContent = `⦿ ${s.mode}`;

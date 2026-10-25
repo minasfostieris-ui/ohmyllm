@@ -151,7 +151,7 @@ class AgentRuntime:
                     session.add_message("user", inj)
                     emit({"type": "interjection", "text": inj})
             await self._maybe_compact(session, model, params, emit)
-            system = self.prompt_builder.system_prompt(mode=mode, native=bool(native))
+            system = self.prompt_builder.system_prompt(mode=mode, native=bool(native), ultrathink=params.ultrathink)
             history = trim_messages(self._outgoing(session), max(4000, params.num_ctx * 3))
             messages = self.prompt_builder.assemble(system, history)
             assistant_text = ""
@@ -329,7 +329,7 @@ class AgentRuntime:
             "STEP LIMIT reached — do NOT call any more tools. Reply to the user now in plain "
             "text: summarize what you already found and what (if anything) is still missing.",
         )
-        system = self.prompt_builder.system_prompt(mode=self.policy.mode, native=False)
+        system = self.prompt_builder.system_prompt(mode=self.policy.mode, native=False, ultrathink=self.config.generation.ultrathink)
         history = trim_messages(self._outgoing(session), max(4000, params.num_ctx * 3))
         messages = self.prompt_builder.assemble(system, history)
         text = ""

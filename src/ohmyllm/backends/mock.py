@@ -76,7 +76,7 @@ class MockBackend(BaseBackend):
         tools: list[dict[str, Any]] | None = None,
         native_tools: bool = False,
     ) -> AsyncIterator[ChatChunk]:
-        return self._stream(model, messages, tools, native_tools)
+        return self._stream(model, messages, tools, native_tools, params)
 
     async def _stream(
         self,
@@ -84,6 +84,7 @@ class MockBackend(BaseBackend):
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None,
         native: bool,
+        params: GenerationSettings | None = None,
     ) -> AsyncIterator[ChatChunk]:
         if self.script:
             for chunk in self.script.pop(0):
@@ -91,6 +92,9 @@ class MockBackend(BaseBackend):
                 await asyncio.sleep(0)
             return
         last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
+        if params is not None and params.ultrathink:
+            async for chunk in self._ultrathink_reasoning(str(last_user)):
+                yield chunk
         last_u = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
         tool_results = [m for m in messages[last_u + 1 :] if m.get("role") in ("tool", "function")]
         if tool_results:
@@ -111,6 +115,23 @@ class MockBackend(BaseBackend):
         reply = self._plain_reply(str(last_user))
         async for chunk in self._emit_text(reply):
             yield chunk
+
+    async def _ultrathink_reasoning(self, question: str) -> AsyncIterator[ChatChunk]:
+        """Synthesized deep-reasoning stream so /ultrathink is observable without a reasoning model."""
+        lines = [
+            "Let me actually think this through instead of answering reflexively.\n",
+            f"The request boils down to: {question[:120]}\n",
+            "Interpretation A: the literal reading — do exactly what was asked, nothing more.\n",
+            "Interpretation B: the intent behind it — what problem is this solving?\n",
+            "Assumptions check: workspace state, prior turns, tool availability — all consistent so far.\n",
+            "Edge cases: empty input, paths with spaces, a model without tool support, repeated calls.\n",
+            "Weighing A vs B... B fits the conversation better. Verifying once more against the last message... yes.\n",
+            "I'm confident in the approach now. Composing the answer.\n",
+        ]
+        for line in lines:
+            for i in range(0, len(line), 24):
+                yield ChatChunk(reasoning=line[i : i + 24])
+                await asyncio.sleep(self.delay)
 
     def _plan_calls(self, user_text: str, has_tools: bool) -> list[dict[str, Any]]:
         if not has_tools:

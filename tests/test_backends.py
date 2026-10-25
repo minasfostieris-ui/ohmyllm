@@ -334,6 +334,36 @@ def test_thinking_flags_reach_the_wire():
     assert cap["b2"]["thinking"] is True
 
 
+def test_ultrathink_escalates_effort_and_budget():
+    import asyncio
+
+    cap: dict = {}
+    cfg = Config()
+    cfg.generation.ultrathink = True  # note: thinking stays False on purpose
+    be = LMStudioBackend(cfg, transport=_lmstudio_stream(
+        [{"delta": {"content": "x"}, "finish_reason": "stop"}], cap))
+
+    async def _run(backend, model):
+        async for _ in backend.stream_chat(model, [{"role": "user", "content": "x"}], cfg.generation):
+            pass
+
+    asyncio.run(_run(be, "m"))
+    assert cap["body"]["reasoning_effort"] == "high", "ultrathink must raise effort"
+    assert cap["body"]["max_tokens"] >= 16384, "ultrathink must raise the output budget"
+
+    lines = [json.dumps({"message": {"content": "y"}, "done": True, "eval_count": 2,
+                         "eval_duration": 1_000_000_000})]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        cap["b2"] = json.loads(request.content.decode())
+        return httpx.Response(200, text="\n".join(lines))
+
+    be2 = OllamaBackend(cfg, transport=httpx.MockTransport(handler))
+    asyncio.run(_run(be2, "qwen3"))
+    assert cap["b2"]["thinking"] is True, "ultrathink implies the thinking channel"
+    assert cap["b2"]["options"]["num_predict"] >= 16384
+
+
 def test_lmstudio_streams_tool_args_progress():
     import asyncio
 

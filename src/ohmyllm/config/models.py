@@ -92,6 +92,7 @@ class GenerationSettings(BaseModel):
     timeout: float = Field(180.0, gt=0)
     streaming: bool = True
     thinking: bool = Field(False, description="enable reasoning channel for thinking models (/think)")
+    ultrathink: bool = Field(False, description="deep reasoning: reasoning channel + high effort + bigger budget + directive (/ultrathink)")
 
 
 class OllamaSettings(BaseModel):

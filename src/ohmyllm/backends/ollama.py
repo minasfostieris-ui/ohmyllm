@@ -167,7 +167,7 @@ class OllamaBackend(BaseBackend):
             "repeat_penalty": params.repeat_penalty,
             "num_ctx": params.num_ctx,
             "num_batch": params.num_batch,
-            "num_predict": params.max_tokens,
+            "num_predict": max(params.max_tokens, 16384) if params.ultrathink else params.max_tokens,
             "seed": params.seed or -1,
         }
         if params.num_gpu >= 0:
@@ -194,7 +194,7 @@ class OllamaBackend(BaseBackend):
         if tools and native_tools:
             body["tools"] = tools
         body["keep_alive"] = "30m"  # don't unload between turns
-        if params.thinking:
+        if params.thinking or params.ultrathink:
             body["thinking"] = True
         prev = getattr(self, "_last_model", None)
         if prev and prev != model:

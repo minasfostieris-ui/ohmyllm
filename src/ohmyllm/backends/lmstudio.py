@@ -376,14 +376,16 @@ class LMStudioBackend(BaseBackend):
             "stream": True,
             "temperature": params.temperature,
             "top_p": params.top_p,
-            "max_tokens": params.max_tokens,
+            "max_tokens": max(params.max_tokens, 16384) if params.ultrathink else params.max_tokens,
             # keep the model resident between requests (LM Studio unloads by
             # default after each completion; unknown keys are ignored elsewhere)
             "unload_model": False,
         }
         if params.seed:
             body["seed"] = params.seed
-        if params.thinking:
+        if params.ultrathink:
+            body["reasoning_effort"] = "high"
+        elif params.thinking:
             body["reasoning_effort"] = "medium"
         if tools and native_tools:
             body["tools"] = tools

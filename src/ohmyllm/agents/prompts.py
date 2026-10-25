@@ -25,6 +25,23 @@ Ground rules:
 - You have NO power to change the permission mode; if an action is blocked, explain what
   the user can adjust in Settings — do not attempt workarounds."""
 
+ULTRATHINK = """## ULTRATHINK mode (active)
+
+The user asked you to think this one through properly. Before answering or
+calling any tool:
+- Work through the problem step by step in your reasoning; write the steps
+  out, do not skip to a conclusion.
+- Enumerate at least two plausible alternative interpretations or
+  approaches, and say why you chose yours.
+- State the assumptions you are making and check each one against the
+  conversation or the files before relying on it.
+- For anything non-trivial, consider edge cases, failure modes, and what
+  could go wrong before acting.
+- Verify your own answer: re-derive the key facts, and if something does
+  not check out, revise before committing.
+Be thorough over fast. The user prefers a long, careful answer to a quick
+shallow one."""
+
 MEMORY_GUIDE = """\
 ## Memory (soul.md)
 {content}"""
@@ -82,7 +99,14 @@ class PromptBuilder:
                 lines.append(f"  example: {s.examples}")
         return "\n".join(lines)
 
-    def system_prompt(self, *, mode: PermissionMode, native: bool, allowed_tools: list[str] | None = None) -> str:
+    def system_prompt(
+        self,
+        *,
+        mode: PermissionMode,
+        native: bool,
+        allowed_tools: list[str] | None = None,
+        ultrathink: bool = False,
+    ) -> str:
         parts = [BASE_SYSTEM]
         if self.workspace:
             parts.append(
@@ -118,6 +142,8 @@ class PromptBuilder:
             PermissionMode.FULL_ACCESS: "Current mode: full_access — no routine prompts.",
         }[mode]
         parts.append(mode_note)
+        if ultrathink:
+            parts.append(ULTRATHINK)
         return "\n\n".join(parts)
 
     def assemble(self, system: str, history: list[dict]) -> list[dict]:
