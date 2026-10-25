@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "OhMyLLM",
+  "version": "0.1.0",
+  "identifier": "gr.ohmyllm.console",
+  "build": {
+    "frontendDist": "../web"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "OhMyLLM",
+        "url": "index.html",
+        "width": 1320,
+        "height": 840,
+        "minWidth": 920,
+        "minHeight": 620,
+        "theme": "Dark",
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false,
+    "icon": ["icons/icon.png", "icons/128x128.png", "icons/256x256.png"]
+  }
+}

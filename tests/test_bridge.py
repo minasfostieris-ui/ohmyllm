@@ -1,0 +1,271 @@
+"""End-to-end tests against the real GUI bridge (HTTP + SSE, ephemeral port)."""
+
+from __future__ import annotations
+
+import json
+import pathlib
+import threading
+import time
+import urllib.request
+
+import pytest
+
+from ohmyllm import bridge as B
+
+
+class Client:
+    def __init__(self, port: int, token: str) -> None:
+        self.base = f"http://127.0.0.1:{port}"
+        self.token = token
+
+    def req(self, method: str, path: str, body: dict | None = None, auth: bool = True):
+        data = json.dumps(body).encode() if body is not None else None
+        r = urllib.request.Request(self.base + path, data=data, method=method)
+        r.add_header("Content-Type", "application/json")
+        if auth:
+            r.add_header("X-OMLLM-Token", self.token)
+        try:
+            resp = urllib.request.urlopen(r, timeout=60)
+            if "text/event-stream" in (resp.headers.get("Content-Type") or ""):
+                return resp  # live stream
+            with resp:
+                return json.loads(resp.read() or b"null")
+        except urllib.error.HTTPError as e:
+            return {"__status__": e.code, **json.loads(e.read() or b"{}")}
+
+    def get(self, p, auth=True):
+        return self.req("GET", p, auth=auth)
+
+    def post(self, p, body=None, auth=True):
+        return self.req("POST", p, body or {}, auth=auth)
+
+    def patch(self, p, body=None):
+        return self.req("PATCH", p, body or {})
+
+    def delete(self, p):
+        return self.req("DELETE", p)
+
+
+@pytest.fixture()
+def bridge(oml_env, svc):
+    """Boot the bridge against the isolated home; default backend is mock."""
+    holder: dict = {}
+    stop = threading.Event()
+
+    def run() -> None:
+        # ephemeral port; capture printed banner via port file
+        B.serve(workspace=str(oml_env["ws"]), port=0, write_port_file=str(oml_env["home"] / "p.port"), stop=stop)
+
+    th = threading.Thread(target=run, daemon=True)
+    th.start()
+    port_file = oml_env["home"] / "p.port"
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        if port_file.exists():
+            info = port_file.read_text().strip()
+            if len(info.split(" ", 1)) == 2:
+                holder["info"] = info
+                break
+        time.sleep(0.02)
+    assert "info" in holder, "bridge never wrote port file"
+    port, token = holder["info"].split(" ", 1)
+    c = Client(int(port), token)
+    # wait until the app answers
+    for _ in range(100):
+        try:
+            if c.get("/api/health", auth=False)["ok"]:
+                break
+        except Exception:  # noqa: BLE001
+            time.sleep(0.05)
+    else:
+        pytest.fail("bridge health never came up")
+    yield c
+    stop.set()
+    th.join(timeout=10)
+    assert not th.is_alive(), "bridge thread refused to stop"
+
+
+def sse_events(resp, until: str = "done", hook=None, limit: int = 80) -> list[tuple[str, dict]]:
+    """Parse an SSE stream; optional hook(event, data) may issue replies."""
+    events: list[tuple[str, dict]] = []
+    buf = ""
+    raw = resp.read1(65536)
+    while raw:
+        buf += raw.decode(errors="replace")
+        while "\n\n" in buf:
+            frame, buf = buf.split("\n\n", 1)
+            ev = ""
+            dat = "{}"
+            for line in frame.splitlines():
+                if line.startswith("event: "):
+                    ev = line[7:]
+                elif line.startswith("data: "):
+                    dat = line[6:]
+            if not ev:
+                continue
+            events.append((ev, json.loads(dat)))
+            if hook:
+                hook(ev, json.loads(dat))
+            if ev == until:
+                resp.close()
+                return events
+        if len(events) > limit:
+            resp.close()
+            return events
+        raw = resp.read1(65536)
+    resp.close()
+    return events
+
+
+# ------------------------------------------------------------------ basics
+def test_health_is_public_but_api_needs_token(bridge):
+    assert bridge.get("/api/health", auth=False)["ok"] is True
+    denied = bridge.get("/api/status", auth=False)
+    assert denied["__status__"] == 401
+    assert bridge.get("/api/status")["backend"] == "mock"
+
+
+def test_static_console_served_with_injected_token(bridge):
+    import urllib.request as u
+
+    with u.urlopen(f"{bridge.base}/?t={bridge.token}", timeout=10) as r:
+        html = r.read().decode()
+    assert "OhMyLLM" in html and bridge.token in html
+    for asset in ("/styles.css", "/app.js"):
+        with u.urlopen(f"{bridge.base}{asset}", timeout=10) as r:
+            assert r.status == 200 and len(r.read()) > 500
+
+
+def test_mode_endpoints_and_phrase_gate(bridge):
+    assert bridge.post("/api/mode", {"mode": "strict"})["ok"] is True
+    st = bridge.get("/api/status")
+    assert st["mode"] == "strict"
+    denied = bridge.post("/api/mode", {"mode": "full_access", "phrase": "sorry"})
+    assert denied["__status__"] == 403
+    ok = bridge.post("/api/mode", {"mode": "full_access", "phrase": B.Services.full_access_phrase()})
+    assert ok["ok"] is True
+    assert bridge.get("/api/status")["mode"] == "full_access"
+    bridge.post("/api/mode", {"mode": "safe"})
+
+
+def test_config_patch_never_grants_full_access(bridge):
+    cfg = bridge.get("/api/config")
+    cfg["permission_mode"] = "full_access"
+    cfg["generation"]["temperature"] = 0.42
+    res = bridge.patch("/api/config", cfg)
+    assert res["ok"] is True
+    assert res["config"]["permission_mode"] != "full_access"
+    assert res["config"]["generation"]["temperature"] == 0.42
+
+
+# ------------------------------------------------------------------ chats
+def test_chats_crud_via_bridge(bridge):
+    created = bridge.post("/api/chats", {})
+    sid = created["id"]
+    rows = bridge.get("/api/chats?q=")["chats"]
+    assert any(r["id"] == sid for r in rows)
+    renamed = bridge.patch(f"/api/chats/{sid}", {"title": "Bridgey chat", "pinned": True, "tag": "gui"})
+    assert renamed["title"] == "Bridgey chat" and renamed["pinned"] is True and "gui" in renamed["tags"]
+    exp = bridge.post(f"/api/chats/{sid}/export", {"format": "markdown"})
+    assert exp["path"].endswith(".md")
+    assert bridge.delete(f"/api/chats/{sid}")["trashed"]
+
+
+# ------------------------------------------------------------------ soul
+def test_soul_read_write_and_backup(bridge):
+    d = bridge.get("/api/soul")
+    assert "# Soul" in d["text"]  # seeded skeleton
+    bridge.post("/api/soul", {"action": "write", "text": "# OhMyLLM\n\n## Identity\n\n- bridge wrote this\n"})
+    assert "bridge wrote this" in bridge.get("/api/soul")["text"]
+    bridge.post("/api/soul", {"action": "revert"})
+    assert "bridge wrote this" not in bridge.get("/api/soul")["text"]
+    assert bridge.get("/api/soul")["backups"], "a backup should exist"
+
+
+# ------------------------------------------------------------------ turns
+def test_streaming_turn_with_memory_flow(bridge):
+    resp = bridge.req("POST", "/api/message", {"text": "Hi! my name is Bridgey and I have a rabbit named Tupac"})
+    events = sse_events(resp)
+    kinds = [e for e, _ in events]
+    assert "tool_plan" in kinds and "tool_result" in kinds and "memory_activity" in kinds
+    assert events[-1][0] == "done"
+    assert "Bridgey" in bridge.get("/api/soul")["text"]
+    status = bridge.get("/api/status")
+    assert status["session"] and status["busy"] is False
+
+
+def test_approval_roundtrip_over_sse(bridge):
+    bridge.post("/api/mode", {"mode": "sandboxed"})  # workspace writes need confirmation
+    got = {}
+
+    def hook(ev, data):
+        if ev == "approval_request":
+            got["id"] = data["id"]
+            got["tool"] = data["tool"]
+            bridge.post(f"/api/approval/{data['id']}", {"decision": "approve"})
+
+    resp = bridge.req("POST", "/api/message", {"text": 'create file bridge_ok.txt with content "hello from approval"'})
+    events = sse_events(resp, hook=hook)
+    assert got.get("tool") == "write_file"
+    results = [d for e, d in events if e == "tool_result"]
+    assert results and results[0]["ok"] is True
+    assert (pathlib.Path(bridge.get("/api/status")["workspace"]) / "bridge_ok.txt").read_text().startswith("hello")
+    bridge.post("/api/mode", {"mode": "safe"})
+
+
+def test_approval_deny_blocks_write(bridge):
+    bridge.post("/api/mode", {"mode": "sandboxed"})
+
+    def hook(ev, data):
+        if ev == "approval_request":
+            bridge.post(f"/api/approval/{data['id']}", {"decision": "deny"})
+
+    resp = bridge.req("POST", "/api/message", {"text": 'create file bridge_no.txt with content "denied"'})
+    events = sse_events(resp, hook=hook)
+    results = [d for e, d in events if e == "tool_result"]
+    assert results and (results[0].get("denied") or results[0]["ok"] is False)
+    assert not (pathlib.Path(bridge.get("/api/status")["workspace"]) / "bridge_no.txt").exists()
+    bridge.post("/api/mode", {"mode": "safe"})
+
+
+def test_models_backend_doctor_audit(bridge):
+    models = bridge.get("/api/models")["models"]
+    assert models and all(m["fit"] for m in models)
+    be = bridge.get("/api/backends")
+    assert be["mock"]["running"] is True
+    doc = bridge.get("/api/doctor")
+    assert doc["checks"] and any(c["status"] in ("pass", "warn") for c in doc["checks"])
+    audit = bridge.get("/api/audit?n=10")["events"]
+    assert isinstance(audit, list)
+
+
+def test_message_while_busy_is_queued(bridge, monkeypatch):
+    import json as _json
+
+    from ohmyllm.backends.mock import MockBackend
+
+    monkeypatch.setattr(MockBackend, "delay", 0.03)  # hold the turn open long enough to race
+
+    done: dict = {}
+
+    def slow_turn() -> None:
+        try:
+            resp = bridge.req("POST", "/api/message", {"text": "hello there friend"})
+            done["sse"] = resp.read()
+        except Exception as exc:  # noqa: BLE001
+            done["err"] = str(exc)
+
+    th = threading.Thread(target=slow_turn, daemon=True)
+    th.start()
+    queued = None
+    for _ in range(200):
+        st = bridge.req("GET", "/api/status")
+        st = _json.loads(st) if not isinstance(st, dict) else st
+        if st.get("busy"):
+            queued = bridge.req("POST", "/api/message", {"text": "interjection from gui"})
+            break
+        time.sleep(0.02)
+    th.join(timeout=60)
+    assert queued is not None, "never observed busy"
+    body = queued if isinstance(queued, dict) else _json.loads(queued.read())
+    assert body.get("queued") is True and body.get("count", 0) >= 1

@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Rust / Tauri
+gui/src-tauri/target/
+
+# Runtime artifacts (never commit user state)
+.ohmyllm/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+.DS_Store

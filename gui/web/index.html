@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OhMyLLM</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; height: 100vh; display: grid; place-items: center; background: #0b0f0e; color: #a8b1ac;
+         font: 14px/1.5 system-ui, sans-serif; }
+  .box { text-align: center; max-width: 420px; padding: 24px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: #7ac79f; margin: 0 auto 18px;
+         animation: p 1.2s ease-in-out infinite; }
+  @keyframes p { 50% { transform: scale(1.9); opacity: .5; } }
+  h1 { font-size: 16px; color: #e6e9e4; margin: 0 0 8px; letter-spacing: -0.01em; }
+  code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12.5px; color: #d8b26e; }
+  .hide { display: none; }
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="dot" id="dot"></div>
+    <h1>OhMyLLM</h1>
+    <p id="msg">starting the local bridge…</p>
+    <div id="err" class="hide">
+      <p>Could not reach the OhMyLLM bridge. Start the GUI through the CLI:</p>
+      <p><code>ohmyllm gui</code></p>
+      <p class="hint">If the Python package lives in a virtualenv, point the shell at it first: <code>OMLLM_PYTHON=/path/to/.venv/bin/python</code></p>
+    </div>
+  </div>
+  <script>
+    setTimeout(() => {
+      document.getElementById("dot").style.background = "#e07a6a";
+      document.getElementById("dot").style.animation = "none";
+      document.getElementById("msg").classList.add("hide");
+      document.getElementById("err").classList.remove("hide");
+    }, 12000);
+  </script>
+</body>
+</html>

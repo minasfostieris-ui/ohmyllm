@@ -1,0 +1,209 @@
+"""Configuration data models for OhMyLLM (pydantic v2)."""
+
+from __future__ import annotations
+
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class BackendName(StrEnum):
+    OLLAMA = "ollama"
+    LMSTUDIO = "lmstudio"
+    MOCK = "mock"
+
+
+class PermissionMode(StrEnum):
+    STRICT = "strict"
+    SAFE = "safe"
+    SANDBOXED = "sandboxed"
+    DANGEROUS = "dangerous"
+    FULL_ACCESS = "full_access"
+
+    @property
+    def rank(self) -> int:
+        return _MODE_RANK[self]
+
+    @property
+    def label(self) -> str:
+        return _MODE_LABEL[self]
+
+    @property
+    def description(self) -> str:
+        return _MODE_DESC[self]
+
+
+_MODE_RANK = {
+    PermissionMode.STRICT: 0,
+    PermissionMode.SAFE: 1,
+    PermissionMode.SANDBOXED: 2,
+    PermissionMode.DANGEROUS: 3,
+    PermissionMode.FULL_ACCESS: 4,
+}
+_MODE_LABEL = {
+    PermissionMode.STRICT: "Strict — chat only",
+    PermissionMode.SAFE: "Safe — read-only",
+    PermissionMode.SANDBOXED: "Sandboxed — workspace agent",
+    PermissionMode.DANGEROUS: "Dangerous — elevated access",
+    PermissionMode.FULL_ACCESS: "FULL ACCESS — no prompts",
+}
+_MODE_DESC = {
+    PermissionMode.STRICT: (
+        "No modifying tools. No shell, no network, no file writes. "
+        "Memory writes only when you explicitly ask."
+    ),
+    PermissionMode.SAFE: (
+        "Read-only access inside the workspace. No shell, no network, no writes. "
+        "soul.md memory tools are allowed."
+    ),
+    PermissionMode.SANDBOXED: (
+        "Default agentic mode. Reads/writes limited to the workspace; writes ask "
+        "for confirmation (per-session option); only a small allowlist of safe "
+        "commands; no network by default."
+    ),
+    PermissionMode.DANGEROUS: (
+        "Broader filesystem and shell access. Destructive operations still ask. "
+        "Network needs explicit approval. High risk."
+    ),
+    PermissionMode.FULL_ACCESS: (
+        "No routine prompts. Enabled only by typing the confirmation phrase. "
+        "Catastrophic commands remain blocked unless you override. Everything is logged."
+    ),
+}
+
+FULL_ACCESS_PHRASE = "I ACCEPT FULL ACCESS"
+
+
+class GenerationSettings(BaseModel):
+    """Sampling / runtime knobs forwarded to the backend when supported."""
+
+    model_config = ConfigDict(validate_assignment=True)
+
+    temperature: float = Field(0.7, ge=0.0, le=2.0)
+    top_p: float = Field(1.0, ge=0.0, le=1.0)
+    top_k: int = Field(40, ge=0)
+    repeat_penalty: float = Field(1.1, ge=0.0, le=2.0)
+    num_ctx: int = Field(16384, ge=128, le=1_000_000)
+    num_gpu: int = Field(-1, ge=-1, description="-1 = offload all layers")
+    num_batch: int = Field(512, ge=1)
+    max_tokens: int = Field(8192, ge=1)
+    seed: int = Field(0, description="0 = random")
+    threads: int = Field(0, description="0 = auto")
+    timeout: float = Field(180.0, gt=0)
+    streaming: bool = True
+    thinking: bool = Field(False, description="enable reasoning channel for thinking models (/think)")
+
+
+class OllamaSettings(BaseModel):
+    host: str = "http://127.0.0.1:11434"
+    binary: str = "ollama"
+    auto_start: bool = True
+    startup_timeout: float = 30.0
+    default_model: str | None = None
+
+
+class LMStudioSettings(BaseModel):
+    base_url: str = "http://127.0.0.1:1234"
+    auto_start: bool = True
+    startup_timeout: float = 30.0
+    default_model: str | None = None
+    binary_path: str | None = Field(
+        None, description="Optional explicit path to the LM Studio app/binary"
+    )
+
+
+class MemorySettings(BaseModel):
+    enabled: bool = True
+    agent_writes: bool = True
+    require_explicit_save: bool = False
+    max_inject_chars: int = Field(6000, ge=200)
+    backups_keep: int = Field(50, ge=1)
+
+
+class SafetySettings(BaseModel):
+    command_allowlist_extra: list[str] = Field(default_factory=list)
+    command_denylist: list[str] = Field(default_factory=list)
+    allow_sensitive_paths: list[str] = Field(
+        default_factory=list, description="Extra globs re-allowing sensitive locations"
+    )
+    workspace_write_requires_confirmation: bool = True
+    catastrophic_override: bool = False
+    http_fetch_enabled: bool = False
+
+
+class GuardSettings(BaseModel):
+    """Clef-Flash (or any llama.cpp /v1/systemone decision server) as a
+    System-1 danger flagger. Runs on CPU+RAM only (llama-server -ngl 0)."""
+    enabled: bool = False
+    base_url: str = "http://127.0.0.1:9931"
+    model: str = "clef-flash"
+    danger_threshold: float = Field(0.55, ge=0.0, le=1.0)
+    timeout_s: float = Field(30.0, gt=0, le=300)
+    question: str = Field(
+        "If an AI coding agent executed this tool call on the user's own "
+        "computer right now, would it be dangerous? Dangerous means: destroying "
+        "or leaking data the user did not ask to touch (system files, other "
+        "projects, dotfiles, backups), downloading and executing remote code, "
+        "disabling security, spending money, or anything irreversible the user "
+        "did not explicitly request. A normal edit, build, test or read in the "
+        "user's project is NOT dangerous."
+    )
+
+
+class AgentSettings(BaseModel):
+    max_steps: int = Field(8, ge=1, le=64)
+    max_parse_retries: int = Field(2, ge=0, le=5)
+    tool_timeout: float = Field(120.0, gt=0)
+    native_tools: str = Field("auto", pattern="^(auto|force|off)$")
+    react_fallback: bool = True
+    compact: bool = Field(True, description="auto-summarize old history when context fills up")
+    compact_ratio: float = Field(0.75, gt=0.2, le=0.95, description="compact when est prompt tokens exceed ratio*num_ctx")
+
+
+class UiSettings(BaseModel):
+    theme: str = "dark"
+    timestamps: bool = True
+    show_tool_panels: bool = True
+    confirm_quit: bool = True
+
+
+class LoggingSettings(BaseModel):
+    level: str = "info"
+    audit_enabled: bool = True
+    max_log_bytes: int = 2_000_000
+    keep_backups: int = 30
+
+
+class Config(BaseModel):
+    model_config = ConfigDict(validate_assignment=True)
+
+    version: int = 1
+    default_backend: BackendName = BackendName.OLLAMA
+    permission_mode: PermissionMode = PermissionMode.SANDBOXED
+    workspace: str | None = None
+    first_run_completed: bool = False
+    ollama: OllamaSettings = Field(default_factory=OllamaSettings)
+    lmstudio: LMStudioSettings = Field(default_factory=LMStudioSettings)
+    generation: GenerationSettings = Field(default_factory=GenerationSettings)
+    memory: MemorySettings = Field(default_factory=MemorySettings)
+    safety: SafetySettings = Field(default_factory=SafetySettings)
+    guard: GuardSettings = Field(default_factory=GuardSettings)
+    agent: AgentSettings = Field(default_factory=AgentSettings)
+    ui: UiSettings = Field(default_factory=UiSettings)
+    logging: LoggingSettings = Field(default_factory=LoggingSettings)
+    # "backend:model" -> overrides
+    model_settings: dict[str, GenerationSettings] = Field(default_factory=dict)
+
+    def settings_for(self, backend: BackendName, model: str) -> GenerationSettings:
+        """Effective generation settings: global defaults + per-model overrides."""
+        override = self.model_settings.get(f"{backend.value}:{model}")
+        if override is None:
+            return self.generation.model_copy()
+        base = self.generation.model_dump()
+        merged = {k: v for k, v in override.model_dump().items() if v is not None}
+        return GenerationSettings.model_validate({**base, **merged})
+
+    def set_model_settings(
+        self, backend: BackendName, model: str, settings: GenerationSettings
+    ) -> None:
+        self.model_settings[f"{backend.value}:{model}"] = settings

@@ -1,0 +1,19 @@
+[package]
+name = "ohmyllm-gui"
+version = "0.1.0"
+description = "OhMyLLM native console window — wraps the local Python bridge"
+edition = "2021"
+rust-version = "1.80"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[profile.release]
+opt-level = 3
+strip = true
+panic = "abort"
+codegen-units = 1
+lto = true

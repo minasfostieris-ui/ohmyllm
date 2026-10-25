@@ -1,0 +1,167 @@
+/* OhMyLLM theme */
+
+Screen { background: $surface; }
+
+#mode-banner {
+    height: auto;
+    display: none;
+    padding: 0 1;
+}
+
+#status-bar {
+    dock: bottom;
+    height: 1;
+    background: $boost;
+    color: $text;
+    padding: 0 2;
+}
+
+/* ---------- chat ---------- */
+#chat-root { width: 100%; height: 1fr; }
+/* Scrollbars: neutral gray thumbs, never the ANSI-blue default (user terminal
+   themes render ansi_blue as a bright cyan bar). Screens scroll fine without
+   a visible bar; these rules only govern where a bar is unavoidable. */
+ScrollBar {
+    background: $surface;
+    scrollbar-color: $foreground 25%;
+    scrollbar-color-hover: $foreground 40%;
+    scrollbar-color-active: $primary 60%;
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+    scrollbar-corner-color: $surface;
+}
+Screen { scrollbar-size: 0 0; }
+/* No scrollbar is ever *rendered* anywhere: the ANSI-blue default thumb and
+   the black corner/track were the artifacts. Scrolling itself is unaffected
+   (cursor keys, j/k, mouse wheel, Home/End all work). */
+VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log { scrollbar-size: 0 0; }
+#history { height: 1fr; padding: 0 2; scrollbar-size: 0 0; overflow-x: hidden; }
+VerticalScroll { overflow-x: hidden; }
+
+#chat-left { width: 1fr; height: 100%; overflow: hidden; }
+
+.turn-stats { color: $text-muted; padding: 0 2 1 2; }
+#chats-filters { height: 3; }
+#chats-filters Input { width: 1fr; min-width: 20; }
+#chats-preview { height: 9; }
+
+.msg-think { color: $text-muted; padding: 0 0 1 0; }
+.msg-user { color: $text; padding: 0 0 1 0; }
+.msg-assistant { padding: 0 0 1 0; }
+.msg-system { color: $warning; padding: 0 0 1 0; }
+.msg-error { color: $error; padding: 0 0 1 0; }
+
+#panel-sep {
+    width: 1;
+    height: 1fr;
+    display: none;
+}
+#tool-panel {
+    width: 42;
+    height: 1fr;
+    padding: 0 1;
+    color: $text-muted;
+    background: $surface;
+    overflow: hidden;
+}
+
+#chat-input { dock: bottom; }
+#chat-input:focus { border: round $primary; }
+
+/* ---------- generic screens ---------- */
+#screen-title { height: 1; padding: 0 2; color: $accent; text-style: bold; }
+.detail-box { height: auto; max-height: 30%; padding: 0 1; color: $text-muted; }
+
+DataTable { height: 1fr; border: round $primary 60%; }
+
+.screen-body { height: 1fr; }
+
+/* ---------- modals ---------- */
+#approval-box {
+    width: 90%;
+    max-width: 110;
+    max-height: 90%;
+    border: thick $warning;
+    background: $surface;
+    padding: 1 2;
+}
+
+#prompt-box {
+    width: 70%;
+    max-width: 90;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#confirm-box {
+    width: 60%;
+    max-width: 80;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#confirm-box.danger { border: thick $error; }
+
+.code-block { height: auto; max-height: 30%; border: solid $secondary 40%; padding: 0 1; }
+.preview-block { max-height: 45%; }
+
+/* ---------- model settings modal ---------- */
+#model-settings-box {
+    width: 100; max-width: 92%; height: auto; max-height: 92%;
+    border: thick $primary; background: $surface; padding: 1 2;
+}
+.ms-title { margin-bottom: 1; }
+.ms-row { height: auto; }
+.ms-field { width: 1fr; height: auto; margin-right: 2; }
+.ms-field:last-child { margin-right: 0; }
+#ms-buttons { height: auto; align-horizontal: right; padding-top: 1; }
+
+/* ---------- settings ---------- */
+#settings-body { padding: 0 2 1 2; align-horizontal: center; }
+.st-section { height: auto; width: 100%; max-width: 110; border: round $primary 35%; padding: 1 2; margin: 0 0 1 0; }
+.st-title { color: $accent; text-style: bold; }
+.st-desc { color: $text-muted; }
+.st-label { color: $text-muted; padding-top: 1; }
+.st-row { height: auto; }
+.st-field { width: 1fr; height: auto; margin-right: 2; }
+.st-field:last-child { margin-right: 0; }
+
+/* ---------- wizard ---------- */
+#wizard-body { height: 1fr; padding: 1 2; }
+#wizard-buttons { height: auto; align-horizontal: right; padding: 1 2; }
+#wizard-progress { height: 1; color: $success; }
+
+/* ---------- help ---------- */
+HelpMarkdown { padding: 1 3; }
+
+/* ---------- memory ---------- */
+#soul-area { height: 1fr; border: round $primary 60%; }
+#memory-buttons { height: auto; }
+#recent-memory { height: 8; color: $text-muted; border: round $secondary 40%; padding: 0 1; }
+
+/* misc */
+Button { margin: 0 1; }
+OptionList { border: round $primary 50%; }
+Input { margin: 0 1; }
+
+/* ---------- slash command menu ---------- */
+#slash-menu {
+    display: none;
+    height: auto;
+    max-height: 12;
+    margin: 0 2;
+    border: round $primary 60%;
+    background: $panel;
+}
+/* Textual's default blockquote bar is `border-left: outer` (half-block ▕ at
+   50% alpha) — renders as a broken dashed line with gaps in many fonts.
+   Solid cyan: continuous │ (proven continuous in the user's terminal). */
+MarkdownBlockQuote > BlockQuote { border-left: solid #00e5ff; }
+/* The seal line under the thinking block: solid box-drawing chars (they
+   tile seamlessly); the old `hkey` style painted background cells. */
+Collapsible { border-top: solid $primary 40%; }
+.msg-file { padding: 0 0 0 2; }
+.msg-file-live { padding: 0 2 1 2; }

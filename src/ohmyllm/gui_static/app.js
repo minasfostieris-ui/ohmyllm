@@ -1,0 +1,1021 @@
+/* OhMyLLM console front-end. Vanilla, no deps, talks to the local bridge. */
+"use strict";
+
+const BOOT = window.__OMLLM__ || { token: "", port: 0 };
+const BASE = `http://127.0.0.1:${BOOT.port}`;
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+
+const state = {
+  view: "chat",
+  status: null,
+  config: null,
+  session: null,
+  streaming: false,
+  approvalQueue: [],
+  modeModal: false,
+};
+
+/* ------------------------------------------------------------------ api */
+async function api(path, opts = {}) {
+  const headers = { "Content-Type": "application/json", "X-OMLLM-Token": BOOT.token };
+  const res = await fetch(BASE + path, { ...opts, headers });
+  if (!res.ok && res.status === 401) throw new Error("bridge token rejected — restart the GUI");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+const get = (p) => api(p);
+const post = (p, body) => api(p, { method: "POST", body: JSON.stringify(body || {}) });
+const patch = (p, body) => api(p, { method: "PATCH", body: JSON.stringify(body || {}) });
+const del = (p) => api(p, { method: "DELETE" });
+
+function toast(msg, kind = "") {
+  const t = document.createElement("div");
+  t.className = `toast ${kind}`;
+  t.textContent = msg;
+  $("#toasts").appendChild(t);
+  setTimeout(() => t.remove(), 4200);
+}
+
+/* -------------------------------------------------------------- markdown */
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+const KEYWORDS = /\b(fn|def|class|const|let|var|use|mod|pub|struct|enum|impl|if|else|elif|for|while|return|import|from|async|await|try|except|catch|throw|new|match|switch|case|break|continue|self|this|null|None|nil|true|false|True|False)\b/g;
+function hl(code, lang) {
+  if (/^(json|toml|ini|yaml)$/.test(lang)) return esc(code);
+  let out = esc(code);
+  out = out.replace(/(&quot;.*?&quot;|&#x27;.*?&#x27;|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, '<span class="str">$1</span>');
+  out = out.replace(/(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)/g, (m) => (m.includes("class=\"") ? m : `<span class="cmt">${m}</span>`));
+  out = out.replace(KEYWORDS, '<span class="kw">$1</span>');
+  out = out.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>');
+  return out;
+}
+function inline(s) {
+  s = esc(s);
+  s = s.replace(/`([^`]+)`/g, (m, c) => `<code>${c}</code>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/(^|\W)\*([^*\s][^*]*)\*/g, "$1<i>$2</i>");
+  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  return s;
+}
+function md(src) {
+  const blocks = [];
+  let text = String(src).replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => {
+    const i = blocks.push({ lang: lang || "text", code }) - 1;
+    return `\u0000B${i}\u0000`;
+  });
+  const lines = text.split("\n");
+  let html = "", list = null, para = [];
+  const flushPara = () => { if (para.length) { html += `<p>${inline(para.join(" "))}</p>`; para = []; } };
+  const flushList = () => { if (list) { html += `</${list}>`; list = null; } };
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    const bm = line.match(/^\u0000B(\d+)\u0000$/);
+    if (bm) {
+      flushPara(); flushList();
+      const b = blocks[+bm[1]];
+      html += `<pre class="codeblock"><code>${hl(b.code, b.lang)}</code><button class="btn small copy-code" data-code="${esc(b.code)}">copy</button></pre>`;
+      continue;
+    }
+    const h = line.match(/^(#{1,3})\s+(.*)/);
+    if (h) { flushPara(); flushList(); html += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; continue; }
+    const ul = line.match(/^[-*]\s+(.*)/);
+    const ol = line.match(/^\d+[.)]\s+(.*)/);
+    if (ul || ol) {
+      flushPara();
+      const want = ul ? "ul" : "ol";
+      if (list !== want) { flushList(); html += `<${want}>`; list = want; }
+      html += `<li>${inline((ul || ol)[1])}</li>`; continue;
+    }
+    if (/^>\s?/.test(line)) { flushPara(); flushList(); html += `<blockquote>${inline(line.replace(/^>\s?/, ""))}</blockquote>`; continue; }
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    para.push(line);
+  }
+  flushPara(); flushList();
+  return html;
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest(".copy-code");
+  if (!b) return;
+  navigator.clipboard.writeText(b.dataset.code).then(() => toast("copied"));
+});
+
+/* ----------------------------------------------------------------- chat */
+function clearStream() { $("#stream").innerHTML = ""; }
+
+function emptyState() {
+  clearStream();
+  $("#stream").innerHTML = `
+    <div class="stream-empty">
+      <svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="16"/><circle cx="24" cy="24" r="6"/></svg>
+      <p class="big">Ask the agent anything.</p>
+      <p>It reads its <b>soul.md</b> memory, runs <b>permission-gated tools</b>, and everything stays on this machine.</p>
+      <p class="small">Try: <button class="btn small remember-demo">"remember my name is Minas"</button> or press <kbd>Ctrl</kbd>+<kbd>K</kbd> for commands.</p>
+    </div>`;
+  const d = $(".remember-demo");
+  if (d) d.onclick = () => { $("#input").value = "remember: my name is Minas"; $("#input").focus(); };
+}
+
+function addMsg(role, content, extraClass = "") {
+  if (document.querySelector(".stream-empty")) clearStream();
+  const el = document.createElement("div");
+  el.className = `msg ${role} ${extraClass}`;
+  el.innerHTML = `<div class="who">${role === "user" ? "you" : role === "assistant" ? "agent" : "note"}</div><div class="content md"></div>`;
+  el.querySelector(".content").innerHTML = role === "user" ? inline(content) : md(content);
+  $("#stream").appendChild(el);
+  scrollBottom();
+  return el.querySelector(".content");
+}
+function addEvline(tag, text, cls = "", dur) {
+  const el = document.createElement("div");
+  el.className = `evline ${cls}`;
+  el.innerHTML = `<span class="tag">${esc(tag)}</span><span class="txt"></span>` + (dur ? `<span class="dur">${esc(dur)}</span>` : "");
+  el.querySelector(".txt").textContent = text;
+  $("#stream").appendChild(el);
+  scrollBottom();
+  return el;
+}
+function scrollBottom() { const s = $("#stream"); s.scrollTop = s.scrollHeight; }
+
+let liveNode = null, liveText = "";
+function ensureLive() {
+  if (!liveNode) { liveNode = addMsg("assistant", ""); }
+  return liveNode;
+}
+function updateLive(chunk) {
+  liveText += chunk;
+  ensureLive().innerHTML = md(liveText);
+  scrollBottom();
+}
+function sealLive() { liveNode = null; liveText = ""; sealThinkLive(); }
+function liveThink(t) {
+  state.reasonBuf = (state.reasonBuf || "") + t;
+  if (!state.thinkNode || state.thinkNode === "sealed") {
+    const det = document.createElement("details"); det.open = true; det.className = "think-details";
+    const sm = document.createElement("summary"); sm.textContent = "💭 thinking…";
+    const pre = document.createElement("pre"); pre.className = "think-body";
+    det.append(sm, pre); $("#stream").append(det);
+    state.thinkNode = { det, sm, pre };
+  }
+  state.thinkNode.pre.textContent += t;
+  scrollBottom();
+}
+function liveFileProgress(d) {
+  let partial;
+  if (d.content_tail) {
+    let raw = d.content_tail;
+    const cm = /^((?:[^"\\]|\\.)*)"/.exec(raw);   // final event carries the JSON close
+    if (cm) raw = cm[1];
+    partial = raw.replace(/\\n/g, "\n").replace(/\\"/g, '"');
+  } else {
+    const m = /"content"\s*:\s*"((?:[^"\\]|\\.)*)$/.exec(d.tail || "");
+    if (!m) return;
+    partial = m[1].replace(/\\n/g, "\n").replace(/\\"/g, '"');
+  }
+  const lines = partial.split("\n").slice(-12).join("\n");
+  if (!state.fileNode || state.fileNode.name !== d.name) {
+    const det = document.createElement("details"); det.open = true; det.className = "think-details";
+    const verb = d.name === "patch_file" ? "patching" : "writing";
+    const sm = document.createElement("summary"); sm.textContent = `${actionOf(d.name)[1]} ${verb} ${d.name}…`;
+    const pre = document.createElement("pre"); pre.className = "think-body";
+    det.append(sm, pre); $("#stream").append(det);
+    state.fileNode = { name: d.name, det, sm, pre };
+  }
+  state.fileNode.pre.textContent = lines;
+  scrollBottom();
+}
+const ACTION = {
+  write_file: ["write", "📝"], patch_file: ["edit", "✏️"], run_command: ["exec", "⚡"],
+  read_file: ["read", "📖"], list_dir: ["ls", "📂"], glob: ["find", "🔎"], grep: ["find", "🔎"],
+  web_fetch: ["net", "🌐"], web_search: ["net", "🌐"], soul_write: ["memory", "🧠"],
+  soul_remember: ["memory", "🧠"], soul_forget: ["memory", "🧠"],
+};
+function actionOf(name) { return ACTION[name] || ["tool", "🔧"]; }
+function planSummary(d) {
+  const a = d.args || {};
+  switch (d.name) {
+    case "run_command": return `⚡ run_command ${firstLine(a.command || "")}`;
+    case "write_file": return `📝 write_file ${a.path || "?"} · ${String(a.content || "").length} chars${a.append ? " (append)" : ""}`;
+    case "patch_file": {
+      const o = String(a.old_text || "").split("\n").length, n = String(a.new_text || "").split("\n").length;
+      return `✏️ patch_file ${a.path || "?"} · −${o} +${n} lines`;
+    }
+    case "read_file": return `📖 read_file ${a.path || "?"}`;
+    default: return `→ ${d.name} ${shortArgs(a)}`;
+  }
+}
+function liveThinkProgress(name, chars) {
+  const k = ((chars / 1000) | 0) || 1;
+  if (state.writeNode && state.writeNode.name === name) {
+    state.writeNode.el.querySelector(".txt").textContent = `${actionOf(name)[1]} ${name} … ${k}k chars`;
+  } else {
+    state.writeNode = { name, el: addEvline(actionOf(name)[0], `${actionOf(name)[1]} ${name} … ${k}k chars`, "dim") };
+  }
+}
+function sealThinkLive() {
+  if (state.thinkNode && state.thinkNode !== "sealed") {
+    if (!state.thinkNode.pre.textContent.trim()) {
+      state.thinkNode.det.remove();
+      state.thinkNode = null;
+    } else {
+      state.thinkNode.det.open = false;
+      state.thinkNode.sm.textContent = "💭 thinking process";
+      state.thinkNode = "sealed";
+    }
+  }
+}
+
+async function loadSessionIntoView(sid) {
+  const sess = await get(`/api/chats/${sid}`);
+  state.session = sid;
+  clearStream();
+  (sess.messages || []).forEach((m) => {
+    if (m.role === "user") addMsg("user", m.content);
+    else if (m.role === "assistant") addMsg("assistant", m.content);
+    else if (m.role === "tool") addEvline(m.name || "tool", String(m.content).slice(0, 220), "ok");
+    else if (m.role === "system") { /* soul context — not shown */ }
+  });
+  if (!sess.messages?.length) emptyState();
+  $("#g-title").textContent = sess.title;
+}
+
+/* SSE reader over fetch (POST streaming). */
+async function sendToAgent(text, memoryDirective) {
+  const body = JSON.stringify({ text, memory_directive: !!memoryDirective });
+  let res;
+  try {
+    res = await fetch(`${BASE}/api/message`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OMLLM-Token": BOOT.token },
+      body,
+    });
+  } catch (e) { toast(`bridge unreachable: ${e.message}`, "err"); return false; }
+  if (res.status === 202) { toast("queued into the running turn", ""); return true; }
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}));
+    toast(d.error || "request failed", "err");
+    return false;
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    let idx;
+    while ((idx = buf.indexOf("\n\n")) >= 0) {
+      const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
+      const ev = (frame.match(/^event: (.*)$/m) || [])[1] || "message";
+      const dl = (frame.match(/^data: (.*)$/m) || [])[1] || "{}";
+      handleEvent(ev, JSON.parse(dl));
+      if (ev === "done") return true;
+    }
+  }
+  return true;
+}
+
+function handleEvent(ev, d) {
+  switch (ev) {
+    case "token": updateLive(d.text || ""); break;
+    case "assistant_note": {
+      const nt = (d.text || "").trim();
+      if (nt && nt !== liveText.trim()) addMsg("systemish", nt, "systemish");
+      sealLive();
+      break;
+    }
+    case "tool_plan": {
+      sealLive();
+      const cls = d.allowed ? "" : "err";
+      const el = addEvline(`${(d.level || "low").toLowerCase()}/L${d.risk ?? "?"}`, planSummary(d), cls);
+      if (d.args && Object.keys(d.args).length) {
+        const det = document.createElement("details"); det.className = "args-det";
+        const sm = document.createElement("summary"); sm.textContent = "args";
+        const pre = document.createElement("pre"); pre.textContent = JSON.stringify(d.args, null, 1);
+        det.append(sm, pre); el.appendChild(det);
+      }
+      pushToolLog(d.name, planSummary(d), "run");
+      break;
+    }
+    case "tool_result": {
+      if (state.fileNode) { state.fileNode.det.remove(); state.fileNode = null; }
+      const cls = d.ok ? "ok" : "err";
+      const tag = d.blocked ? "blocked" : d.denied ? "denied" : d.ok ? "ok" : "fail";
+      const summary = d.file && d.ok
+        ? (d.file.created ? `📄 created ${d.file.path}  +${d.file.added || 0}` : `✏️ edited ${d.file.path}  -${d.file.removed || 0} ~${d.file.changed || 0} +${d.file.added || 0}`)
+        : `${d.name}: ${firstLine(d.output)}`;
+      addEvline(tag, summary, cls, d.duration_ms != null ? `${Math.round(d.duration_ms)} ms` : "");
+      pushToolLog(d.name, tag, d.ok ? "ok" : "err");
+      break;
+    }
+    case "memory_activity": toast(`memory: ${d.tool}`, d.ok ? "" : "err"); pulsePulse(); break;
+    case "tool_stream": liveThinkProgress(d.name, d.chars); liveFileProgress(d); break;
+    case "compaction": addEvline("ctx", `🗜 compacted ${d.before}→${d.after} messages`, "dim"); break;
+    case "interjection": addMsg("user", d.text || ""); break;
+    case "retry": addEvline("retry", d.reason || "", "warn"); break;
+    case "thinking": state.reasonBuf = ""; state.thinkNode = null; addEvline("think", `💭 reasoning (step ${d.step || "?"})`, "dim"); break;
+    case "thinking_text": liveThink(d.text || ""); break;
+    case "error": sealLive(); addEvline("error", d.message || "", "err"); break;
+    case "approval_request": queueApproval(d); break;
+    case "ping": break;
+    case "done": {
+      sealLive();
+      state.streaming = false;
+      $("#cancel").hidden = true; $("#send").disabled = false;
+      if (d.error) addEvline("error", d.error, "err");
+      const rtext = (state.thinkNode === "sealed" || state.thinkNode) ? "" : (d.reasoning || state.reasonBuf || "");
+      if (rtext.trim()) {
+        const det = document.createElement("details"); det.className = "think-details";
+        const sm = document.createElement("summary"); sm.textContent = "💭 thinking process";
+        const bd = document.createElement("div"); bd.className = "think-body"; bd.textContent = rtext;
+        det.append(sm, bd); $("#stream").append(det); scrollBottom();
+      }
+      state.reasonBuf = "";
+      const bits = [d.model || "", d.usage?.eval_count ? `${d.usage.eval_count} tok` : "", d.ttft_s ? `ttft ${d.ttft_s.toFixed(1)}s` : "", d.tokens_per_s ? `${d.tokens_per_s.toFixed(1)} tok/s` : "", d.steps ? `${d.steps} step${d.steps > 1 ? "s" : ""}` : "", d.calls?.length ? `${d.calls.length} tool call${d.calls.length > 1 ? "s" : ""}` : ""].filter(Boolean).join(" · ");
+      if (bits) addEvline("turn", bits, "ok");
+      refreshStatus();
+      break;
+    }
+  }
+}
+function firstLine(s) { const x = String(s || "").trim().split("\n")[0]; return x.length > 140 ? x.slice(0, 140) + "…" : x; }
+function shortArgs(a) {
+  try { const s = JSON.stringify(a || {}); return s.length > 90 ? s.slice(0, 90) + "…" : s; } catch { return ""; }
+}
+function pushToolLog(name, detail, kind) {
+  const ul = $("#tools-log");
+  if (ul.firstChild?.classList?.contains("muted")) ul.innerHTML = "";
+  const li = document.createElement("li");
+  li.className = kind;
+  li.innerHTML = `<b>${esc(name)}</b> ${esc(String(detail).replace(/[{}"]+/g, " ").slice(0, 52))}`;
+  ul.prepend(li);
+  while (ul.children.length > 30) ul.lastChild.remove();
+}
+function pulsePulse() { const p = $("#backend-dot"); p.classList.add("on"); }
+
+/* ------------------------------------------------------------ approvals */
+function queueApproval(d) {
+  state.approvalQueue.push(d);
+  if (state.approvalQueue.length === 1) showApproval(d);
+}
+function showApproval(d) {
+  $("#ap-risk").textContent = `${(d.level || "low").toUpperCase()} · risk ${d.risk ?? "?"}`;
+  $("#ap-risk").className = `risk-badge ${d.level === "critical" || d.level === "high" ? "exec" : d.level === "medium" ? "write" : "read"}`;
+  $("#ap-tool").textContent = d.tool;
+  $("#ap-mode").textContent = ` — mode: ${d.mode}`;
+  $("#ap-args").textContent = JSON.stringify(d.args, null, 1);
+  $("#ap-reasons").textContent = (d.reasons || []).join(" · ");
+  const prev = $("#ap-preview");
+  const previewText = d.preview || "";
+  if (previewText) {
+    prev.hidden = false;
+    prev.classList.add("diff");
+    prev.innerHTML = previewText.split("\n").map((l) => {
+      const e = esc(l);
+      if (l.startsWith("+")) return `<span class="add">${e}</span>`;
+      if (l.startsWith("-")) return `<span class="del">${e}</span>`;
+      if (l.startsWith("@@")) return `<span class="hunk">${e}</span>`;
+      return e;
+    }).join("\n");
+  } else prev.hidden = true;
+  openModal("#approval-modal");
+}
+function closeApproval() {
+  closeModal("#approval-modal");
+  state.approvalQueue.shift();
+  if (state.approvalQueue.length) showApproval(state.approvalQueue[0]);
+}
+async function answerApproval(decision) {
+  const d = state.approvalQueue[0];
+  if (!d) return;
+  try { await post(`/api/approval/${d.id}`, { decision }); }
+  catch (e) { toast(e.message, "err"); }
+  closeApproval();
+}
+["ap-allow", "ap-session", "ap-always", "ap-deny"].forEach((id) => {
+  document.getElementById(id).onclick = () => answerApproval(
+    ({ "ap-allow": "approve", "ap-session": "session", "ap-always": "always", "ap-deny": "deny" })[id]);
+});
+
+/* --------------------------------------------------------------- modals */
+function openModal(sel) { $("#scrim").hidden = false; $(sel).hidden = false; $(sel).querySelector("button, input, textarea")?.focus(); }
+function closeModal(sel) { $(sel).hidden = true; if (!$$(".modal").some((m) => !m.hidden)) $("#scrim").hidden = true; }
+$("#scrim").onclick = () => { if (state.approvalQueue.length) answerApproval("deny"); $$(".modal").forEach((m) => (m.hidden = true)); $("#scrim").hidden = true; };
+
+/* ---------------------------------------------------------------- views */
+function switchView(v) {
+  if (v === state.view && v !== "chats") return;
+  state.view = v;
+  $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
+  $$(".view").forEach((s) => (s.hidden = s.id !== `view-${v}`));
+  const titles = { chat: "Chat", chats: "Chats", models: "Models", backend: "Backend", memory: "Memory · soul.md", doctor: "Doctor", settings: "Settings", help: "Help & keys" };
+  $("#view-title").textContent = titles[v] || v;
+  if (v === "chats") renderChats();
+  if (v === "models") renderModels();
+  if (v === "backend") renderBackends();
+  if (v === "memory") renderSoul();
+  if (v === "doctor") renderDoctor();
+  if (v === "settings") renderSettings();
+  if (v === "help") renderHelp();
+}
+$$(".nav-item").forEach((b) => (b.onclick = () => switchView(b.dataset.view)));
+
+/* ---------------------------------------------------------------- chats */
+async function renderChats() {
+  const q = $("#chat-search").value.trim();
+  const pinned = $("#pinned-only").checked;
+  const data = await get(`/api/chats?q=${encodeURIComponent(q)}`);
+  let rows = data.chats || [];
+  if (pinned) rows = rows.filter((r) => r.pinned);
+  $("#chats-count").textContent = rows.length || "";
+  const grid = $("#chats-grid");
+  grid.innerHTML = "";
+  if (!rows.length) { grid.innerHTML = `<p class="muted" style="grid-column:1/-1">No chats yet.</p>`; return; }
+  rows.sort((a, b) => (b.pinned - a.pinned) || (b.updated - a.updated));
+  for (const r of rows) {
+    const card = document.createElement("article");
+    card.className = `chat-card${r.id === data.active ? " active" : ""}`;
+    card.tabIndex = 0;
+    card.innerHTML = `
+      <h4>${r.pinned ? '<span class="pin">◆</span>' : ""}${esc(r.title)}</h4>
+      <div class="meta">${esc(r.backend || "—")} · ${esc(r.model || "default")} · ${r.messages} msg · ${fmtDate(r.updated)}${r.tags?.length ? ` · ${r.tags.map(esc).join(" ")}` : ""}</div>
+      <p class="prev">${esc(r.preview || "")}</p>
+      <div class="acts">
+        <button class="iconbtn pin" title="${r.pinned ? "Unpin this chat" : "Pin this chat to the top"}">${r.pinned ? "◆ pinned" : "◇ pin"}</button>
+        <button class="iconbtn exp" title="Export this chat to markdown (shift/ctrl-click for JSON)">↧ export</button>
+        <button class="iconbtn ren" title="Rename this chat">✎ rename</button>
+        <button class="iconbtn del" title="Move this chat to the trash (an export is written first)">✕ delete</button>
+      </div>`;
+    card.onclick = async (e) => {
+      const btn = e.target.closest(".iconbtn");
+      if (!btn) { await openChat(r.id); return; }
+      e.stopPropagation();
+      if (btn.classList.contains("pin")) { await patch(`/api/chats/${r.id}`, { pinned: !r.pinned }); renderChats(); }
+      if (btn.classList.contains("exp")) { const res = await post(`/api/chats/${r.id}/export`, { format: "markdown" }); toast(`exported → ${res.path}`); }
+      if (btn.classList.contains("ren")) {
+        const t = prompt("New title:", r.title);
+        if (t) { await patch(`/api/chats/${r.id}`, { title: t }); renderChats(); }
+      }
+      if (btn.classList.contains("del")) {
+        if (confirm(`Move "${r.title}" to trash? (exports a backup first)`)) { await del(`/api/chats/${r.id}`); renderChats(); toast("moved to trash"); }
+      }
+    };
+    card.onkeydown = (e) => { if (e.key === "Enter") openChat(r.id); };
+    grid.appendChild(card);
+  }
+}
+async function openChat(sid) {
+  await loadSessionIntoView(sid);
+  switchView("chat");
+  refreshStatus();
+}
+$("#chat-search").oninput = debounce(renderChats, 250);
+$("#pinned-only").onchange = renderChats;
+$("#chats-refresh").onclick = renderChats;
+function debounce(f, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; }
+function fmtDate(ts) { const d = new Date(typeof ts === "number" ? ts * 1000 : ts); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }); }
+
+/* --------------------------------------------------------------- models */
+async function renderModels() {
+  const sel = $("#model-backend");
+  const be = sel.value || state.status?.backend || "mock";
+  if (!sel.options.length) {
+    sel.innerHTML = ["ollama", "lmstudio", "mock"].map((b) => `<option ${b === be ? "selected" : ""}>${b}</option>`).join("");
+  }
+  const data = await get(`/api/models?backend=${sel.value || be}`);
+  const tb = $("#models-table tbody");
+  tb.innerHTML = "";
+  const q = ($("#model-search").value || "").toLowerCase();
+  const rows = (data.models || []).filter((m) => m.name.toLowerCase().includes(q));
+  if (data.error) { $("#model-detail").textContent = `backend unreachable: ${data.error}`; }
+  else $("#model-detail").textContent = `${rows.length} model(s) · default: ${data.default || "none"}`;
+  for (const m of rows) {
+    const tr = document.createElement("tr");
+    if (m.name === data.default) tr.className = "active";
+    const tools = m.tool_capable ? '<span class="fit-ok">yes</span>' : `<span class="fit-tight" title="${esc(m.why_weak || "")}">weak</span>`;
+    tr.innerHTML = `
+      <td>${m.loaded ? '<span class="pulse on"></span>' : ""}</td>
+      <td style="white-space:normal"><b>${esc(m.name)}</b>${m.warnings?.length ? `<br><small class="muted">${m.warnings.map(esc).join("; ")}</small>` : ""}</td>
+      <td>${m.size || "—"}</td><td>${esc(m.quant || "")}</td><td>${m.params_b ? m.params_b + "B" : "—"}</td>
+      <td>${m.ctx_len || "—"}</td>
+      <td>${m.vram_min ? gib(m.vram_min) : "—"}</td>
+      <td>${m.vram_comfortable ? gib(m.vram_comfortable) : "—"}</td>
+      <td class="fit-${m.fit === "ok" ? "ok" : m.fit === "tight" ? "tight" : m.fit === "over" ? "over" : ""}">${m.fit}</td>
+      <td>${tools}</td>
+      <td><button class="btn small use">use</button></td>`;
+    tr.querySelector(".use").onclick = async () => {
+      await post("/api/model", { backend: sel.value || be, model: m.name });
+      toast(`${m.name} → default`); renderModels(); refreshStatus();
+    };
+    tr.ondblclick = () => tr.querySelector(".use").click();
+    tb.appendChild(tr);
+  }
+}
+const gib = (b) => (b / 2 ** 30).toFixed(1) + " GiB";
+$("#models-refresh").onclick = renderModels;
+$("#model-backend").onchange = renderModels;
+$("#model-search").oninput = debounce(renderModels, 200);
+$("#models-pull").onclick = async () => {
+  const name = prompt("Ollama model tag to pull (e.g. qwen2.5:7b-instruct):");
+  if (!name) return;
+  const bar = $("#pull-bar"); bar.hidden = false; bar.value = 0;
+  try {
+    const res = await fetch(`${BASE}/api/pull`, { method: "POST", headers: { "Content-Type": "application/json", "X-OMLLM-Token": BOOT.token }, body: JSON.stringify({ backend: "ollama", name }) });
+    const r = res.body.getReader(), d = new TextDecoder(); let buf = "";
+    while (true) {
+      const { done, value } = await r.read(); if (done) break;
+      buf += d.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const f = buf.slice(0, i); buf = buf.slice(i + 2);
+        const dl = (f.match(/^data: (.*)$/m) || [])[1] || "{}";
+        const j = JSON.parse(dl);
+        if (f.startsWith("event: progress")) { bar.value = (j.pct || 0) * 100; }
+        if (f.startsWith("event: done")) { bar.hidden = true; j.ok ? toast(`pulled ${name}`) : toast(`pull failed: ${j.error}`, "err"); renderModels(); }
+      }
+    }
+  } catch (e) { bar.hidden = true; toast(`pull failed: ${e.message}`, "err"); }
+};
+
+/* -------------------------------------------------------------- backend */
+async function renderBackends() {
+  const rows = await get("/api/backends");
+  const cards = $("#backend-cards");
+  cards.innerHTML = "";
+  const cur = state.config?.default_backend;
+  const meta = {
+    ollama: { t: "Ollama", d: "Local llama.cpp server with first-class tool calling.", url: state.config?.ollama?.host },
+    lmstudio: { t: "LM Studio", d: "Desktop app exposing an OpenAI-compatible API.", url: state.config?.lmstudio?.base_url },
+    mock: { t: "Mock backend", d: "Scripted agent for demos and tests — no model required.", url: null },
+  };
+  for (const k of Object.keys(meta)) {
+    const r = rows[k] || {};
+    const el = document.createElement("div");
+    el.className = `be-card-ui${k === cur ? " sel" : ""}`;
+    el.innerHTML = `
+      <h3><span class="pulse ${r.running ? "on" : k === "mock" ? "on" : "off"}"></span>${meta[k].t}</h3>
+      <p class="be-row">${meta[k].d}</p>
+      <p class="be-row mono small">${r.running ? (r.health ? "running · " + esc(r.health) : "running") : r.installed ? "installed · not running" : "not detected"}${meta[k].url ? ` · ${esc(meta[k].url)}` : ""}</p>
+      <div class="be-acts">
+        <button class="btn small use">default</button>
+        ${k !== "mock" ? '<button class="btn small start">start</button>' : ""}
+      </div>`;
+    el.querySelector(".use").onclick = async () => { await post("/api/backend", { name: k }); toast(`${meta[k].t} is now the default`); refreshStatus(); renderBackends(); };
+    const st = el.querySelector(".start");
+    if (st) st.onclick = async () => {
+      st.disabled = true; st.textContent = "starting…";
+      const res = await post("/api/backend", { name: k, start: true });
+      toast(res.message || (res.ok ? "started" : "not started"), res.ok ? "" : "warn");
+      if (!res.ok && res.instructions?.length) { const ins = $("#backend-instructions"); ins.hidden = false; ins.textContent = res.instructions.join("\n"); } else { $("#backend-instructions").hidden = true; }
+      st.disabled = false; st.textContent = "start";
+      renderBackends();
+    };
+    cards.appendChild(el);
+  }
+}
+
+/* ---------------------------------------------------------------- soul */
+async function renderSoul() {
+  const d = await get("/api/soul");
+  $("#soul-editor").value = d.text;
+  $("#soul-path").textContent = d.path;
+  const w = $("#mem-writes"); w.checked = !!(state.config?.memory?.agent_writes);
+  w.onchange = async () => { await saveConfig({ memory: { ...state.config.memory, agent_writes: w.checked } }); };
+  $("#soul-recent").innerHTML = (d.recent || []).map((r) => `<div><b>${fmtDate(r.ts)}</b> ${esc(r.action)} ${esc((r.text || "").slice(0, 70))}</div>`).join("");
+}
+$("#soul-save").onclick = async () => { await post("/api/soul", { action: "write", text: $("#soul-editor").value }); toast("soul.md saved (backup kept)"); renderSoul(); };
+$("#soul-revert").onclick = async () => { await post("/api/soul", { action: "revert" }); toast("reverted to latest backup"); renderSoul(); };
+$("#soul-clear").onclick = async () => { if (confirm("Clear soul.md? (a backup is kept first)")) { await post("/api/soul", { action: "clear" }); renderSoul(); toast("cleared"); } };
+
+/* -------------------------------------------------------------- doctor */
+async function renderDoctor() {
+  const list = $("#doctor-list");
+  list.innerHTML = `<li class="muted">running checks…</li>`;
+  const d = await get("/api/doctor");
+  list.innerHTML = "";
+  const icon = { pass: "PASS", warn: "WARN", fail: "FAIL", skip: "SKIP" };
+  for (const c of d.checks) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="st ${c.status}">${icon[c.status] || c.status}</span><span>${esc(c.label)}<br><small class="muted">${esc(c.detail)}</small></span>${c.fix ? `<span class="hint">${esc(c.fix)}</span>` : ""}`;
+    list.appendChild(li);
+  }
+  const sm = d.summary || {}; list.insertAdjacentHTML("beforeend", `<li class="muted">${sm.pass||0} pass · ${sm.warn||0} warn · ${sm.fail||0} fail</li>`);
+}
+$("#doctor-run").onclick = renderDoctor;
+
+/* ------------------------------------------------------------ settings */
+const SCHEMA = [
+  ["§", "general"],
+  ["default_backend", "backend", "select", ["ollama", "lmstudio", "mock"]],
+  ["§", "ollama"],
+  ["ollama.host", "host", "text"], ["ollama.binary", "binary name", "text"],
+  ["ollama.auto_start", "auto-start server", "bool"], ["ollama.startup_timeout", "startup timeout s", "num"],
+  ["§", "lm studio"],
+  ["lmstudio.base_url", "base URL", "text"], ["lmstudio.auto_start", "auto-start", "bool"],
+  ["lmstudio.binary_path", "app path (optional)", "text"],
+  ["§", "generation"],
+  ["generation.temperature", "temperature", "num"], ["generation.top_p", "top_p", "num"],
+  ["generation.top_k", "top_k", "num"], ["generation.repeat_penalty", "repeat penalty", "num"],
+  ["generation.num_ctx", "context window", "num"], ["generation.num_gpu", "gpu layers (-1=all)", "num"],
+  ["generation.num_batch", "batch size", "num"], ["generation.max_tokens", "max tokens", "num"],
+  ["§", "agent"],
+  ["agent.max_steps", "max steps per turn", "num"], ["agent.max_parse_retries", "parse retries", "num"],
+  ["agent.tool_timeout", "tool timeout s", "num"],
+  ["agent.native_tools", "native tools", "select", ["auto", "force", "off"]],
+  ["agent.react_fallback", "ReAct fallback", "bool"],
+  ["§", "memory"],
+  ["memory.enabled", "soul memory enabled", "bool"], ["memory.agent_writes", "agent may write memories", "bool"],
+  ["memory.require_explicit_save", "require explicit save intent", "bool"],
+  ["memory.max_inject_chars", "inject budget chars", "num"], ["memory.backups_keep", "backups kept", "num"],
+  ["§", "safety"],
+  ["safety.command_allowlist_extra", "extra allowlisted commands (comma)", "list"],
+  ["safety.command_denylist", "hard-denied commands (comma)", "list"],
+  ["safety.allow_sensitive_paths", "sensitive-path re-allow globs (comma)", "list"],
+  ["safety.workspace_write_requires_confirmation", "confirm workspace writes", "bool"],
+  ["safety.catastrophic_override", "override catastrophic block (dangerous!)", "bool"],
+  ["safety.http_fetch_enabled", "network tool enabled", "bool"],
+  ["§", "danger guard (clef-flash, cpu)"],
+  ["guard.enabled", "flag dangerous calls in dangerous/full-access modes", "bool"],
+  ["guard.base_url", "decision server URL", "text"],
+  ["guard.model", "decision model", "text"],
+  ["guard.danger_threshold", "danger threshold (0-1)", "num"],
+  ["guard.timeout_s", "guard timeout s", "num"],
+];
+async function renderSettings() {
+  if (!state.config) state.config = await get("/api/config");
+  const g = $("#settings-form");
+  g.innerHTML = "";
+  const gv = (p) => p.split(".").reduce((o, k) => (o || {})[k], state.config);
+  const sv = (p, v) => { const ks = p.split("."); let o = state._draft; ks.forEach((k, i) => { if (i === ks.length - 1) o[k] = v; else o = o[k] = { ...(o[k] || {}) }; }); };
+  state._draft = JSON.parse(JSON.stringify(state.config));
+  for (const row of SCHEMA) {
+    if (row[0] === "§") { g.insertAdjacentHTML("beforeend", `<div class="set-row section"><label>${row[1]}</label></div>`); continue; }
+    const [path, label, kind, min, max] = row;
+    const val = gv(path);
+    let input;
+    if (kind === "bool") input = `<input type="checkbox" data-p="${path}" ${val ? "checked" : ""}>`;
+    else if (kind === "select") input = `<select data-p="${path}">${min.map((o) => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`;
+    else if (kind === "num") input = `<input type="number" data-p="${path}" value="${val ?? 0}" ${row[3] != null ? `min=${row[3]}` : ""} ${row[4] != null ? `max=${row[4]}` : ""} step="any">`;
+    else if (kind === "list") input = `<input type="text" class="wide" data-p="${path}" value="${esc((val || []).join(", "))}">`;
+    else input = `<input type="text" class="wide" data-p="${path}" value="${esc(val ?? "")}">`;
+    g.insertAdjacentHTML("beforeend", `<div class="set-row"><label>${label}</label>${input.replace("data-p=", 'data-k="${kind}" data-p=')}</div>`);
+  }
+  g.querySelectorAll("[data-p]").forEach((el) => {
+    el.onchange = () => {
+      let v = el.type === "checkbox" ? el.checked : el.type === "number" ? parseFloat(el.value) : el.value;
+      if (el.dataset.k === "list") v = String(v).split(",").map((x) => x.trim()).filter(Boolean);
+      sv(el.dataset.p, v);
+    };
+  });
+}
+$("#settings-save").onclick = async () => {
+  const merged = state._draft;
+  const res = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
+  state.config = res.config; toast("settings saved"); refreshStatus();
+};
+async function saveConfig(partial) {
+  const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
+  Object.assign(merged, partial);
+  const res = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
+  state.config = res.config; refreshStatus();
+}
+
+/* ---------------------------------------------------------------- help */
+function renderHelp() {
+  $("#help-body").innerHTML = `
+  <h3>keys</h3>
+  <table><tr><td><kbd>Ctrl K</kbd></td><td>command palette</td></tr>
+  <tr><td><kbd>Ctrl N</kbd></td><td>new chat</td></tr><tr><td><kbd>Ctrl O</kbd></td><td>chats</td></tr>
+  <tr><td><kbd>Ctrl M</kbd></td><td>models</td></tr><tr><td><kbd>Ctrl B</kbd></td><td>backend</td></tr>
+  <tr><td><kbd>Ctrl S</kbd></td><td>memory</td></tr><tr><td><kbd>Ctrl D</kbd></td><td>doctor</td></tr>
+  <tr><td><kbd>Ctrl G</kbd></td><td>settings</td></tr><tr><td><kbd>Ctrl P</kbd></td><td>permission mode</td></tr>
+  <tr><td><kbd>Esc</kbd></td><td>close modal / stop</td></tr><tr><td><kbd>Enter</kbd></td><td>send · <kbd>Shift Enter</kbd> newline</td></tr></table>
+  <h3>slash commands</h3>
+  <table>
+  <tr><td><code>/remember &lt;fact&gt;</code></td><td>write a durable memory to soul.md</td></tr>
+  <tr><td><code>/new</code></td><td>start a fresh session</td></tr>
+  <tr><td><code>/rename &lt;title&gt;</code></td><td>rename the current chat</td></tr>
+  <tr><td><code>/export [md|json]</code></td><td>export the current chat</td></tr>
+  <tr><td><code>/models</code></td><td>open the model list</td></tr>
+  <tr><td><code>/mode &lt;name&gt;</code></td><td>request a permission mode (full_access needs the typed phrase)</td></tr>
+  <tr><td><code>/clear</code></td><td>empty the visible stream</td></tr>
+  <tr><td><code>/help</code></td><td>this screen</td></tr></table>
+  <h3>permission modes</h3>
+  <table>
+  <tr><td><b>strict</b></td><td>read-only tools auto; every write/exec asks approval</td></tr>
+  <tr><td><b>safe</b> (default)</td><td>reads auto; writes/execs within risk bounds ask; network gated</td></tr>
+  <tr><td><b>sandboxed</b></td><td>exec limited to an allowlist; writes stay in the workspace</td></tr>
+  <tr><td><b>dangerous</b></td><td>most approvals skipped; destructive ops still gated</td></tr>
+  <tr><td><b>full_access</b></td><td>no approvals. Requires typing <code>I ACCEPT FULL ACCESS</code>. Catastrophic commands stay blocked.</td></tr></table>
+  <h3>memory</h3>
+  <p><code>soul.md</code> is plain Markdown the agent reads every session and may update (if allowed). Backups are kept automatically; use the Memory screen to edit, revert, or clear.</p>
+  <h3>privacy</h3>
+  <p>OhMyLLM talks only to local model servers (Ollama / LM Studio / mock) over loopback. Nothing leaves this machine unless you enable the gated <code>http_fetch</code> tool yourself. The GUI bridge binds 127.0.0.1 only and requires a per-process token.</p>`;
+}
+
+/* ------------------------------------------------------------- composer */
+const SLASHES = [
+  ["/remember", "write a memory"], ["/new", "fresh chat"], ["/rename", "rename chat"],
+  ["/export", "export chat"], ["/models", "model list"], ["/mode", "permission mode"],
+  ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"],
+];
+$("#input").addEventListener("input", () => {
+  autoGrow();
+  const v = $("#input").value;
+  if (v.startsWith("/") && !v.includes("\n")) {
+    const m = v.slice(1).split(" ")[0].toLowerCase();
+    const hits = SLASHES.filter((s) => s[0].slice(1).startsWith(m));
+    const hint = $("#slash-hint");
+    if (hits.length && hits.length < 9 && m) {
+      hint.hidden = false;
+      hint.innerHTML = hits.map(([c, d], i) => `<div class="${i === 0 ? "sel" : ""}" data-c="${c}"><b>${c}</b><span class="muted">${d}</span></div>`).join("");
+      hint.querySelectorAll("div").forEach((dv) => (dv.onclick = () => { $("#input").value = dv.dataset.c + " "; $("#input").focus(); hint.hidden = true; }));
+    } else hint.hidden = true;
+  } else $("#slash-hint").hidden = true;
+});
+$("#input").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { $("#slash-hint").hidden = true; if (state.streaming) post("/api/cancel", {}); }
+  if ($("#slash-hint").hidden !== true && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
+    const sel = $("#slash-hint .sel");
+    if (sel) { e.preventDefault(); sel.click(); return; }
+  }
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const opts = $$("#slash-hint div");
+    if (opts.length) {
+      e.preventDefault();
+      const i = opts.findIndex((o) => o.classList.contains("sel"));
+      opts[i]?.classList.remove("sel");
+      const j = (i + (e.key === "ArrowDown" ? 1 : opts.length - 1)) % opts.length;
+      opts[j].classList.add("sel");
+    }
+  }
+});
+function autoGrow() { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 240) + "px"; }
+
+$("#composer").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = $("#input").value.trim();
+  if (!text || state.streaming) return;
+  $("#input").value = ""; autoGrow(); $("#slash-hint").hidden = true;
+  if (text.startsWith("/") && !text.startsWith("/remember")) { handleSlash(text); return; }
+  addMsg("user", text);
+  if (text.startsWith("/remember")) $("#input").value = "";
+  state.streaming = true;
+  $("#send").disabled = true; $("#cancel").hidden = false;
+  const mem = text.startsWith("/remember");
+  const payload = mem ? text.slice("/remember".length).trim() || "important fact from user" : text;
+  await sendToAgent(payload, mem);
+  if (state.streaming) { state.streaming = false; $("#send").disabled = false; $("#cancel").hidden = true; }
+});
+$("#cancel").onclick = () => post("/api/cancel", {});
+
+function handleSlash(text) {
+  const [cmd, ...rest] = text.split(" ");
+  const arg = rest.join(" ");
+  switch (cmd.toLowerCase()) {
+    case "/new": newChat(); break;
+    case "/clear": emptyState(); break;
+    case "/help": switchView("help"); break;
+    case "/models": switchView("models"); break;
+    case "/backend": switchView("backend"); break;
+    case "/rename": if (state.session) patch(`/api/chats/${state.session}`, { title: arg || "renamed" }).then(refreshStatus); break;
+    case "/export": if (state.session) post(`/api/chats/${state.session}/export`, { format: arg.includes("json") ? "json" : "markdown" }).then((r) => toast(`exported → ${r.path}`)); break;
+    case "/mode": setModeUi(arg); break;
+    default: addEvline("note", `unknown command ${cmd}`);
+  }
+}
+
+async function newChat() {
+  const s = await post("/api/chats", {});
+  state.session = s.id;
+  clearStream(); emptyState();
+  $("#g-title").textContent = s.title;
+  refreshStatus();
+}
+$("#btn-new").onclick = newChat;
+
+/* ------------------------------------------------------------ mode chip */
+async function setModeUi(preset) {
+  const m = document.createElement("div");
+  m.className = "modal"; m.id = "mode-modal";
+  const modes = ["strict", "safe", "sandboxed", "dangerous", "full_access"];
+  m.innerHTML = `<header><h3>permission mode</h3><span class="risk-badge ${state.status?.mode === "full_access" ? "exec" : "read"}">${esc(state.status?.mode || "")}</span></header>
+  <div class="ap-body">${modes.map((x) => `<div class="opt" data-m="${x}" role="button" tabindex="0"><div><b>${x}</b><div class="d small muted">${MODE_DESC[x]}</div></div></div>`).join("")}
+  ${preset && modes.includes(preset) ? "" : ""}</div>
+  <footer><span class="muted small">The model can never change this; only you can. full_access requires a typed confirmation.</span><span class="spacer"></span><button class="btn" id="mode-close">Close</button></footer>`;
+  document.body.appendChild(m);
+  $("#scrim").hidden = false; m.hidden = false;
+  m.querySelectorAll(".opt").forEach((o) => {
+    o.onclick = async () => {
+      const mode = o.dataset.m;
+      if (mode === "full_access") {
+        const ph = prompt('Type the exact phrase shown in the sidebar ("I ACCEPT FULL ACCESS") to enable full access:');
+        try { await post("/api/mode", { mode, phrase: ph || "" }); toast("full access enabled"); }
+        catch (e) { toast(e.message, "err"); return; }
+      } else {
+        await post("/api/mode", { mode }); toast(`mode → ${mode}`);
+      }
+      m.remove(); $("#scrim").hidden = true; refreshStatus();
+    };
+    if (preset && o.dataset.m === preset) o.click();
+  });
+  document.getElementById("mode-close").onclick = () => { m.remove(); $("#scrim").hidden = true; };
+}
+$("#chip-mode").onclick = () => setModeUi();
+const MODE_DESC = {
+  strict: "Reads auto. Every write or command needs approval.",
+  safe: "Reads auto; risky ops ask. Network gated. (recommended)",
+  sandboxed: "Exec limited to an allowlist; writes stay in the workspace.",
+  dangerous: "Approvals mostly skipped; catastrophic still blocked.",
+  full_access: "No approvals at all. You own everything that happens.",
+};
+
+/* --------------------------------------------------------------- status */
+async function refreshStatus() {
+  try {
+    const s = await get("/api/status");
+    state.status = s;
+    const dot = $("#backend-dot");
+    dot.className = `pulse ${s.backend_ready ? "on" : "off"}`;
+    $("#brand-sub").textContent = `${s.backend} · ${s.workspace.split("/").pop() || s.workspace}`;
+    $("#version").textContent = `v${s.version} · soul: ${s.soul.split("/").pop()}`;
+    $("#chip-model").textContent = s.model || "no model";
+    $("#chip-model").title = `model · ${s.backend}`;
+    const mode = $("#chip-mode");
+    mode.textContent = `⦿ ${s.mode}`;
+    mode.className = `chip mode-${s.mode}`;
+    const gpu = s.gpu?.[0];
+    $("#chip-gpu").textContent = gpu ? `${gpu.model.slice(0, 22)} · ${gpu.total}` : "cpu only";
+    $("#chip-toks").textContent = s.busy ? `${(s.tok_s || 0).toFixed(1)} tok/s` : "idle";
+    $("#save-flag").textContent = s.saved ? "saved" : "";
+    $("#g-vram").textContent = gpu ? `${gpu.free ?? "?"} free / ${gpu.total}` : "—";
+    $("#g-vram-note").textContent = s.gpu_total_bytes ? gib(s.gpu_total_bytes) + " total" : "";
+    const ctx = $("#ctx-fill");
+    const frac = Math.min(1, (s.ctx_used || 0) / Math.max(4096, s.ctx_window || 8192));
+    ctx.style.width = (frac * 100).toFixed(1) + "%";
+    ctx.classList.toggle("hot", frac > 0.85);
+    $("#ctx-label").textContent = `~${s.ctx_used || 0} tok / ctx ${s.ctx_window || "?"}`;
+    $("#audit-note").textContent = `every gated action is journaled in ~/.ohmyllm/logs/audit.jsonl`;
+    if (s.session && s.session !== state.session) state.session = s.session;
+    $("#g-title").textContent = s.session_title || "—";
+    if (!state.config) state.config = await get("/api/config");
+  } catch (e) {
+    $("#boot-error").hidden = false; $("#boot-error-msg").textContent = e.message;
+  }
+}
+
+/* -------------------------------------------------------------- palette */
+const CMDS = [
+  ["New chat", () => newChat(), "Ctrl N"], ["Open chats", () => switchView("chats"), "Ctrl O"],
+  ["Models", () => switchView("models"), "Ctrl M"], ["Backend", () => switchView("backend"), "Ctrl B"],
+  ["Memory (soul.md)", () => switchView("memory"), "Ctrl S"], ["Doctor", () => switchView("doctor"), "Ctrl D"],
+  ["Settings", () => switchView("settings"), "Ctrl G"], ["Help", () => switchView("help"), "Ctrl H"],
+  ["Permission mode…", () => setModeUi(), "Ctrl P"], ["Stop current turn", () => post("/api/cancel", {})],
+  ["Re-run backend probe", () => { renderBackends(); refreshStatus(); }],
+  ["Remember something…", () => { $("#input").value = "/remember "; $("#composer").requestSubmit?.() ?? switchView("chat"); $("#input").focus(); }],
+];
+let palSel = 0;
+function openPalette() {
+  $("#palette-input").value = ""; palSel = 0;
+  renderPalette("");
+  openModal("#palette-modal"); $("#palette-input").focus();
+}
+function renderPalette(q) {
+  const hits = CMDS.filter((c) => c[0].toLowerCase().includes(q.toLowerCase()));
+  $("#palette-list").innerHTML = hits.map((c, i) => `<li class="${i === palSel ? "sel" : ""}" data-i="${i}">${c[0]}<small>${c[2] || ""}</small></li>`).join("");
+  $$("#palette-list li").forEach((li) => (li.onclick = () => { hits[+li.dataset.i][1](); closeModal("#palette-modal"); $("#scrim").hidden = true; }));
+  return hits;
+}
+$("#open-palette").onclick = openPalette;
+$("#palette-input").oninput = () => { palSel = 0; renderPalette($("#palette-input").value); };
+$("#palette-input").onkeydown = (e) => {
+  const hits = renderPalette($("#palette-input").value);
+  if (e.key === "ArrowDown") { palSel = Math.min(palSel + 1, hits.length - 1); renderPalette($("#palette-input").value); }
+  if (e.key === "ArrowUp") { palSel = Math.max(palSel - 1, 0); renderPalette($("#palette-input").value); }
+  if (e.key === "Enter" && hits[palSel]) { hits[palSel][1](); closeModal("#palette-modal"); $("#scrim").hidden = true; }
+  if (e.key === "Escape") { closeModal("#palette-modal"); $("#scrim").hidden = true; }
+};
+
+/* ------------------------------------------------------------- wizard */
+const WZ = [
+  { t: "Welcome to OhMyLLM", b: `<p>Your own agent runtime on your own machine. Models stay local, tools are permission-gated, and memory lives in a plain <code>soul.md</code> you own.</p><p class="muted small">This setup runs once; you can redo everything later from the sidebar.</p>` },
+  { t: "Your hardware", b: `<div id="wz-hw" class="muted">detecting…</div>` },
+  { t: "Pick a backend", b: `<div id="wz-be"></div>` },
+  { t: "Pick a model", b: `<div id="wz-md">choose a backend first</div>` },
+  { t: "Permission mode", b: `<div id="wz-mode"></div>` },
+  { t: "Who are you?", b: `<p>The agent's memory starts empty. Tell it a little — these go into <b>soul.md</b>.</p>
+    <input type="text" id="wz-name" placeholder="Your name" style="width:100%;margin-bottom:8px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:9px 12px;color:var(--fg)">
+    <input type="text" id="wz-ctx" placeholder="What you're working on" style="width:100%;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:9px 12px;color:var(--fg)">` },
+  { t: "Ready", b: `<p>Seeded. A few things to try:</p>
+    <div class="opt"><div><b>“list files in . and summarize”</b><div class="d">a gated tool run with an approval card</div></div></div>
+    <div class="opt"><div><b>“remember: my rabbit is called Bnuy”</b><div class="d">persistent memory — check the Memory screen after</div></div></div>
+    <div class="opt"><div><b>press <kbd>Ctrl K</kbd></b><div class="d">everything is one keystroke away</div></div></div>` },
+];
+let wzIdx = 0;
+function wzShow() {
+  $("#wz-steps").innerHTML = WZ.map((_, i) => `<i class="${i < wzIdx ? "done" : i === wzIdx ? "cur" : ""}"></i>`).join("");
+  $("#wz-body").innerHTML = `<h2>${WZ[wzIdx].t}</h2>` + WZ[wzIdx].b;
+  $("#wz-back").disabled = wzIdx === 0;
+  $("#wz-next").textContent = wzIdx === WZ.length - 1 ? "Start chatting" : "Next";
+  if (wzIdx === 1) wzHw();
+  if (wzIdx === 2) wzBe();
+  if (wzIdx === 3) wzModels();
+  if (wzIdx === 4) wzMode();
+}
+async function wzHw() {
+  const el = $("#wz-hw");
+  const s = state.status || (await (await fetch(`${BASE}/api/status`, { headers: { "X-OMLLM-Token": BOOT.token } })).json());
+  const gpus = s.gpu || [];
+  el.innerHTML = gpus.length
+    ? gpus.map((g) => `<div class="be-row"><span class="tagpill">${esc(g.model)}</span> ${g.total}${g.free ? ` · ${g.free} free` : ""}</div>`).join("")
+    : `<div class="be-row">No GPU detected — CPU inference works, small quantized models recommended.</div>`;
+  el.insertAdjacentHTML("beforeend", `<p class="muted small" style="margin-top:10px">backend: ${esc(s.backend)} · mode: ${esc(s.mode)}</p>`);
+}
+async function wzBe() {
+  const el = $("#wz-be"); if (!el) return;
+  const rows = await get("/api/backends");
+  el.innerHTML = "";
+  [["ollama", "Ollama — tool-calling llama.cpp server"], ["lmstudio", "LM Studio — desktop app API"], ["mock", "Mock — scripted agent, no install needed"]]
+    .forEach(([k, t]) => {
+      const o = document.createElement("div");
+      o.className = "opt" + (state.config?.default_backend === k ? " sel" : "");
+      const st = rows[k]?.running ? '<span class="fit-ok">● running</span>' : rows[k]?.installed ? '<span class="fit-tight">○ installed</span>' : '<span class="muted">– not found</span>';
+      o.innerHTML = `<div><span class="t">${t.split(" — ")[0]}</span> ${st}<div class="d">${t.split(" — ")[1]}</div></div>`;
+      o.onclick = async () => { el.querySelectorAll(".opt").forEach((x) => x.classList.remove("sel")); o.classList.add("sel"); await post("/api/backend", { name: k }); state.config = await get("/api/config"); el.dataset.pick = k; refreshStatus(); };
+      el.appendChild(o);
+    });
+}
+async function wzModels() {
+  const el = $("#wz-md"); if (!el) return;
+  el.innerHTML = `<p class="muted small">loading…</p>`;
+  const be = state.config?.default_backend || "mock";
+  const d = await get(`/api/models?backend=${be}`);
+  if (d.error) { el.innerHTML = `<p class="fit-tight">backend not reachable: ${esc(d.error)}</p><p class="muted small">Pick <b>Backend → start</b> later, or use the mock backend — it works offline.</p>`; return; }
+  el.innerHTML = "";
+  (d.models || []).forEach((m) => {
+    const o = document.createElement("div");
+    o.className = "opt" + (m.name === d.default ? " sel" : "");
+    o.innerHTML = `<div><span class="t">${esc(m.name)}</span><div class="d">${m.size} · ${m.fit} fit${m.tool_capable ? " · tools ok" : " · tools weak"}</div></div>`;
+    o.onclick = async () => { el.querySelectorAll(".opt").forEach((x) => x.classList.remove("sel")); o.classList.add("sel"); await post("/api/model", { backend: be, model: m.name }); refreshStatus(); };
+    el.appendChild(o);
+  });
+  if (!d.models?.length) el.innerHTML = `<p class="muted">No models pulled yet — that's fine, continue and pull one later from <b>Models → Pull</b>.</p>`;
+}
+function wzMode() {
+  const el = $("#wz-mode"); if (!el) return;
+  el.innerHTML = "";
+  [["safe", "Safe — recommended default"], ["strict", "Strict — approve everything that changes things"], ["sandboxed", "Sandboxed — allowlisted commands, workspace-scoped writes"]].forEach(([m, t]) => {
+    const o = document.createElement("div");
+    o.className = "opt" + (state.status?.mode === m ? " sel" : "");
+    o.innerHTML = `<div><span class="t">${t.split(" — ")[0]}</span><div class="d">${t.split(" — ")[1]}</div></div>`;
+    o.onclick = async () => { el.querySelectorAll(".opt").forEach((x) => x.classList.remove("sel")); o.classList.add("sel"); await post("/api/mode", { mode: m }); refreshStatus(); };
+    el.appendChild(o);
+  });
+  el.insertAdjacentHTML("beforeend", `<p class="muted small">dangerous & full_access exist but must be chosen later, deliberately.</p>`);
+}
+async function wzSeed() {
+  const name = $("#wz-name")?.value.trim(), ctx = $("#wz-ctx")?.value.trim();
+  if (name) await post("/api/soul", { action: "upsert", section: "Identity", text: `user's name is ${name}` });
+  if (ctx) await post("/api/soul", { action: "upsert", section: "Current Work", text: ctx });
+}
+$("#wz-next").onclick = async () => {
+  if (wzIdx === 5) await wzSeed();
+  wzIdx++;
+  if (wzIdx >= WZ.length) { $("#wizard").hidden = true; localStorage.setItem("omllm_setup_done", "1"); await patch("/api/config", { first_run_completed: true }); toast("welcome aboard"); refreshStatus(); return; }
+  wzShow();
+};
+$("#wz-back").onclick = () => { if (wzIdx) { wzIdx--; wzShow(); } };
+
+/* --------------------------------------------------------------- global keys */
+const KEYMAP = { m: "models", b: "backend", p: () => setModeUi(), s: "memory", d: "doctor", g: "settings", o: "chats", h: "help", n: () => newChat(), k: openPalette };
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+    const k = e.key.toLowerCase();
+    if (k === "q") { e.preventDefault(); if (confirm("Quit the OhMyLLM window?")) window.close(); return; }
+    const fn = KEYMAP[k];
+    if (fn) { e.preventDefault(); typeof fn === "function" ? fn() : switchView(fn); }
+    if (k === "enter" && $("#view-memory")?.hidden === false) { e.preventDefault(); $("#soul-save").click(); }
+  }
+  if (e.key === "Escape" && !$("#approval-modal").hidden && state.approvalQueue.length) answerApproval("deny");
+  if (!$("#approval-modal").hidden) {
+    const k = e.key.toLowerCase();
+    if (k === "y") answerApproval("approve");
+    if (k === "n") answerApproval("deny");
+    if (k === "a") answerApproval("session");
+    if (k === "p") answerApproval("always");
+  }
+});
+
+/* ------------------------------------------------------------------ boot */
+async function boot() {
+  await refreshStatus();
+  if (!localStorage.getItem("omllm_setup_done") && BOOT.first_run === false) { $("#wizard").hidden = false; wzShow(); }
+  setInterval(refreshStatus, 5000);
+  if (state.status?.session) loadSessionIntoView(state.status.session);
+  else emptyState();
+  $("#input").focus();
+}
+boot();
