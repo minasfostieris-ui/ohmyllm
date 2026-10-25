@@ -49,7 +49,8 @@ def test_sandboxed_workspace_confinement(cfg):
     assert d.allowed and d.requires_approval
     d = pe.evaluate("write_file", {"path": "/tmp/elsewhere/x.txt", "content": "x"})
     assert d.allowed and d.requires_approval
-    assert not pe.evaluate("write_file", {"path": "/usr/lib/lib.so", "content": "x"}).allowed
+    sys_lib = r"C:\Program Files\lib\lib.so" if os.name == "nt" else "/usr/lib/lib.so"
+    assert not pe.evaluate("write_file", {"path": sys_lib, "content": "x"}).allowed
     assert not pe.evaluate("http_fetch", {"url": "https://x"}).allowed
 
 
