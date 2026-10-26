@@ -26,6 +26,7 @@
       <button class="nav-item active" data-view="chat"><svg viewBox="0 0 16 16"><path d="M2 3h12v8H6l-3 3v-3H2z"/></svg><span>Chat</span></button>
       <button class="nav-item" data-view="chats"><svg viewBox="0 0 16 16"><path d="M3 2h10v2H3zM3 6h10v2H3zM3 10h7v2H3z"/></svg><span>Chats</span><em id="chats-count" class="count"></em></button>
       <button class="nav-item" data-view="models"><svg viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg><span>Models</span><kbd>⌃M</kbd></button>
+      <button class="nav-item" data-view="market"><svg viewBox="0 0 16 16"><path d="M1 2h2l1.5 7h7L13 4H5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="12.5" r="1.2"/><circle cx="11" cy="12.5" r="1.2"/></svg><span>Market</span></button>
       <button class="nav-item" data-view="backend"><svg viewBox="0 0 16 16"><path d="M2 5h12v6H2z" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="5" cy="8" r="1"/><circle cx="8" cy="8" r="1"/></svg><span>Backend</span><kbd>⌃B</kbd></button>
       <button class="nav-item" data-view="memory"><svg viewBox="0 0 16 16"><path d="M8 2c3 0 5 2 5 4.5S11 14 8 14s-5-3-5-7.5S5 2 8 2z" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><span>Memory</span><kbd>⌃S</kbd></button>
       <button class="nav-item" data-view="doctor"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v6M5 8h6" stroke="currentColor" stroke-width="1.5"/></svg><span>Doctor</span><kbd>⌃D</kbd></button>
@@ -87,6 +88,14 @@
       <progress id="pull-bar" max="100" value="0" hidden></progress>
     </section>
 
+    <section class="view" id="view-market" hidden>
+      <div class="market-head" id="market-head"></div>
+      <div class="market-grid" id="market-grid"></div>
+      <div class="market-dl" id="market-dl" hidden>
+        <div class="market-dl-top"><span id="market-dl-label"></span><button type="button" class="btn ghost" id="market-dl-cancel">Cancel</button></div>
+        <div class="market-bar"><div id="market-bar-fill"></div></div>
+      </div>
+    </section>
     <section class="view" id="view-backend" hidden>
       <div class="cards" id="backend-cards"></div>
       <div class="instructions" id="backend-instructions" hidden></div>

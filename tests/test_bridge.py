@@ -118,6 +118,26 @@ def sse_events(resp, until: str = "done", hook=None, limit: int = 80) -> list[tu
 
 
 # ------------------------------------------------------------------ basics
+def test_post_routes_not_misrouted_to_patch(bridge):
+    # a batch once landed these in do_PATCH; POST must reach them (404
+    # "no route" is the regression signal, any other answer is fine)
+    c = bridge
+    r = c.post("/api/market/download", {"mid": "does-not-exist"})
+    assert r.get("error") != "no route", "market/download must be POST-routed"
+    assert r.get("__status__") == 404
+    r = c.post("/api/skills/cast", {"name": "x", "session": "y"})
+    assert r.get("error") != "no route", "skills/cast must be POST-routed"
+
+
+def test_market_get_shape(bridge):
+    r = bridge.get("/api/market")
+    assert "entries" in r and len(r["entries"]) == 8
+    for e in r["entries"]:
+        assert {"mid", "title", "size_gb", "fit", "fit_label", "blurb", "repo"} <= set(e)
+    p = bridge.get("/api/market/progress")
+    assert p == {"active": False} or p.get("title")
+
+
 def test_health_is_public_but_api_needs_token(bridge):
     assert bridge.get("/api/health", auth=False)["ok"] is True
     denied = bridge.get("/api/status", auth=False)

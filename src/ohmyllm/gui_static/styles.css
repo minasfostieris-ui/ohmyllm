@@ -360,3 +360,27 @@ table.grid tr.active td { background: rgba(122,199,159,.07); }
 .args-det { margin: 2px 0 0; opacity: .7; }
 .args-det summary { cursor: pointer; color: var(--muted, #9aa); font: 10.5px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
 .args-det pre { white-space: pre-wrap; word-break: break-word; color: var(--muted, #9aa); font-size: 11.5px; margin: 4px 0; max-height: 260px; overflow: auto; }
+
+/* ------------------------------------------------------------ marketplace */
+.market-head { color: var(--muted, #999); margin: 0 0 14px; font-size: 14px; }
+.market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
+.market-card { border: 1px solid var(--border, #333); border-radius: 10px; padding: 14px 16px; cursor: pointer; transition: border-color .15s, transform .1s; background: var(--surface, rgba(255,255,255,.02)); }
+.market-card:hover, .market-card:focus-visible { border-color: var(--accent, #7aa2f7); transform: translateY(-1px); outline: none; }
+.mc-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.mc-title { font-weight: 600; }
+.mc-size { font-variant-numeric: tabular-nums; color: var(--fg, #ddd); font-weight: 600; }
+.mc-fit { font-size: 12.5px; margin: 4px 0 8px; }
+.mc-fit.ok { color: var(--success, #4ec9a0); }
+.mc-fit.warn { color: var(--warning, #e5c07b); }
+.mc-fit.bad { color: var(--error, #e06c75); }
+.mc-fit.dim { color: var(--muted, #888); }
+.mc-blurb { font-size: 13px; color: var(--muted, #999); line-height: 1.45; min-height: 54px; }
+.mc-foot { display: flex; justify-content: space-between; align-items: center; margin-top: 10px; }
+.mc-repo { font-size: 11.5px; color: var(--muted, #777); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 70%; }
+.mc-dl { font-size: 13px; color: var(--accent, #7aa2f7); font-weight: 600; }
+.market-dl { position: sticky; bottom: 12px; margin-top: 16px; border: 1px solid var(--border, #333); border-radius: 10px; padding: 12px 14px; background: var(--surface, rgba(0,0,0,.35)); }
+.market-dl-top { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13.5px; margin-bottom: 8px; }
+.market-bar { height: 8px; border-radius: 4px; background: var(--border, #333); overflow: hidden; }
+#market-bar-fill { height: 100%; width: 0%; background: var(--accent, #7aa2f7); transition: width .4s; }
+.btn.ghost { background: transparent; border: 1px solid var(--border, #444); color: var(--fg, #ccc); }
+@media (prefers-reduced-motion: reduce) { .market-card, #market-bar-fill { transition: none; } }

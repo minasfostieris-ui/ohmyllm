@@ -192,6 +192,72 @@ async def test_paste_attaches_and_sends_parts(oml_env, svc, tmp_path, monkeypatc
         assert parts[0]["type"] == "text" and parts[1]["image_url"]["url"].startswith("data:image/png")
 
 
+async def test_ctrl_c_never_opens_quit_modal(oml_env, svc):
+    # ctrl+C is the copy chord users reach for; quitting is ctrl+Q only
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.widgets import ConfirmModal
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.7)
+        await pilot.press("ctrl+c")
+        await pilot.pause(0.4)
+        assert not isinstance(app.screen, ConfirmModal), "ctrl+C must not quit"
+        assert app.screen.query_one("#chat-input") is not None
+
+
+async def test_quit_modal_opens_and_responds(oml_env, svc):
+    import asyncio
+
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.widgets import ConfirmModal
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.7)
+        # bindings that await a modal must run outside the pilot's message
+        # pump (same idiom as the established quit test)
+        task = asyncio.create_task(app.action_safe_quit())
+        await pilot.pause(0.5)
+        assert isinstance(app.screen, ConfirmModal)
+        await pilot.press("n")  # cancel
+        await task
+        assert app.is_running
+        assert type(app.screen).__name__ == "ChatScreen"
+
+
+async def test_paste_grab_runs_off_the_ui_thread(oml_env, svc, tmp_path, monkeypatch):
+    import time as _t
+
+    import ohmyllm.tui.imagepaste as ip
+    from ohmyllm.tui.app import OhMyLLMApp
+
+    png = _mkpng(tmp_path / "slow.png")
+
+    def slow_grab():
+        _t.sleep(1.5)  # simulate a blocking Wayland clipboard offer
+        return png
+
+    monkeypatch.setattr(ip, "grab_clip_image", slow_grab)
+    app = OhMyLLMApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.7)
+        screen = app.screen
+        app.session.model = "mock-model"
+        app.svc._vision_cache = {"mock-model": True}
+        screen.action_paste_image()
+        await pilot.pause(0.3)
+        # UI must still process input while the grab blocks its worker thread
+        inp = app.screen.query_one("#chat-input")
+        inp.value = "typing works during the grab"
+        await pilot.pause(0.2)
+        assert inp.value == "typing works during the grab", "UI froze during clipboard grab"
+        await pilot.pause(2.0)  # let the slow worker land
+        from ohmyllm.tui.imagepaste import ImageBox
+
+        assert len(app.screen.query(ImageBox)) == 1
+
+
 async def test_paste_text_only_when_model_blind(oml_env, svc, tmp_path, monkeypatch):
     from ohmyllm.tui.app import OhMyLLMApp
 

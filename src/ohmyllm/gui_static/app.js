@@ -448,6 +448,7 @@ function switchView(v) {
   $("#view-title").textContent = titles[v] || v;
   if (v === "chats") renderChats();
   if (v === "models") renderModels();
+  if (v === "market") renderMarket();
   if (v === "backend") renderBackends();
   if (v === "memory") renderSoul();
   if (v === "doctor") renderDoctor();
@@ -548,6 +549,72 @@ async function renderModels() {
   }
 }
 const gib = (b) => (b / 2 ** 30).toFixed(1) + " GiB";
+
+// ------------------------------------------------------------- marketplace
+let _marketTimer = null;
+
+async function renderMarket() {
+  const grid = $("#market-grid");
+  const head = $("#market-head");
+  if (grid.dataset.loaded) { _pollMarket(); return; }
+  head.textContent = "scanning your GPU…";
+  let data = null;
+  try { data = await get("/api/market"); } catch { head.textContent = "market unavailable"; return; }
+  grid.dataset.loaded = "1";
+  const g = data.vram_bytes ? Math.round(data.vram_bytes / 1073741824) : null;
+  head.innerHTML = data.gpu
+    ? `<b>${esc(data.gpu)}</b> · ${g ?? "?"} GB VRAM detected`
+    : (g ? `${g} GB VRAM detected` : "VRAM unknown — sizes shown, fit not judged");
+  const badge = { fits: ["✓", "ok"], tight: ["⚠", "warn"], no: ["✗", "bad"], unknown: ["?", "dim"] };
+  grid.innerHTML = (data.entries || []).map((e) => {
+    const [txt, cls] = badge[e.fit] || badge.unknown;
+    return `<div class="market-card ${cls}" data-mid="${esc(e.mid)}" tabindex="0" role="button" aria-label="Download ${esc(e.title)}">
+      <div class="mc-top"><span class="mc-title">${esc(e.title)}</span><span class="mc-size">${e.size_gb.toFixed(1)} GB</span></div>
+      <div class="mc-fit ${cls}">${txt} ${esc(e.fit_label)}${e.kind !== "gguf" ? " · " + esc(e.kind) : ""}</div>
+      <div class="mc-blurb">${esc(e.blurb)}</div>
+      <div class="mc-foot"><span class="mc-repo">${esc(e.repo)}</span><span class="mc-dl">↓ Download</span></div>
+    </div>`;
+  }).join("");
+  $$(".market-card").forEach((c) => {
+    const go = () => marketDownload(c.dataset.mid);
+    c.onclick = go;
+    c.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); go(); } };
+  });
+  _pollMarket();
+}
+
+async function marketDownload(mid) {
+  let r = null;
+  try { r = await post("/api/market/download", { mid }); }
+  catch (e) { toast(String(e.message || e), "bad"); return; }
+  $("#market-dl").hidden = false;
+  toast(r.started ? `downloading ${r.started}…` : (r.error || ""), r.error ? "bad" : "");
+  _pollMarket();
+}
+
+async function _pollMarket() {
+  if (_marketTimer) return;
+  _marketTimer = setInterval(async () => {
+    let p = null;
+    try { p = await get("/api/market/progress"); } catch { return; }
+    if (!p || (p.active === false && !p.total)) return;
+    const box = $("#market-dl");
+    if (!p.active && !p.done && !p.error) { box.hidden = true; return; }
+    box.hidden = false;
+    const pct = p.total ? Math.min(100, (p.received / p.total) * 100) : 0;
+    $("#market-bar-fill").style.width = pct + "%";
+    const gb = (n) => (n / 1e9).toFixed(2);
+    $("#market-dl-label").textContent = p.error
+      ? `${p.title}: ${p.error}`
+      : p.done ? `✓ ${p.title} ready — reload Models and load it`
+      : `${p.title}  ${gb(p.received)}/${gb(p.total)} GB · ${p.mbps.toFixed(1)} MB/s · ${p.eta_s}s left`;
+    $("#market-dl-cancel").style.visibility = (p.done || p.error) ? "hidden" : "visible";
+    if (!p.active) { clearInterval(_marketTimer); _marketTimer = null; }
+  }, 600);
+}
+
+$("#market-dl-cancel").onclick = () => post("/api/market/cancel", {});
+
 $("#models-refresh").onclick = renderModels;
 $("#model-backend").onchange = renderModels;
 $("#model-search").oninput = debounce(renderModels, 200);
@@ -754,7 +821,7 @@ function renderHelp() {
 
 /* ------------------------------------------------------------- composer */
 const SLASHES = [
-  ["/remember", "write a memory"], ["/new", "fresh chat"], ["/rename", "rename chat"],
+  ["/remember", "write a memory"], ["/new", "fresh chat"], ["/rename", "rename chat"], ["/market", "model marketplace"],
   ["/export", "export chat"], ["/models", "model list"], ["/mode", "permission mode"],
   ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"],
   ["/ultrathink", "deep reasoning on/off"], ["/think", "off|low|medium|high|xhigh|max"], ["/skill:", "cast a skill: /skill:<name>"],
@@ -819,6 +886,7 @@ async function handleSlash(text) {
     case "/clear": emptyState(); break;
     case "/help": switchView("help"); break;
     case "/models": switchView("models"); break;
+    case "/market": switchView("market"); break;
     case "/backend": switchView("backend"); break;
     case "/rename": if (state.session) patch(`/api/chats/${state.session}`, { title: arg || "renamed" }).then(refreshStatus); break;
     case "/export": if (state.session) post(`/api/chats/${state.session}/export`, { format: arg.includes("json") ? "json" : "markdown" }).then((r) => toast(`exported → ${r.path}`)); break;
@@ -949,7 +1017,7 @@ async function refreshStatus() {
 
 /* -------------------------------------------------------------- palette */
 const CMDS = [
-  ["New chat", () => newChat(), "Ctrl N"], ["Open chats", () => switchView("chats"), "Ctrl O"],
+  ["Market", () => switchView("market"), ""], ["New chat", () => newChat(), "Ctrl N"], ["Open chats", () => switchView("chats"), "Ctrl O"],
   ["Models", () => switchView("models"), "Ctrl M"], ["Backend", () => switchView("backend"), "Ctrl B"],
   ["Memory (soul.md)", () => switchView("memory"), "Ctrl S"], ["Doctor", () => switchView("doctor"), "Ctrl D"],
   ["Settings", () => switchView("settings"), "Ctrl G"], ["Help", () => switchView("help"), "Ctrl H"],

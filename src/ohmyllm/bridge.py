@@ -57,6 +57,9 @@ class BridgeState:
         self.tok_s = 0.0
         self.loop: asyncio.AbstractEventLoop | None = None
         self.active_backend_ready: bool | None = None
+        self.market_state: Any = None
+        self.market_cancel: bool = False
+        self.market_thread: Any = None
         self.shutdown_hook = lambda: None
 
     def ensure_session(self) -> Any:
@@ -176,6 +179,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "version": __version__})
             if path == "/api/status":
                 return self._json(200, self.state.status())
+            if path == "/api/market":
+                return self._market()
+            if path == "/api/market/progress":
+                return self._market_progress()
             if path == "/api/skills":
                 return self._json(200, {"skills": [
                     {"name": sk.name, "description": sk.description} for sk in self.state.svc.skills.list()]})
@@ -250,6 +257,15 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True})
             if path == "/api/pull":
                 return self._pull(body)
+            if path == "/api/config":
+                return self._config(body)
+            if path == "/api/skills/cast":
+                return self._skill_cast(body)
+            if path == "/api/market/download":
+                return self._market_download(body)
+            if path == "/api/market/cancel":
+                self.state.market_cancel = True
+                return self._json(200, {"ok": True})
         except Exception as exc:  # noqa: BLE001
             return self._json(500, {"error": f"{type(exc).__name__}: {exc}"})
         self._json(404, {"error": "no route"})
@@ -277,8 +293,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, (store.get(sid) or sess).to_dict())
         if path == "/api/config":
             return self._config(body)
-        if path == "/api/skills/cast":
-            return self._skill_cast(body)
         self._json(404, {"error": "no route"})
 
     def do_DELETE(self) -> None:  # noqa: N802
@@ -410,6 +424,69 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "mode": mode.value})
         else:
             self._json(403, {"error": f"full_access requires the exact phrase: {self.state.svc.full_access_phrase()!r}"})
+
+    def _market(self) -> None:
+        from .market import CATALOG, detect_vram_bytes, fit_verdict, resolve
+        from .vram import detect_gpus
+
+        vram = detect_vram_bytes()
+        gpu = ""
+        try:
+            gpus = detect_gpus()
+            if gpus:
+                g = max(gpus, key=lambda g: g.total_bytes)
+                if g.model and not g.model.endswith("GPU 0"):
+                    gpu = g.model
+        except Exception:  # noqa: BLE001
+            pass
+        rows = []
+        for e in CATALOG:
+            r = resolve(e)
+            key, label = fit_verdict(r.size_gb, vram)
+            rows.append({"mid": e.mid, "title": r.title, "size_gb": r.size_gb,
+                         "fit": key, "fit_label": label, "short": r.short,
+                         "blurb": r.blurb, "repo": r.repo, "kind": r.kind,
+                         "tags": list(r.tags)})
+        self._json(200, {"vram_bytes": vram, "gpu": gpu, "entries": rows})
+
+    def _market_download(self, body: dict) -> None:
+        from .market import CATALOG, DownloadState
+
+        mid = str(body.get("mid") or "")
+        entry = next((e for e in CATALOG if e.mid == mid), None)
+        if entry is None:
+            return self._json(404, {"error": f"no market entry {mid!r}"})
+        st = self.state
+        if getattr(st, "market_thread", None) and st.market_thread.is_alive():
+            return self._json(409, {"error": "a download is already running"})
+        state = DownloadState(entry=entry)
+        st.market_state = state
+        st.market_cancel = False
+
+        def run() -> None:
+            import asyncio as _a
+
+            from .market import download as dl
+
+            _a.run(dl(entry, state, cancel=lambda: st.market_cancel))
+            st.market_thread = None
+
+        t = threading.Thread(target=run, daemon=True)
+        st.market_thread = t
+        t.start()
+        self._json(200, {"ok": True, "started": entry.title})
+
+    def _market_progress(self) -> None:
+        st = self.state
+        state = getattr(st, "market_state", None)
+        if state is None:
+            return self._json(200, {"active": False})
+        alive = bool(getattr(st, "market_thread", None))
+        self._json(200, {
+            "active": alive and not state.done and not state.error,
+            "title": state.entry.title, "received": state.received, "total": state.total,
+            "mbps": round(state.mbps, 2), "eta_s": round(state.eta_s),
+            "done": state.done, "error": state.error})
 
     def _skill_cast(self, body: dict) -> None:
         svc = self.state.svc

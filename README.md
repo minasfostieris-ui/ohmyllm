@@ -86,11 +86,17 @@ everything, and rewrites. Measured on a local Qwen3.5-9B: 4.6x the reasoning
 it beats `/think max` on every model because the review pass is pure
 prompting, not an API knob.
 
-**`/market` — the model marketplace.** Curated picks (Qwen3.8-27B in two
-honest quants, Sushi-Coder-RL, Gemma-4-26B-A4B) with real GB sizes and a
+**`/market` — the model marketplace.** Eight curated picks (Qwen3.8-27B in
+two honest quants, Sushi-Coder-RL, official Gemma-4-26B QAT, GPT-OSS-20B,
+Qwen3-Coder-30B, R1-Distill-14B, Phi-4) with real GB sizes and a
 **"will it fit my GPU" verdict** from a live VRAM probe (NVIDIA, AMD, Apple
 Silicon unified memory). Enter or click starts the download straight into
-your LM Studio models folder — progress bar, MB/s, ETA, cancel with esc.
+your LM Studio models folder — progress bar, MB/s, ETA, cancel; the same
+shelf appears as a **Market tab in the GUI**. NInfer builds are
+auto-selected only when a NInfer runtime is installed.
+
+**Ctrl+C copies your selection** (it never quits); quitting is Ctrl+Q with
+a confirm. Ctrl+V pastes clipboard images (see Vision paste below).
 
 **Vision paste.** `Ctrl+V` an image from the clipboard: it shows up in the
 chat as a 📷 card (real preview when the terminal supports it), and if the

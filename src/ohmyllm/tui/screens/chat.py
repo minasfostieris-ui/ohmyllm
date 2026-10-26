@@ -286,12 +286,22 @@ class ChatScreen(Screen):
         return None
 
     def action_paste_image(self) -> None:
-        from ..imagepaste import ImageBox, grab_clip_image, png_size
+        self._grab_clip()
 
-        path = grab_clip_image()
+    @work(thread=True)
+    def _grab_clip(self) -> None:
+        # clipboard tools can block for seconds on slow Wayland offers — keep
+        # the UI thread free no matter what the grab does
+        from ..imagepaste import grab_clip_image
+
+        self.app.call_from_thread(self._mount_pasted_image, grab_clip_image())
+
+    def _mount_pasted_image(self, path) -> None:
         if path is None:
             self.app.notify("clipboard has no image (copy one and try ctrl+v)")
             return
+        from ..imagepaste import ImageBox, png_size
+
         self._pending_images = getattr(self, "_pending_images", []) + [path]
         n = len(self._pending_images)
         dims = png_size(path)

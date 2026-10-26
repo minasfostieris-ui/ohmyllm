@@ -200,12 +200,15 @@ def fit_verdict(size_gb: float, vram_bytes: int | None) -> tuple[str, str]:
     """(key, label) — key in {fits, tight, no, unknown}."""
     if vram_bytes is None:
         return "unknown", "size ?"
-    vram_gb = float(vram_gib(vram_bytes) or 0)
-    if size_gb <= vram_gb * 0.80:
-        return "fits", f"fits {vram_gb:.0f} GB"
-    if size_gb <= vram_gb * 0.95:
-        return "tight", f"tight on {vram_gb:.0f} GB"
-    return "no", f"won't fit {vram_gb:.0f} GB"
+    # compare in raw bytes: GGUF sizes are decimal GB, VRAM is binary —
+    # 11.6 GB of weights on a 12 GiB card is tight, not impossible
+    size_bytes = size_gb * 1e9
+    label_gb = float(vram_gib(vram_bytes) or 0)
+    if size_bytes <= vram_bytes * 0.80:
+        return "fits", f"fits {label_gb:.0f} GB"
+    if size_bytes <= vram_bytes * 0.95:
+        return "tight", f"tight on {label_gb:.0f} GB"
+    return "no", f"won't fit {label_gb:.0f} GB"
 
 
 # ------------------------------------------------------------- lm studio dir

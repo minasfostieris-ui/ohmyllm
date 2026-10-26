@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 from textual import work
@@ -27,7 +28,7 @@ class OhMyLLMApp(App[None]):
 
     BINDINGS = [
         Binding("ctrl+q", "safe_quit", "Quit", priority=True),
-        Binding("ctrl+c", "safe_quit", "Quit", priority=True),
+        Binding("ctrl+c", "copy_selection", "Copy selection", priority=True),
         Binding("ctrl+m", "screen_models", "Models", priority=True),
         Binding("ctrl+b", "screen_backend", "Backend", priority=True),
         Binding("ctrl+p", "screen_perms", "Permissions", priority=True),
@@ -271,6 +272,29 @@ class OhMyLLMApp(App[None]):
         except Exception:  # noqa: BLE001 — quit must not hang on a dead server
             pass
         self.exit()
+
+    def action_copy_selection(self) -> None:
+        """Ctrl+C copies the selection like every other terminal app — it does
+        NOT quit (that is ctrl+Q). Quitting must never ambush a copy."""
+        text = None
+        with contextlib.suppress(Exception):
+            text = self.screen.get_selected_text()
+        if not text:
+            self.notify("nothing selected — ctrl+Q quits, ctrl+V pastes images", timeout=3)
+            return
+        import subprocess
+
+        for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"],
+                    ["pbcopy"]):
+            try:
+                r = subprocess.run(cmd, input=text.encode(), timeout=3,
+                                   capture_output=True)
+                if r.returncode == 0:
+                    self.notify(f"copied {len(text)} chars", timeout=2)
+                    return
+            except (OSError, subprocess.SubprocessError):
+                continue
+        self.notify("no clipboard tool found (wl-copy/xclip/pbcopy)", severity="warning")
 
     async def action_safe_quit(self) -> None:
         if not hasattr(self, "svc"):
