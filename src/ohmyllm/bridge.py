@@ -934,21 +934,18 @@ def serve(workspace: str | None = None, port: int = 0, token_file: str | None = 
     info = f"{actual} {state.token}"
 
     def _secret_write(path: str) -> None:
-        # the file holds the bridge token — owner-only, and it lands in /tmp
+        # the file holds the bridge token — owner-only. Written directly:
+        # os.fchmod does not exist on Windows (AttributeError killed the serve
+        # thread and the port file never appeared), and temp+rename raced AV
+        # file-locks on the Windows CI runners.
         import os
-        import tempfile
 
-        d = str(Path(path).parent)
-        fd, tmp = tempfile.mkstemp(dir=d, prefix=".omllm-", suffix=".port")
         try:
-            os.fchmod(fd, 0o600)
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(info)
-            os.replace(tmp, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
+        except OSError:
+            Path(path).write_text(info, encoding="utf-8")  # exotic FS without modes
 
     if write_port_file:
         _secret_write(write_port_file)
