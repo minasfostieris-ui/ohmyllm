@@ -30,13 +30,13 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__, paths
 from .capabilities import thinking_support as _thinking_support
-from .vision import cached_verdict as _vision_cached
 from .config import BackendName, Config, PermissionMode
 from .core import Services
 from .doctor import run_checks, summarize
 from .safety import ApprovalOutcome
 from .sessions.export import export
 from .sessions.store import make_title
+from .vision import cached_verdict as _vision_cached
 from .vram.detect import detect_gpus, human_bytes
 
 STATIC_DIR = Path(__file__).resolve().parent / "gui_static"
