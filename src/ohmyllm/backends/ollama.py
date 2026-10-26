@@ -194,8 +194,12 @@ class OllamaBackend(BaseBackend):
         if tools and native_tools:
             body["tools"] = tools
         body["keep_alive"] = "30m"  # don't unload between turns
-        if params.thinking or params.ultrathink:
-            body["thinking"] = True
+        # ollama accepts think: true | "low" | "medium" | "high" (newer
+        # servers); xhigh/max/ultrathink clamp to plain true (the ceiling
+        # ollama exposes) — the review pass in runtime carries the extra
+        lvl = "xhigh" if params.ultrathink else params.effort
+        if lvl != "off":
+            body["thinking"] = lvl if lvl in ("low", "medium", "high") else True
         prev = getattr(self, "_last_model", None)
         if prev and prev != model:
             # eject the previously used model so it stops squatting on VRAM

@@ -92,8 +92,10 @@ class MockBackend(BaseBackend):
                 await asyncio.sleep(0)
             return
         last_user = next((m.get("content", "") for m in reversed(messages) if m.get("role") == "user"), "")
-        if params is not None and params.ultrathink:
-            async for chunk in self._ultrathink_reasoning(str(last_user)):
+        if params is not None and (params.ultrathink or params.effort != "off"):
+            lines = {"low": 1, "medium": 2, "high": 3, "xhigh": 4, "max": 5}
+            n = 6 if params.ultrathink else lines.get(params.effort, 2)
+            async for chunk in self._ultrathink_reasoning(str(last_user), n):
                 yield chunk
         last_u = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=-1)
         tool_results = [m for m in messages[last_u + 1 :] if m.get("role") in ("tool", "function")]
@@ -116,9 +118,10 @@ class MockBackend(BaseBackend):
         async for chunk in self._emit_text(reply):
             yield chunk
 
-    async def _ultrathink_reasoning(self, question: str) -> AsyncIterator[ChatChunk]:
-        """Synthesized deep-reasoning stream so /ultrathink is observable without a reasoning model."""
-        lines = [
+    async def _ultrathink_reasoning(self, question: str, n: int = 6) -> AsyncIterator[ChatChunk]:
+        """Synthesized reasoning stream sized by the effort ladder, so
+        /think levels and /ultrathink are observable without a reasoning model."""
+        pool = [
             "Let me actually think this through instead of answering reflexively.\n",
             f"The request boils down to: {question[:120]}\n",
             "Interpretation A: the literal reading — do exactly what was asked, nothing more.\n",
@@ -128,7 +131,7 @@ class MockBackend(BaseBackend):
             "Weighing A vs B... B fits the conversation better. Verifying once more against the last message... yes.\n",
             "I'm confident in the approach now. Composing the answer.\n",
         ]
-        for line in lines:
+        for line in pool[:n]:
             for i in range(0, len(line), 24):
                 yield ChatChunk(reasoning=line[i : i + 24])
                 await asyncio.sleep(self.delay)

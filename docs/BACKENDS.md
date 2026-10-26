@@ -81,7 +81,25 @@ never reach the chat, the parser, or the stored session.
 
 `/ultrathink` deliberately does **not** rely on any of these knobs: the
 critique-and-revise pass is plain prompting, so it multiplies thinking depth
-(≈2.8x measured on Qwen3.5-9B) on every row of this table. `thinking_budget`
+(≈2.8x measured on Qwen3.5-9B) on every row of this table. ### What the ladder really does (measured)
+
+`/think off|low|medium|high|xhigh|max` maps to `reasoning_effort` (LM Studio,
+vLLM, SGLang) or `think` (Ollama graded servers). Whether levels *change
+thinking length* depends on the model:
+
+- **Template-honoring models** (Qwen3/3.5 hybrid, gpt-oss, GLM-4.6 hybrid,
+  Qwen3.8 via vLLM `chat_template_kwargs`): levels are respected — more
+  effort, more thinking.
+- **Forced/RL thinkers** (sushi-coder-rl, GLM-5.3 series, Qwen3-Thinking-2507):
+  thinking length is trained in; levels are near-no-ops and `off` cannot
+  disable it (measured on Qwen3.5-9B-sushi-coder: 1062–1894 reasoning chars
+  with NO monotonic trend across levels). The UI still reflects the setting;
+  the model just doesn't obey.
+- **`/ultrathink` beats every level on every model** because it does not rely
+  on the knob: it adds a full critique-and-revise pass (measured 4.6x total
+  reasoning on the same forced thinker vs baseline).
+
+`thinking_budget`
 is opt-in per model in `[generation]`. Unloaded-model servers that answer
 `200 + JSON` instead of SSE now raise a real error instead of streaming
 silence. (LM Studio honors it; values above the

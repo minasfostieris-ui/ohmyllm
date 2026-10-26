@@ -286,8 +286,16 @@ async def test_think_toggle_persists(oml_env, svc):
         inp.value = "/think on"
         await pilot.press("enter")
         await pilot.pause(0.5)
-        assert app.svc.config.generation.thinking is True
+        assert app.svc.config.generation.effort == "medium"
+        inp.value = "/think high"
+        await pilot.press("enter")
+        await pilot.pause(0.5)
+        assert app.svc.config.generation.effort == "high"
         inp.value = "/think"
+        await pilot.press("enter")
+        await pilot.pause(0.5)
+        assert app.svc.config.generation.effort == "xhigh", "bare /think cycles the ladder"
+        inp.value = "/think off"
         await pilot.press("enter")
         await pilot.pause(0.5)
         assert app.svc.config.generation.thinking is False

@@ -144,11 +144,11 @@ async def main() -> None:
 
     evs.clear()
     await rt.run_turn(
-        sess, "Remember this forever: my deployment passphrase is BlueHeron7. Save it to memory.",
+        sess, "Remember this forever: my demo passphrase is FAKE-NOT-A-REAL-SECRET. Save it to memory.",
         prompt_fn=allow, on_event=evs.append, user_requested_memory=True,
     )
     soul = svc.soul.path.read_text() if svc.soul.path.exists() else ""
-    record("memory write (soul_append)", "BlueHeron7" in soul, f"soul has passphrase: {'BlueHeron7' in soul}")
+    record("memory write (soul_append)", "FAKE-NOT-A-REAL-SECRET" in soul, f"soul has passphrase: {'BlueHeron7' in soul}")
 
     # approval DENY path on a real turn: sandboxed write outside workspace
     async def deny(*a: object) -> ApprovalOutcome:

@@ -383,16 +383,18 @@ class LMStudioBackend(BaseBackend):
         }
         if params.seed:
             body["seed"] = params.seed
-        if params.ultrathink:
-            # every thinking knob LM Studio/llama.cpp honors: effort level,
-            # token budget, and the newer reasoning object (unknown keys are
-            # ignored by older builds, so sending all three is safe)
-            body["reasoning_effort"] = "high"
-            body["reasoning"] = {"enabled": True, "effort": "high"}
+        # effort ladder: /think low..max; /ultrathink rides the ceiling (xhigh)
+        # and exceeds every level via the critique-and-revise pass in runtime.
+        # xhigh is the highest level LM Studio/llama.cpp accept; "max" maps to
+        # it plus the explicit thinking_budget when the user set one.
+        lvl = "xhigh" if params.ultrathink else params.effort
+        if lvl != "off":
+            wire = {"low": "low", "medium": "medium", "high": "high",
+                    "xhigh": "xhigh", "max": "xhigh"}.get(lvl, "medium")
+            body["reasoning_effort"] = wire
+            body["reasoning"] = {"enabled": True, "effort": wire}
             if params.thinking_budget:
                 body["thinking_budget"] = params.thinking_budget
-        elif params.thinking:
-            body["reasoning_effort"] = "medium"
         if tools and native_tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
@@ -408,117 +410,129 @@ class LMStudioBackend(BaseBackend):
         reasoning_parts: list[str] = []
         content_seen = False
         prog_seen: set[int] = set()
-        try:
-            async with self._client(self.config.lmstudio.base_url, timeout=httpx.Timeout(params.timeout, read=None)) as c:
-                async with c.stream("POST", "/v1/chat/completions", json=body) as resp:
-                    if resp.status_code != 200:
-                        detail = (await resp.aread()).decode(errors="replace")[:300]
-                        raise BackendError(f"LM Studio chat failed ({resp.status_code}): {detail}")
-                    if "text/event-stream" not in (resp.headers.get("content-type") or ""):
-                        # LM Studio answers some failures (unloaded model, disk
-                        # not mounted) as 200 + plain JSON — surface it instead
-                        # of streaming silence
-                        detail = (await resp.aread()).decode(errors="replace")[:300]
-                        raise BackendError(f"LM Studio chat: expected SSE, got {detail}")
-                    event_name = ""
-                    async for line in resp.aiter_lines():
-                        line = line.strip()
-                        if line.startswith("event:"):
-                            event_name = line[6:].strip()
-                            continue
-                        if not line.startswith("data:"):
-                            continue
-                        payload = line[5:].strip()
-                        if event_name == "error":
+        # servers that validate reasoning params strictly (some LM Studio
+        # builds reject xhigh for template-controlled models) get ONE graceful
+        # retry with the effort keys stripped instead of a dead turn
+        for _attempt in range(2):
+            try:
+                async with self._client(self.config.lmstudio.base_url, timeout=httpx.Timeout(params.timeout, read=None)) as c:
+                    async with c.stream("POST", "/v1/chat/completions", json=body) as resp:
+                        if resp.status_code != 200:
+                            detail = (await resp.aread()).decode(errors="replace")[:300]
+                            raise BackendError(f"LM Studio chat failed ({resp.status_code}): {detail}")
+                        if "text/event-stream" not in (resp.headers.get("content-type") or ""):
+                            # LM Studio answers some failures (unloaded model, disk
+                            # not mounted) as 200 + plain JSON — surface it instead
+                            # of streaming silence
+                            detail = (await resp.aread()).decode(errors="replace")[:300]
+                            raise BackendError(f"LM Studio chat: expected SSE, got {detail}")
+                        event_name = ""
+                        async for line in resp.aiter_lines():
+                            line = line.strip()
+                            if line.startswith("event:"):
+                                event_name = line[6:].strip()
+                                continue
+                            if not line.startswith("data:"):
+                                continue
+                            payload = line[5:].strip()
+                            if event_name == "error":
+                                try:
+                                    msg = (json.loads(payload).get("error") or {}).get("message") or payload
+                                except json.JSONDecodeError:
+                                    msg = payload
+                                raise BackendError(f"LM Studio: {str(msg)[:200]}")
+                            if payload == "[DONE]":
+                                for kind, text in sp.flush():
+                                    if kind == "reasoning":
+                                        reasoning_parts.append(text)
+                                    else:
+                                        content_seen = True
+                                        yield ChatChunk(content=text)
+                                if not content_seen and reasoning_parts and not pending_tools:
+                                    yield ChatChunk(content="".join(reasoning_parts))
+                                yield ChatChunk(done=True, finish="stop", tool_calls=_finish_tools(pending_tools))
+                                return
                             try:
-                                msg = (json.loads(payload).get("error") or {}).get("message") or payload
+                                data = json.loads(payload)
                             except json.JSONDecodeError:
-                                msg = payload
-                            raise BackendError(f"LM Studio: {str(msg)[:200]}")
-                        if payload == "[DONE]":
-                            for kind, text in sp.flush():
-                                if kind == "reasoning":
-                                    reasoning_parts.append(text)
-                                else:
-                                    content_seen = True
-                                    yield ChatChunk(content=text)
-                            if not content_seen and reasoning_parts and not pending_tools:
-                                yield ChatChunk(content="".join(reasoning_parts))
-                            yield ChatChunk(done=True, finish="stop", tool_calls=_finish_tools(pending_tools))
-                            return
-                        try:
-                            data = json.loads(payload)
-                        except json.JSONDecodeError:
-                            continue
-                        choice = (data.get("choices") or [{}])[0]
-                        delta = choice.get("delta") or {}
-                        finish = choice.get("finish_reason")
-                        for tc in delta.get("tool_calls") or []:
-                            idx = tc.get("index", 0)
-                            slot = pending_tools.setdefault(idx, {"name": "", "args": ""})
-                            fn = tc.get("function") or {}
-                            if fn.get("name"):
-                                slot["name"] = fn["name"]
-                            if fn.get("arguments"):
-                                slot["args"] += fn["arguments"]
-                                n = len(slot["args"])
-                                crossed = idx not in prog_seen or n // 64 > (n - len(fn["arguments"])) // 64
-                                if slot["name"] and crossed:
-                                    prog_seen.add(idx)
-                                    ct = ""
-                                    cm = _CONTENT_START_RX.search(slot["args"])
-                                    if cm:
-                                        ct = slot["args"][cm.end():][-1600:]
-                                    yield ChatChunk(tool_progress={
-                                        "name": slot["name"], "chars": n,
-                                        "tail": slot["args"][-900:],
-                                        "content_tail": ct,
-                                    })
-                        for key in ("reasoning", "reasoning_content"):
-                            if delta.get(key):
-                                reasoning_parts.append(str(delta[key]))
-                        ctext, itext = "", ""
-                        if delta.get("content"):
-                            for kind, text in sp.feed(str(delta["content"])):
-                                if kind == "reasoning":
-                                    itext += text
-                                    reasoning_parts.append(text)
-                                else:
-                                    ctext += text
-                        if ctext:
-                            content_seen = True
-                        usage = data.get("usage")
-                        chunk = ChatChunk(
-                            content=ctext,
-                            reasoning=str(delta.get("reasoning") or delta.get("reasoning_content") or "") + itext,
-                            done=bool(finish), finish=finish, usage=usage,
-                        )
-                        if finish:
-                            for kind, text in sp.flush():
-                                if kind == "reasoning":
-                                    chunk.reasoning += text
-                                    reasoning_parts.append(text)
-                                else:
-                                    chunk.content += text
-                                    content_seen = True
-                        if finish:
-                            for fslot in pending_tools.values():
-                                if fslot["name"] and fslot["args"]:
-                                    fm = _CONTENT_START_RX.search(fslot["args"])
-                                    yield ChatChunk(tool_progress={
-                                        "name": fslot["name"], "chars": len(fslot["args"]),
-                                        "tail": fslot["args"][-900:],
-                                        "content_tail": fslot["args"][fm.end():][-1600:] if fm else "",
-                                    })
-                            if pending_tools:
-                                chunk.tool_calls = _finish_tools(pending_tools)
-                            elif not content_seen and reasoning_parts:
-                                chunk.content = "".join(reasoning_parts)
-                        yield chunk
-                        if finish:
-                            return
-        except httpx.HTTPError as exc:
-            raise BackendError(f"LM Studio request error: {exc}") from exc
+                                continue
+                            choice = (data.get("choices") or [{}])[0]
+                            delta = choice.get("delta") or {}
+                            finish = choice.get("finish_reason")
+                            for tc in delta.get("tool_calls") or []:
+                                idx = tc.get("index", 0)
+                                slot = pending_tools.setdefault(idx, {"name": "", "args": ""})
+                                fn = tc.get("function") or {}
+                                if fn.get("name"):
+                                    slot["name"] = fn["name"]
+                                if fn.get("arguments"):
+                                    slot["args"] += fn["arguments"]
+                                    n = len(slot["args"])
+                                    crossed = idx not in prog_seen or n // 64 > (n - len(fn["arguments"])) // 64
+                                    if slot["name"] and crossed:
+                                        prog_seen.add(idx)
+                                        ct = ""
+                                        cm = _CONTENT_START_RX.search(slot["args"])
+                                        if cm:
+                                            ct = slot["args"][cm.end():][-1600:]
+                                        yield ChatChunk(tool_progress={
+                                            "name": slot["name"], "chars": n,
+                                            "tail": slot["args"][-900:],
+                                            "content_tail": ct,
+                                        })
+                            for key in ("reasoning", "reasoning_content"):
+                                if delta.get(key):
+                                    reasoning_parts.append(str(delta[key]))
+                            ctext, itext = "", ""
+                            if delta.get("content"):
+                                for kind, text in sp.feed(str(delta["content"])):
+                                    if kind == "reasoning":
+                                        itext += text
+                                        reasoning_parts.append(text)
+                                    else:
+                                        ctext += text
+                            if ctext:
+                                content_seen = True
+                            usage = data.get("usage")
+                            chunk = ChatChunk(
+                                content=ctext,
+                                reasoning=str(delta.get("reasoning") or delta.get("reasoning_content") or "") + itext,
+                                done=bool(finish), finish=finish, usage=usage,
+                            )
+                            if finish:
+                                for kind, text in sp.flush():
+                                    if kind == "reasoning":
+                                        chunk.reasoning += text
+                                        reasoning_parts.append(text)
+                                    else:
+                                        chunk.content += text
+                                        content_seen = True
+                            if finish:
+                                for fslot in pending_tools.values():
+                                    if fslot["name"] and fslot["args"]:
+                                        fm = _CONTENT_START_RX.search(fslot["args"])
+                                        yield ChatChunk(tool_progress={
+                                            "name": fslot["name"], "chars": len(fslot["args"]),
+                                            "tail": fslot["args"][-900:],
+                                            "content_tail": fslot["args"][fm.end():][-1600:] if fm else "",
+                                        })
+                                if pending_tools:
+                                    chunk.tool_calls = _finish_tools(pending_tools)
+                                elif not content_seen and reasoning_parts:
+                                    chunk.content = "".join(reasoning_parts)
+                            yield chunk
+                            if finish:
+                                return
+            except httpx.HTTPError as exc:
+                raise BackendError(f"LM Studio request error: {exc}") from exc
+            except BackendError as exc:
+                if (_attempt == 0 and ("reasoning" in str(exc).lower() or "effort" in str(exc).lower())
+                        and ("reasoning_effort" in body or "reasoning" in body)):
+                    body.pop("reasoning_effort", None)
+                    body.pop("reasoning", None)
+                    continue
+                raise
+
 
     async def pull(self, name: str, progress: Any = None) -> None:
         raise BackendError(

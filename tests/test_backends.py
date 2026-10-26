@@ -311,7 +311,7 @@ def test_thinking_flags_reach_the_wire():
 
     cap: dict = {}
     cfg = Config()
-    cfg.generation.thinking = True
+    cfg.generation.effort = "medium"
     be = LMStudioBackend(cfg, transport=_lmstudio_stream(
         [{"delta": {"content": "x"}, "finish_reason": "stop"}], cap))
 
@@ -333,7 +333,7 @@ def test_thinking_flags_reach_the_wire():
 
     be2 = OllamaBackend(cfg, transport=httpx.MockTransport(handler))
     asyncio.run(_run(be2, "qwen3"))
-    assert cap["b2"]["thinking"] is True
+    assert cap["b2"]["thinking"] == "medium"  # ollama accepts graded think levels
 
 
 def test_ultrathink_escalates_effort_and_budget():
@@ -350,8 +350,8 @@ def test_ultrathink_escalates_effort_and_budget():
             pass
 
     asyncio.run(_run(be, "m"))
-    assert cap["body"]["reasoning_effort"] == "high", "ultrathink must raise effort"
-    assert cap["body"]["reasoning"] == {"enabled": True, "effort": "high"}
+    assert cap["body"]["reasoning_effort"] == "xhigh", "ultrathink must ride the ceiling"
+    assert cap["body"]["reasoning"] == {"enabled": True, "effort": "xhigh"}
     assert cap["body"]["max_tokens"] >= 16384, "ultrathink must raise the output budget"
 
     lines = [json.dumps({"message": {"content": "y"}, "done": True, "eval_count": 2,

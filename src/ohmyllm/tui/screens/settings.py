@@ -125,8 +125,8 @@ class SettingsScreen(Screen):
                     with Vertical(classes="st-field"):
                         yield from _switch("Stream tokens", "st-streaming", cfg.generation.streaming)
                     with Vertical(classes="st-field"):
-                        yield from _switch("Thinking models", "st-thinking", cfg.generation.thinking,
-                                           hint="/think")
+                        yield from _field("Reasoning effort", "st-effort", cfg.generation.effort,
+                                           hint="off|low|medium|high|xhigh|max")
 
             # ---------------------------------------------------------- agent
             with Vertical(classes="st-section"):
@@ -283,7 +283,7 @@ class SettingsScreen(Screen):
                 "threads": num(q("st-threads"), int),
                 "timeout": num(q("st-gen_timeout"), float),
                 "streaming": s("st-streaming"),
-                "thinking": s("st-thinking"),
+                "effort": (q("st-effort").value.strip().lower() or "off"),
             },
             "agent": {
                 "max_steps": num(q("st-max_steps"), int),

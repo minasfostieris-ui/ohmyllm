@@ -176,6 +176,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"ok": True, "version": __version__})
             if path == "/api/status":
                 return self._json(200, self.state.status())
+            if path == "/api/skills":
+                return self._json(200, {"skills": [
+                    {"name": sk.name, "description": sk.description} for sk in self.state.svc.skills.list()]})
             if path == "/api/config":
                 return self._json(200, json.loads(self.state.svc.config.model_dump_json()))
             if path == "/api/backends":
@@ -274,6 +277,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, (store.get(sid) or sess).to_dict())
         if path == "/api/config":
             return self._config(body)
+        if path == "/api/skills/cast":
+            return self._skill_cast(body)
         self._json(404, {"error": "no route"})
 
     def do_DELETE(self) -> None:  # noqa: N802
@@ -405,6 +410,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "mode": mode.value})
         else:
             self._json(403, {"error": f"full_access requires the exact phrase: {self.state.svc.full_access_phrase()!r}"})
+
+    def _skill_cast(self, body: dict) -> None:
+        svc = self.state.svc
+        name = str(body.get("name") or "")
+        sid = str(body.get("session") or "")
+        sess = svc.sessions.get(sid) if sid else None
+        if sess is None:
+            return self._json(400, {"error": "unknown session"})
+        content = svc.skills.read(name)
+        if content is None:
+            return self._json(404, {"error": f"no skill {name!r}",
+                                    "skills": [sk.name for sk in svc.skills.list()]})
+        sess.add_message("user", f'<skill name="{name}">\n{content}\n</skill>\n'
+                         "Apply this skill to my requests in this chat.")
+        svc.sessions.save(sess)
+        self._json(200, {"ok": True, "cast": name})
 
     def _config(self, body: dict) -> None:
         cfg = self.state.svc.config

@@ -61,7 +61,7 @@ async def test_tui_ultrathink_command_toggles_and_persists(oml_env, svc):
             if app.svc.config.generation.ultrathink:
                 break
         assert app.svc.config.generation.ultrathink is True
-        assert app.svc.config.generation.thinking is True, "ultrathink implies /think"
+        assert app.svc.config.generation.effort == "off", "ultrathink rides the ceiling without touching the ladder"
         # persisted: a fresh load of the config file sees it
         from ohmyllm import paths
         from ohmyllm.config import ConfigStore

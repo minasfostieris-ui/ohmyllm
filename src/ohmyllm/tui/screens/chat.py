@@ -31,7 +31,8 @@ class ChatScreen(Screen):
     SLASH: tuple[tuple[str, str, str], ...] = (
         ("/help", "", "this help screen"), ("/model", "[name]", "set or pick the default model"), ("/modelsettings", "", "per-model settings for the current model"),
         ("/backend", "[ollama|lmstudio|mock]", "switch backend"), ("/mode", "[name]", "permission mode"),
-        ("/think", "[on|off]", "reasoning channel for thinking models"),
+        ("/think", "[off|low|medium|high|xhigh|max|hide|show]", "reasoning effort"),
+        ("/skillimport", "", "open the skills folder (add/remove/move skills)"),
         ("/ultrathink", "[on|off]", "deep reasoning: think much longer and harder"),
         ("/memory", "", "soul.md editor"), ("/soul", "", "soul.md editor"), ("/doctor", "", "diagnostics"),
         ("/settings", "", "all settings"), ("/chats", "", "browse chats"), ("/new", "", "fresh chat"),
@@ -98,6 +99,14 @@ class ChatScreen(Screen):
             return
         prefix = v.lower()
         matches = [(c, a, d) for c, a, d in self.SLASH if c.startswith(prefix)]
+        if prefix.startswith("/skill:"):
+            try:
+                skills = self.app.svc.skills.list()
+            except Exception:  # noqa: BLE001
+                skills = []
+            want = prefix[len("/skill:"):]
+            matches = [(f"/skill:{sk.name}", "", (sk.description or "")[:48])
+                       for sk in skills if sk.name.lower().startswith(want)] + matches
         menu.clear_options()
         for c, a, d in matches[:12]:
             menu.add_option(Option(f"[b]{c}[/b] [dim]{a}[/dim]  [dim]{d}[/dim]", id=c))
@@ -762,19 +771,50 @@ class ChatScreen(Screen):
             app.svc.save_config()
             app.notify(f"live thinking {'shown' if cfg.thinking_visible else 'hidden'} (Ctrl+T toggles)")
         elif cmd == "think":
-            cur = app.svc.config.generation.thinking
-            want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
-            app.svc.config.generation.thinking = want == "on"
-            app.svc.save_config()
-            app.notify(f"thinking {'enabled' if want == 'on' else 'off'} — applies from the next turn")
+            levels = ("off", "low", "medium", "high", "xhigh", "max")
+            cur = app.svc.config.generation.effort
+            want = arg.lower()
+            if want == "on":
+                want = "medium"
+            if want == "":
+                want = levels[(levels.index(cur) + 1) % len(levels)] if cur in levels else "low"
+            if want not in levels:
+                app.notify(f"reasoning effort is {cur!r} — /think {'|'.join(levels)}")
+            else:
+                app.svc.config.generation.effort = want
+                app.svc.save_config()
+                app.notify(f"reasoning effort → {want} · applies from the next turn")
         elif cmd == "ultrathink":
             cur = app.svc.config.generation.ultrathink
             want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
             app.svc.config.generation.ultrathink = want == "on"
-            if want == "on":
-                app.svc.config.generation.thinking = True
             app.svc.save_config()
             app.notify(f"ultrathink {'ON — the agent will think this through properly' if want == 'on' else 'off'} · applies from the next turn")
+        elif cmd.startswith("skill:"):
+            name = cmd.split(":", 1)[1]
+            body = app.svc.skills.read(name)
+            if body is None:
+                names = ", ".join(f"/skill:{sk.name}" for sk in app.svc.skills.list()[:8]) or "(none installed)"
+                app.notify(f"no skill {name!r} — try {names}")
+            else:
+                sess = app.session
+                if sess is not None:
+                    sess.add_message("user", f"<skill name=\"{name}\">\n{body}\n</skill>\n"
+                                   "Apply this skill to my requests in this chat.")
+                    app.svc.sessions.save(sess)
+                    app.save_state = True
+                self._sysline(f"skill cast · {name} — the agent will follow it from here", "system")
+        elif cmd == "skillimport":
+            import subprocess
+            import sys as _sys
+
+            from ... import paths as _paths
+            d = _paths.skills_dir()
+            d.mkdir(parents=True, exist_ok=True)
+            opener = "explorer" if _sys.platform == "win32" else ("open" if _sys.platform == "darwin" else "xdg-open")
+            with contextlib.suppress(OSError):
+                subprocess.Popen([opener, str(d)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            app.notify(f"skills folder → {d}")
         elif cmd == "mode":
             if arg:
                 self._set_mode(arg)

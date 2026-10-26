@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class BackendName(StrEnum):
@@ -91,9 +91,28 @@ class GenerationSettings(BaseModel):
     threads: int = Field(0, description="0 = auto")
     timeout: float = Field(180.0, gt=0)
     streaming: bool = True
-    thinking: bool = Field(False, description="enable reasoning channel for thinking models (/think)")
+    thinking: bool = Field(False, description="legacy alias; derived from effort != off")
+    effort: str = Field("off", pattern="^(off|low|medium|high|xhigh|max)$",
+                        description="reasoning effort (/think low|medium|high|xhigh|max|off); "
+                                    "/ultrathink always exceeds max")
     ultrathink: bool = Field(False, description="deep reasoning: reasoning channel + high effort + bigger budget + directive (/ultrathink)")
     thinking_budget: int = Field(0, ge=0, description="LM Studio thinking_budget token cap for /ultrathink (0 = server default)")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_legacy_thinking(cls, data):
+        # one-time migration for configs written before the effort ladder:
+        # thinking=true with no effort key -> medium
+        if isinstance(data, dict) and data.get("thinking") and "effort" not in data:
+            data = {**data, "effort": "medium"}
+        return data
+
+    @model_validator(mode="after")
+    def _sync_thinking_effort(self) -> GenerationSettings:
+        # effort is the single source of truth; thinking is a derived mirror
+        # (written via __dict__: validate_assignment would re-enter this)
+        self.__dict__["thinking"] = self.__dict__["effort"] != "off"
+        return self
 
 
 class OllamaSettings(BaseModel):
@@ -211,6 +230,7 @@ class Config(BaseModel):
         merged = {k: v for k, v in override.model_dump().items() if v is not None}
         eff = GenerationSettings.model_validate({**base, **merged})
         eff.thinking = self.generation.thinking
+        eff.effort = self.generation.effort
         eff.ultrathink = self.generation.ultrathink
         return eff
 

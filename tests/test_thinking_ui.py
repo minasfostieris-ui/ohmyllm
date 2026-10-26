@@ -10,13 +10,14 @@ def test_model_override_cannot_shadow_thinking_toggles():
 
     cfg = Config()
     cfg.generation.ultrathink = True
-    cfg.generation.thinking = True
+    cfg.generation.effort = "high"
     # a per-model override saved while ultrathink was OFF (the real-world case)
     ov = GenerationSettings(num_ctx=131072, ultrathink=False, thinking=False)
     cfg.set_model_settings(BackendName.LMSTUDIO, "qwen3.5", ov)
     eff = cfg.settings_for(BackendName.LMSTUDIO, "qwen3.5")
     assert eff.num_ctx == 131072, "real per-model knobs still apply"
     assert eff.ultrathink is True, "global /ultrathink must survive the override"
+    assert eff.effort == "high", "global /think level must survive the override"
     assert eff.thinking is True
 
 

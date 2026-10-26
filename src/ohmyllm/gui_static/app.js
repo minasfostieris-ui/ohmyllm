@@ -654,6 +654,7 @@ const SCHEMA = [
   ["generation.top_k", "top_k", "num"], ["generation.repeat_penalty", "repeat penalty", "num"],
   ["generation.num_ctx", "context window", "num"], ["generation.num_gpu", "gpu layers (-1=all)", "num"],
   ["generation.num_batch", "batch size", "num"], ["generation.max_tokens", "max tokens", "num"],
+  ["generation.effort", "reasoning effort", "select", ["off", "low", "medium", "high", "xhigh", "max"]],
   ["§", "agent"],
   ["agent.max_steps", "max steps per turn", "num"], ["agent.max_parse_retries", "parse retries", "num"],
   ["agent.tool_timeout", "tool timeout s", "num"],
@@ -756,7 +757,7 @@ const SLASHES = [
   ["/remember", "write a memory"], ["/new", "fresh chat"], ["/rename", "rename chat"],
   ["/export", "export chat"], ["/models", "model list"], ["/mode", "permission mode"],
   ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"],
-  ["/ultrathink", "deep reasoning on/off"],
+  ["/ultrathink", "deep reasoning on/off"], ["/think", "off|low|medium|high|xhigh|max"], ["/skill:", "cast a skill: /skill:<name>"],
 ];
 $("#input").addEventListener("input", () => {
   autoGrow();
@@ -822,13 +823,41 @@ async function handleSlash(text) {
     case "/rename": if (state.session) patch(`/api/chats/${state.session}`, { title: arg || "renamed" }).then(refreshStatus); break;
     case "/export": if (state.session) post(`/api/chats/${state.session}/export`, { format: arg.includes("json") ? "json" : "markdown" }).then((r) => toast(`exported → ${r.path}`)); break;
     case "/mode": setModeUi(arg); break;
+    case "/think": {
+      const levels = ["off", "low", "medium", "high", "xhigh", "max"];
+      let want = (arg || "").toLowerCase();
+      if (want === "on") want = "medium";
+      if (!levels.includes(want)) {
+        const cur = (state.config && state.config.generation && state.config.generation.effort) || "off";
+        toast(`effort is ${cur} — /think ${levels.join("|")}`);
+        break;
+      }
+      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
+      merged.generation.effort = want;
+      merged.generation.thinking = want !== "off";
+      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
+      if (r && r.error) { toast(`think: ${r.error}`); break; }
+      state.config = r.config;
+      toast(`reasoning effort → ${want}`);
+      refreshStatus();
+      break;
+    }
+    default: {
+      if (cmd.toLowerCase().startsWith("/skill:")) {
+        const name = cmd.slice(7);
+        const r = await post("/api/skills/cast", { name, session: state.session });
+        if (r && r.error) toast(r.error + (r.skills ? " · have: " + r.skills.slice(0, 6).join(", ") : ""));
+        else { toast(`skill cast · ${r.cast}`); if (state.session) loadSessionIntoView(state.session); }
+        break;
+      }
+      addEvline("note", `unknown command ${cmd}`);
+    }
     case "/ultrathink": {
       const cur = !!(state.config && state.config.generation && state.config.generation.ultrathink);
       const want = arg === "on" ? true : arg === "off" ? false : !cur;
       const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
       merged.generation = merged.generation || {};
       merged.generation.ultrathink = want;
-      if (want) merged.generation.thinking = true;
       const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
       if (r && r.error) { toast(`ultrathink: ${r.error}`); break; }
       state.config = r.config;
@@ -836,7 +865,6 @@ async function handleSlash(text) {
       refreshStatus();
       break;
     }
-    default: addEvline("note", `unknown command ${cmd}`);
   }
 }
 
@@ -894,7 +922,7 @@ async function refreshStatus() {
     dot.className = `pulse ${s.backend_ready ? "on" : "off"}`;
     $("#brand-sub").textContent = `${s.backend} · ${s.workspace.split("/").pop() || s.workspace}`;
     $("#version").textContent = `v${s.version} · soul: ${s.soul.split("/").pop()}`;
-    $("#chip-model").textContent = (s.model || "no model") + (s.ultrathink ? " 🌀" : "");
+    $("#chip-model").textContent = (s.model || "no model") + (s.ultrathink ? " 🌀" : (s.effort && s.effort !== "off" ? " ⚡" + s.effort : ""));
     $("#chip-model").title = `model · ${s.backend}`;
     const mode = $("#chip-mode");
     mode.textContent = `⦿ ${s.mode}`;
