@@ -384,7 +384,11 @@ class LMStudioBackend(BaseBackend):
         if params.seed:
             body["seed"] = params.seed
         if params.ultrathink:
+            # every thinking knob LM Studio/llama.cpp honors: effort level,
+            # token budget, and the newer reasoning object (unknown keys are
+            # ignored by older builds, so sending all three is safe)
             body["reasoning_effort"] = "high"
+            body["reasoning"] = {"enabled": True, "effort": "high"}
         elif params.thinking:
             body["reasoning_effort"] = "medium"
         if tools and native_tools:

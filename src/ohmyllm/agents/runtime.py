@@ -154,6 +154,7 @@ class AgentRuntime:
             system = self.prompt_builder.system_prompt(mode=mode, native=bool(native), ultrathink=params.ultrathink)
             history = trim_messages(self._outgoing(session), max(4000, params.num_ctx * 3))
             messages = self.prompt_builder.assemble(system, history)
+            self._ultrathink_note(messages, params)
             assistant_text = ""
             native_calls: list[dict[str, Any]] = []
             started = time.perf_counter()
@@ -462,6 +463,18 @@ class AgentRuntime:
         emit({"type": "tool_result", "name": name, "ok": tool_result.ok, "approval": outcome.value, "output": out_text[:4000], "duration_ms": duration, "call_id": call.id, "file": tool_result.meta or None})
 
     # ------------------------------------------------------------- plumbing
+
+    @staticmethod
+    def _ultrathink_note(messages: list[dict[str, Any]], params: Any) -> None:
+        """Recency beats distance: the deliberation demand lands on the wire as
+        a suffix of the last user message, never in the stored session."""
+        if not getattr(params, "ultrathink", False):
+            return
+        from .prompts import ULTRATHINK_NOTE
+        for m in reversed(messages):
+            if m.get("role") == "user" and isinstance(m.get("content"), str):
+                m["content"] = str(m["content"]) + "\n\n" + ULTRATHINK_NOTE
+                return
 
     def _outgoing(self, session: Session) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []

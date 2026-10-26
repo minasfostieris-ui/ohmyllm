@@ -349,6 +349,7 @@ def test_ultrathink_escalates_effort_and_budget():
 
     asyncio.run(_run(be, "m"))
     assert cap["body"]["reasoning_effort"] == "high", "ultrathink must raise effort"
+    assert cap["body"]["reasoning"] == {"enabled": True, "effort": "high"}
     assert cap["body"]["max_tokens"] >= 16384, "ultrathink must raise the output budget"
 
     lines = [json.dumps({"message": {"content": "y"}, "done": True, "eval_count": 2,

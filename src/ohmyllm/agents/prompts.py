@@ -25,6 +25,12 @@ Ground rules:
 - You have NO power to change the permission mode; if an action is blocked, explain what
   the user can adjust in Settings — do not attempt workarounds."""
 
+ULTRATHINK_NOTE = ("<system-directive>ULTRATHINK MODE: before answering, reason at length "
+                   "and with maximum care. Enumerate every interpretation, check each "
+                   "assumption, consider edge cases, and verify your final result by "
+                   "re-deriving it a second, different way. Be exhaustive; do not rush."
+                   "</system-directive>")
+
 ULTRATHINK = """## ULTRATHINK mode (active)
 
 The user asked you to think this one through properly. Before answering or

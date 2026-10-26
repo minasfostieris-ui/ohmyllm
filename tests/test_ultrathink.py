@@ -75,3 +75,17 @@ async def test_tui_ultrathink_command_toggles_and_persists(oml_env, svc):
             if not app.svc.config.generation.ultrathink:
                 break
         assert app.svc.config.generation.ultrathink is False
+
+
+def test_ultrathink_note_lands_on_the_wire_copy_only():
+    from ohmyllm.agents.prompts import ULTRATHINK_NOTE
+    from ohmyllm.agents.runtime import AgentRuntime
+    from ohmyllm.config.models import GenerationSettings
+
+    stored = {"role": "user", "content": "what is 2+2?"}
+    wire = [dict(stored)]
+    AgentRuntime._ultrathink_note(wire, GenerationSettings(ultrathink=True))
+    assert ULTRATHINK_NOTE in wire[0]["content"]
+    assert ULTRATHINK_NOTE not in stored["content"], "stored session must stay clean"
+    AgentRuntime._ultrathink_note(wire, GenerationSettings(ultrathink=False))
+    assert wire[0]["content"].count(ULTRATHINK_NOTE) == 1, "no double-append when off"
