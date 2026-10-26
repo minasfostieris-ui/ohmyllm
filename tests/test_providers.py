@@ -149,8 +149,9 @@ def test_cloud_keys_roundtrip_and_perms(svc):
     assert again.cloud.keys["groq"] == "gsk-test" and again.cloud.provider == "groq"
     import os
 
-    mode = oct(os.stat(ConfigStore().path).st_mode & 0o777)
-    assert mode == "0o600"
+    if os.name == "posix":  # NTFS has no POSIX modes — chmod is a no-op there
+        mode = oct(os.stat(ConfigStore().path).st_mode & 0o777)
+        assert mode == "0o600"
 
 
 # ---------------------------------------------------------------------- TUI

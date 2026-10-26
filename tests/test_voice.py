@@ -154,9 +154,10 @@ def test_market_voice_dest_routing(monkeypatch, tmp_path):
     stt = next(e for e in market.CATALOG if e.mid == "stt-sensevoice")
     tts = next(e for e in market.CATALOG if e.mid == "tts-40m-de")
     llm = next(e for e in market.CATALOG if e.section == "llm")
-    assert str(market.download_dest(stt)).endswith(
+    norm = lambda x: str(x).replace("\\", "/")  # noqa: E731 — Windows separators
+    assert norm(market.download_dest(stt)).endswith(
         "voice/stt/FunAudioLLM__SenseVoiceSmall-GGUF")
-    assert "voice/tts" in str(market.download_dest(tts))
+    assert "voice/tts" in norm(market.download_dest(tts))
     assert str(market.download_dest(llm)).startswith(str(tmp_path / "lm"))
 
 
