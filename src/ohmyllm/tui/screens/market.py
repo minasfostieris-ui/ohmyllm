@@ -5,6 +5,7 @@ from __future__ import annotations
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.css.query import NoMatches
 from textual.screen import Screen
 from textual.widgets import OptionList, ProgressBar, Static
 from textual.widgets.option_list import Option
@@ -15,8 +16,30 @@ from ...market import (
     MarketEntry,
     detect_vram_bytes,
     fit_verdict,
-    vram_label,
+    vram_gib,
 )
+
+_FIT_MARK = {"fits": "[green]✓[/green]", "tight": "[yellow]⚠[/yellow]",
+             "no": "[red]✗[/red]", "unknown": "[dim]?[/dim]"}
+_FIT_COLOR = {"fits": "green", "tight": "yellow", "no": "red", "unknown": "dim"}
+
+
+def _gpu_headline(vram: int | None) -> str:
+    """'AMD Radeon RX 6700 XT · 12 GB' when we know the name, else just size."""
+    name = ""
+    try:
+        from ...vram import detect_gpus
+
+        gpus = detect_gpus()
+        if gpus:
+            g = max(gpus, key=lambda g: g.total_bytes)
+            if g.model and g.model not in ("unknown",) and not g.model.endswith("GPU 0"):
+                name = g.model
+    except Exception:  # noqa: BLE001 — cosmetic only
+        pass
+    g = vram_gib(vram)
+    size = f"{g} GB" if g else "VRAM unknown"
+    return f"[b]{name} · {size}[/b]" if name else f"[b]{size}[/b]"
 
 
 class MarketScreen(Screen):
@@ -27,49 +50,75 @@ class MarketScreen(Screen):
 
     CSS = """
     MarketScreen { padding: 1 2; }
-    #market-list { height: 1fr; }
-    #market-dl { height: auto; display: none; }
-    .fit-fits { color: $success; }
-    .fit-tight { color: $warning; }
-    .fit-no { color: $error; }
+    #market-list { height: auto; max-height: 60%; }
+    #market-detail { height: 1fr; margin-top: 1; }
+    #market-dl { height: auto; display: none; margin-top: 1; }
     """
 
     def compose(self) -> ComposeResult:
-        vram = detect_vram_bytes()
+        self._vram = detect_vram_bytes()
         yield Static(
-            f"[b]🛒 Model marketplace[/] — curated picks for this CLI · enter/click download · esc back"
-            f"  ·  [dim]{vram_label(vram)} detected[/dim]",
+            f"🛒 [b]Model marketplace[/b] — enter downloads · esc backs   ·   detected {_gpu_headline(self._vram)}",
             id="screen-title",
         )
         yield OptionList(id="market-list")
+        yield Static("[dim]select a model to see the full pitch[/dim]", id="market-detail", classes="detail-box")
         with Static(id="market-dl"):
             yield Static("", id="market-dl-label")
             yield ProgressBar(total=100, id="market-progress", show_bar=True)
 
     def on_mount(self) -> None:
-        vram = detect_vram_bytes()
         lst = self.query_one(OptionList)
         for e in CATALOG:
-            key, label = fit_verdict(e.size_gb, vram)
-            style = {"fits": "[green]", "tight": "[yellow]", "no": "[red]", "unknown": "[dim]"}[key]
+            key, label = fit_verdict(e.size_gb, self._vram)
+            col = _FIT_COLOR[key]
             lst.add_option(Option(
-                f"{style}{e.title}[/] [b]{e.size_gb:.1f} GB[/] {style}({label})[/]\n"
-                f"    [dim]{e.blurb[:150]}… · {e.repo}[/dim]",
+                f"[{col}]■[/] [b]{e.title}[/b]  [b]{e.size_gb:.1f} GB[/]  "
+                f"[{col}]{label}[/{col}]\n"
+                f"  [dim]{e.short}[/dim]",
                 id=f"m-{e.mid}",
             ))
+        lst.highlighted = 0
+        self._paint_detail()
 
     # ------------------------------------------------------------- selection
-    def _entry(self) -> MarketEntry | None:
-        lst = self.query_one(OptionList)
-        idx = lst.highlighted
-        if idx is None:
-            return None
-        opt = lst.get_option_at_index(idx)
-        mid = str(opt.id or "")
+    @on(OptionList.OptionHighlighted)
+    def _hovered(self, event: OptionList.OptionHighlighted) -> None:
+        self._paint_detail()
+
+    def _entry_by_id(self, mid: str) -> MarketEntry | None:
         for e in CATALOG:
             if f"m-{e.mid}" == mid:
                 return e
         return None
+
+    def _selected_id(self) -> str:
+        lst = self.query_one(OptionList)
+        idx = lst.highlighted
+        if idx is None:
+            return ""
+        return str(lst.get_option_at_index(idx).id or "")
+
+    def _paint_detail(self) -> None:
+        e = self._entry_by_id(self._selected_id())
+        if e is None:
+            return
+        key, label = fit_verdict(e.size_gb, self._vram)
+        badge = f"{_FIT_MARK[key]} {label}"
+        extra = ""
+        if key == "no" and e.kind == "gguf":
+            extra = "\n[dim]tip: the repo ships smaller quants — see the HF page[/dim]"
+        kind = "" if e.kind == "gguf" else f" · [yellow]{e.kind} format[/yellow]"
+        try:
+            self.query_one("#market-detail", Static).update(
+                f"{badge}  ·  {e.repo}{kind}\n\n{e.blurb}{extra}\n\n"
+                f"[dim]enter or click → downloads into ~/.lmstudio/models "
+                f"(vision companion included)[/dim]")
+        except NoMatches:
+            pass
+
+    def _entry(self) -> MarketEntry | None:
+        return self._entry_by_id(self._selected_id())
 
     @on(OptionList.OptionSelected)
     def _clicked(self, event: OptionList.OptionSelected) -> None:
@@ -93,11 +142,9 @@ class MarketScreen(Screen):
             return
         self._cancel = False
         self._worker_running = True
-        box = self.query_one("#market-dl")
-        box.display = True
+        self.query_one("#market-dl").display = True
         self.query_one("#market-progress", ProgressBar).update(total=100, progress=0)
-        self.query_one("#market-dl-label", Static).update(
-            f"downloading [b]{e.title}[/] ({e.size_gb:.1f} GB) → {__import__('pathlib').Path.home() / '.lmstudio/models'} …")
+        self.query_one("#market-dl-label", Static).update(f"downloading [b]{e.title}[/] …")
         self._run_download(e)
 
     @work(exclusive=True, group="market-dl")
@@ -130,7 +177,7 @@ class MarketScreen(Screen):
     def _paint(self, state: DownloadState) -> None:
         try:
             bar = self.query_one("#market-progress", ProgressBar)
-        except Exception:  # noqa: BLE001 — screen may be closing
+        except NoMatches:  # screen may be closing
             return
         bar.update(progress=state.frac * 100)
         lbl = self.query_one("#market-dl-label", Static)

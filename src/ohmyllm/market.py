@@ -25,6 +25,7 @@ class MarketEntry:
     file: str          # file inside the repo
     size_gb: float
     blurb: str
+    short: str = ""  # one-line pitch for the list row
     kind: str = "gguf"  # gguf -> LM Studio folder; ninfer -> own runtime
     companion: str | None = None  # mmproj file needed for vision, same repo
     tags: tuple[str, ...] = ()
@@ -49,6 +50,7 @@ CATALOG: list[MarketEntry] = [
         repo="ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
         file="Qwen3.8-27B-GSQ-RCO-IQ2_XS.gguf",
         size_gb=8.4,
+        short="ETH research quant — best 27B per gigabyte, vision-capable",
         blurb="ETH ISTA-DASLab research quant: GSQ (Gumbel-Softmax) learns the "
               "scalar grid per tensor, RCO assigns quant types under a size "
               "budget. At the SAME 8.4 GB it beats Unsloth's dynamic quants by "
@@ -63,6 +65,7 @@ CATALOG: list[MarketEntry] = [
         repo="unsloth/Qwen3.8-27B-GGUF",
         file="Qwen3.8-27B-UD-Q6_K.gguf",
         size_gb=22.0,
+        short="near-original quality — the safe pick on 24 GB+ cards",
         blurb="Unsloth Dynamic 2.0: near-original quality, the safe choice "
               "when you have the VRAM. ~2.6x the size of IQ2_XS for a few "
               "points of perplexity — pick this for coding/agent work on "
@@ -76,6 +79,7 @@ CATALOG: list[MarketEntry] = [
         repo="bigatuna/Qwen3.5-9b-Sushi-Coder-RL-GGUF",
         file="Qwen3.5-9b-Sushi-Coder-RL.Q6_K.gguf",
         size_gb=7.4,
+        short="RL coder that always thinks — fits 8 GB cards and Macs",
         blurb="RL-tuned coder that always thinks (forced reasoning). Sharp on "
               "refactors and tool calls, small enough for 8-12 GB cards and "
               "Macs. Vision companion: BF16-mmproj in the same repo.",
@@ -88,6 +92,7 @@ CATALOG: list[MarketEntry] = [
         repo="WaveCut/gemma-4-26B-A4B-it-QAT-Q4_0-MTP-NInfer-v3",
         file="gemma-4-26B-A4B-it-QAT-Q4_0-MTP-ninfer-v3.ninfer",
         size_gb=15.8,
+        short="MoE 26B/4B-active, vision, MTP-fast — NInfer runtime only",
         blurb="Mixture-of-Experts (26B total / 4B active) with MTP "
               "speculative decoding — fast like a 4B, smart like a 26B, "
               "vision built in. NOTE: .ninfer format — runs in the NInfer "
@@ -108,17 +113,25 @@ def detect_vram_bytes() -> int | None:
     return total_vram_bytes() or None
 
 
-def vram_label(total: int | None) -> str:
+def vram_gib(total: int | None) -> int | None:
+    """Marketing-rounded GiB — 12868124672 bytes is a 12 GB card, not 13."""
     if total is None:
+        return None
+    return round(total / 2**30)
+
+
+def vram_label(total: int | None) -> str:
+    g = vram_gib(total)
+    if g is None:
         return "VRAM unknown"
-    return f"{total / 1e9:.0f} GB VRAM"
+    return f"{g} GB VRAM"
 
 
 def fit_verdict(size_gb: float, vram_bytes: int | None) -> tuple[str, str]:
     """(key, label) — key in {fits, tight, no, unknown}."""
     if vram_bytes is None:
         return "unknown", "size ?"
-    vram_gb = vram_bytes / 1e9
+    vram_gb = float(vram_gib(vram_bytes) or 0)
     if size_gb <= vram_gb * 0.80:
         return "fits", f"fits {vram_gb:.0f} GB"
     if size_gb <= vram_gb * 0.95:
