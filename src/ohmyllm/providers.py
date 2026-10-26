@@ -158,6 +158,6 @@ def key_for(pid: str, keys: dict[str, str]) -> str:
 def mask(key: str) -> str:
     if not key:
         return ""
-    if len(key) <= 8:
-        return "•" * len(key)
+    if len(key) <= 12:  # first4+last4 on a 9-char key would reveal 8 of them
+        return "•" * min(len(key), 8)
     return f"{key[:4]}…{key[-4:]}"

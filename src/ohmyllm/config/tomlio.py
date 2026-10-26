@@ -22,7 +22,14 @@ def _scalar(v: Any) -> str:
     if isinstance(v, (int, float)):
         return repr(v)
     if isinstance(v, str):
-        return json.dumps(v, ensure_ascii=False)
+        # json escapes <0x20 but NOT DEL/C1 — TOML forbids raw control chars in
+        # basic strings, so a stray \x7f in a provider name used to produce a
+        # file tomllib refuses to load (and load() then silently resets to
+        # defaults — wiping every API key). Escape everything non-printable.
+        out = json.dumps(v, ensure_ascii=False)
+        for bad in [chr(c) for c in range(0x7F, 0xA0)]:
+            out = out.replace(bad, f"\\u{ord(bad):04x}")
+        return out
     raise TypeError(f"unsupported TOML scalar: {type(v).__name__}")
 
 
@@ -78,9 +85,11 @@ def _emit(data: Mapping[str, Any], prefix: str = "") -> list[str]:
 
 
 def _needs_quotes(key: str) -> bool:
+    # TOML bare keys are ASCII-only: non-ASCII isalnum() (e.g. "ключ") is NOT
+    # bare-safe — it must be quoted or tomllib rejects the file
     if not key:
         return True
-    return not all(c.isalnum() or c in "_-" for c in key)
+    return not all(c.isascii() and (c.isalnum() or c in "_-") for c in key)
 
 
 def dumps(data: Mapping[str, Any]) -> str:
@@ -104,12 +113,13 @@ def dump_file(path: Path, data: Mapping[str, Any]) -> None:
 
     # unique temp + 0600 from creation: concurrent saves must not interleave on
     # one fixed .tmp name, and the file may hold provider API keys
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    target = path.resolve() if path.is_symlink() else path  # dotfiles users symlink config.toml
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
     try:
         os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(dumps(data))
-        os.replace(tmp, path)
+        os.replace(tmp, target)
     except BaseException:
         with contextlib.suppress(OSError):
             os.unlink(tmp)

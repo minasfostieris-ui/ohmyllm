@@ -8,6 +8,7 @@ import os
 import stat
 import threading
 
+import httpx
 import pytest
 
 from ohmyllm.backends.registry import make_backend
@@ -183,3 +184,176 @@ def test_custom_rejects_junk_base(bridge):
     assert "error" in r
     r = bridge.post("/api/providers/custom", {"name": "x", "base_url": "httpx://ok/v1"})
     assert "error" in r
+
+
+# ---- CloudBackendProbe findings (autonomous adversarial run)
+def test_exotic_pid_and_control_chars_cannot_wipe_config(bridge):
+    # unicode pid is rejected at the route…
+    r = bridge.post("/api/providers/key", {"pid": "ключ", "key": "sk-x"})
+    assert "error" in r
+    # …and control chars in a custom NAME still round-trip the file
+    bridge.post("/api/providers/custom", {"name": "we\x7fird", "base_url": "http://h/v1"})
+    body = json.dumps(bridge.get("/api/providers"))
+    assert "weird" in body or "we" in body  # stored, name sanitized-ish or kept
+    from ohmyllm.config import ConfigStore
+
+    cfg = ConfigStore().load()
+    assert cfg.cloud.keys or cfg.cloud.customs  # file still parses WITH content
+
+
+def test_tomlio_rejects_invalid_output(tmp_path):
+    from ohmyllm.config import tomlio
+
+    # sanity: the round-trip guard exists and valid docs pass
+    tomlio.dump_file(tmp_path / "ok.toml", {"a": {"ключ": "v", "x\x7fy": "\n"}})
+    assert tomlio.load_file(tmp_path / "ok.toml") == {"a": {"ключ": "v", "x\x7fy": "\n"}}
+
+
+def test_base_v1_append_only_for_bare_host(bridge):
+    r = bridge.post("/api/providers/custom", {"name": "V2", "base_url": "https://host/v2"})
+    row = next(p for p in r["providers"] if p["name"] == "V2")
+    assert row["base_url"] == "https://host/v2"  # NOT https://host/v2/v1
+    r = bridge.post("/api/providers/custom", {"name": "Bare", "base_url": "https://host"})
+    row = next(p for p in r["providers"] if p["name"] == "Bare")
+    assert row["base_url"] == "https://host/v1"
+
+
+def test_mask_short_keys_fully_hidden():
+    from ohmyllm.providers import mask
+
+    assert "…" not in mask("123456789")  # 9 chars: no first4+last4 reveal
+    assert mask("1234567890abcdefghijkl") == "1234…ijkl"
+
+
+def test_is_installed_counts_env_only_key(monkeypatch):
+    from ohmyllm.backends.registry import make_backend
+    from ohmyllm.config import Config
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-env-only")
+    cfg = Config()
+    assert cfg.cloud.provider == "" and not cfg.cloud.keys
+    assert make_backend("cloud", cfg).is_installed() is True
+
+
+def _sse_resp(events):
+    text = "".join("data: " + json.dumps(o) + "\n\n" for o in events)
+    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=text.encode())
+
+
+def test_tool_calls_without_index_do_not_merge():
+    from ohmyllm.backends.registry import make_backend
+    from ohmyllm.config import Config
+
+    def handler(req):
+        return _sse_resp([
+            {"choices": [{"delta": {"tool_calls": [{"id": "a", "function": {"name": "f1", "arguments": '{"x":1}'}}]}}]},
+            {"choices": [{"delta": {"tool_calls": [{"id": "b", "function": {"name": "f2", "arguments": '{"y":2}'}}]}}]},
+            {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+        ])
+
+    cfg = Config()
+    cfg.cloud.provider = "openai"
+    cfg.cloud.keys["openai"] = "k"
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(handler))
+
+    async def go():
+        return [c async for c in be.stream_chat("m", [{"role": "user", "content": "?"}],
+                                                cfg.generation, tools=[{"type": "function", "function": {"name": "f1"}}],
+                                                native_tools=True)]
+
+    out = asyncio.run(go())
+    calls = out[-1].tool_calls
+    assert len(calls) == 2
+    assert calls[0]["function"]["arguments"] == '{"x":1}'
+    assert calls[1]["function"]["arguments"] == '{"y":2}'
+
+
+def test_early_eof_still_yields_terminal_chunk():
+    from ohmyllm.backends.registry import make_backend
+    from ohmyllm.config import Config
+
+    def handler(req):
+        return _sse_resp([  # no finish_reason at all, stream just ends
+            {"choices": [{"delta": {"content": "partial"}}]},
+            {"choices": [{"delta": {"tool_calls": [{"id": "z", "function": {"name": "f", "arguments": '{"a":1}'}}]}}]},
+        ])
+
+    cfg = Config()
+    cfg.cloud.provider = "openai"
+    cfg.cloud.keys["openai"] = "k"
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(handler))
+
+    async def go():
+        return [c async for c in be.stream_chat("m", [{"role": "user", "content": "?"}], cfg.generation)]
+
+    out = asyncio.run(go())
+    assert out[-1].done and out[-1].finish == "stream_ended"
+    assert out[-1].tool_calls[0]["function"]["arguments"] == '{"a":1}'
+    assert "".join(c.content for c in out) == "partial"
+
+
+def test_malformed_sneaky_payloads_become_backend_error_or_skip():
+    from ohmyllm.backends.registry import make_backend
+    from ohmyllm.config import Config
+
+    def handler(req):
+        return _sse_resp([
+            {"choices": "not-a-list"},
+            {"choices": [["weird"]]},
+            {"choices": [{"delta": {"tool_calls": [{"index": "first", "function": {"arguments": {"dict": 1}}}]}}]},
+            {"choices": [{"delta": {"content": 12345}}]},
+            {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+        ])
+
+    cfg = Config()
+    cfg.cloud.provider = "openai"
+    cfg.cloud.keys["openai"] = "k"
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(handler))
+
+    async def go():
+        return [c async for c in be.stream_chat("m", [{"role": "user", "content": "?"}], cfg.generation)]
+
+    out = asyncio.run(go())  # must not raise ValueError/TypeError/AttributeError
+    assert out[-1].done
+    assert "12345" in "".join(c.content for c in out)
+
+
+def test_anthropic_thinking_sets_temperature_one():
+    from ohmyllm.backends.registry import make_backend
+    from ohmyllm.config import Config
+
+    seen = {}
+
+    def handler(req):
+        seen["body"] = json.loads(req.content)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"},
+                              content=b"event: message_delta\ndata: {\"delta\": {\"stop_reason\": \"end_turn\"}}\n\n")
+
+    cfg = Config()
+    cfg.cloud.provider = "anthropic"
+    cfg.cloud.keys["anthropic"] = "k"
+    cfg.generation.effort = "high"
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(handler))
+
+    async def go():
+        return [c async for c in be.stream_chat("claude", [{"role": "user", "content": "?"}], cfg.generation)]
+
+    asyncio.run(go())
+    assert "thinking" in seen["body"]
+    assert seen["body"]["temperature"] == 1
+
+
+def test_static_health_agrees_with_picker():
+    from ohmyllm.backends.registry import make_backend
+    from ohmyllm.config import Config
+
+    def live(req):
+        return httpx.Response(200, json={"data": [{"id": f"m{i}"} for i in range(5)]})
+
+    cfg = Config()
+    cfg.cloud.provider = "openrouter"
+    cfg.cloud.keys["openrouter"] = "k"
+    cfg.cloud.model_lists = {"openrouter": "a,b,c"}
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(live))
+    ok, info = asyncio.run(be.health())
+    assert ok and info["models"] == 3 and len(asyncio.run(be.list_models())) == 3

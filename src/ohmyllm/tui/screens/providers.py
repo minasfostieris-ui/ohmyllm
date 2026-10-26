@@ -232,7 +232,10 @@ class ProvidersScreen(Screen):
         name = parts[0] or (parts[1] if len(parts) > 1 else "") or "Custom"
         base = parts[1] if len(parts) > 1 else ""
         models = parts[2] if len(parts) > 2 else ""
-        if not base.startswith("http"):
+        from urllib.parse import urlparse
+
+        pr = urlparse(base)
+        if pr.scheme not in ("http", "https") or not pr.netloc:
             self.app.notify("usage: Name|https://my-host/v1|model-a,model-b", severity="warning")
             return
         import uuid
@@ -241,7 +244,9 @@ class ProvidersScreen(Screen):
         cl = self.app.svc.config.cloud
         cl.customs[pid] = name
         base = base.rstrip("/")
-        cl.bases[pid] = base if base.endswith("v1") else base + "/v1"
+        if urlparse(base).path in ("", "/"):
+            base += "/v1"
+        cl.bases[pid] = base
         if models:
             cl.model_lists[pid] = models
         self.app.svc.save_config()
@@ -263,13 +268,17 @@ class ProvidersScreen(Screen):
     def _apply_edit(self, pid: str, val: str | None) -> None:
         if not val:
             return
+        from urllib.parse import urlparse
+
         parts = [x.strip() for x in val.split("|")]
         cl = self.app.svc.config.cloud
         if parts and parts[0]:
             cl.customs[pid] = parts[0]
-        if len(parts) > 1 and parts[1].startswith("http"):
+        if len(parts) > 1 and urlparse(parts[1]).scheme in ("http", "https"):
             base = parts[1].rstrip("/")
-            cl.bases[pid] = base if base.endswith("v1") else base + "/v1"
+            if urlparse(base).path in ("", "/"):
+                base += "/v1"
+            cl.bases[pid] = base
         if len(parts) > 2:
             if parts[2]:
                 cl.model_lists[pid] = parts[2]

@@ -493,6 +493,13 @@ class Handler(BaseHTTPRequestHandler):
         key = str(body.get("key") or "").strip()
         if not pid:
             return 400, {"error": "pid required"}
+        from .providers import get as _pg
+        from .providers import is_custom
+
+        # arbitrary pids would land in the TOML as exotic table keys and — before
+        # the serializer hardening — could corrupt the whole config file
+        if _pg(pid) is None and not (is_custom(pid) and pid in self.state.svc.config.cloud.customs):
+            return 400, {"error": f"unknown provider {pid!r} — connect customs first"}
         cl = self.state.svc.config.cloud
         if key:
             cl.keys[pid] = key
@@ -538,8 +545,10 @@ class Handler(BaseHTTPRequestHandler):
         if urlparse(base).scheme not in ("http", "https") or not urlparse(base).netloc:
             return 400, {"error": "base_url must be a valid http(s) URL"}
         base = base.rstrip("/")
-        if not base.endswith("/v1"):
-            base += "/v1"
+        from urllib.parse import urlparse as _up
+
+        if _up(base).path in ("", "/"):  # only a bare host gets the /v1 default;
+            base += "/v1"                # /v2 or /api/anthropic stay as typed
         slug = _re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "provider"
         pid = f"custom-{slug}-{int(_t.time()) % 100000}"
         n = 2
