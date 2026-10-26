@@ -531,7 +531,7 @@ class AgentRuntime:
 
     def _outgoing(self, session: Session) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
-        openai_shape = self.backend.name.value in ("lmstudio", "mock")
+        openai_shape = self.backend.name.value in ("lmstudio", "mock", "cloud")
         for m in session.messages:
             role = m.get("role")
             content = str(m.get("content", ""))

@@ -185,6 +185,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self._market()
             if path == "/api/market/progress":
                 return self._market_progress()
+            if path == "/api/voice":
+                from .voice import status_line
+
+                return self._json(200, {"line": status_line()})
+            if path == "/api/providers":
+                return self._json(200, self._providers_state())
             if path == "/api/skills":
                 return self._json(200, {"skills": [
                     {"name": sk.name, "description": sk.description} for sk in self.state.svc.skills.list()]})
@@ -267,6 +273,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self._market_download(body)
             if path == "/api/vision/probe":
                 return self._run(self._vision_probe(body))
+            if path == "/api/voice/tts":
+                v = self.state.svc.config.voice
+                if "on" in body:
+                    v.tts_enabled = bool(body["on"])
+                    self.state.svc.save_config()
+                return self._json(200, {"enabled": v.tts_enabled})
+            if path == "/api/voice/say":
+                return self._run(self._voice_say(body))
+            if path == "/api/providers/key":
+                code, payload = self._providers_key(body)
+                return self._json(code, payload)
+            if path == "/api/providers/use":
+                code, payload = self._providers_use(body)
+                return self._json(code, payload)
+            if path == "/api/providers/forget":
+                code, payload = self._providers_forget(body)
+                return self._json(code, payload)
+            if path == "/api/providers/custom":
+                code, payload = self._providers_custom(body)
+                return self._json(code, payload)
             if path == "/api/market/cancel":
                 self.state.market_cancel = True
                 return self._json(200, {"ok": True})
@@ -431,6 +457,87 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(403, {"error": f"full_access requires the exact phrase: {self.state.svc.full_access_phrase()!r}"})
 
+    # ------------------------------------------------------------- providers
+    def _providers_state(self) -> dict:
+        from .providers import PROVIDERS, key_for, mask
+
+        cl = self.state.svc.config.cloud
+        rows = []
+        for p in PROVIDERS:
+            key = key_for(p.pid, cl.keys)
+            rows.append({"pid": p.pid, "name": p.name, "blurb": p.blurb, "kind": p.kind,
+                         "base_url": p.base_url, "popular": p.popular, "recommended": p.recommended,
+                         "signup_url": p.signup_url, "has_key": bool(key),
+                         "masked": mask(key), "active": cl.provider == p.pid})
+        for pid, name in sorted(cl.customs.items()):
+            key = key_for(pid, cl.keys)
+            rows.append({"pid": pid, "name": name, "blurb": "custom OpenAI-compatible endpoint",
+                         "kind": "openai", "base_url": cl.bases.get(pid, ""), "popular": False,
+                         "recommended": False, "signup_url": "", "has_key": bool(key),
+                         "masked": mask(key), "active": cl.provider == pid})
+        return {"providers": rows, "active": cl.provider,
+                "default_backend": self.state.svc.config.default_backend.value}
+
+    def _providers_key(self, body: dict) -> tuple[int, dict]:
+        pid = str(body.get("pid") or "").strip()
+        key = str(body.get("key") or "").strip()
+        if not pid:
+            return 400, {"error": "pid required"}
+        cl = self.state.svc.config.cloud
+        if key:
+            cl.keys[pid] = key
+        else:
+            cl.keys.pop(pid, None)
+        self.state.svc.save_config()
+        return 200, self._providers_state()
+
+    def _providers_use(self, body: dict) -> tuple[int, dict]:
+        pid = str(body.get("pid") or "").strip()
+        cl = self.state.svc.config.cloud
+        from .providers import key_for
+
+        if not key_for(pid, cl.keys):
+            return 400, {"error": "connect a key for this provider first"}
+        cl.provider = pid
+        self.state.svc.config.default_backend = BackendName.CLOUD
+        self.state.svc.save_config()
+        return 200, self._providers_state()
+
+    def _providers_forget(self, body: dict) -> tuple[int, dict]:
+        pid = str(body.get("pid") or "").strip()
+        cl = self.state.svc.config.cloud
+        cl.keys.pop(pid, None)
+        self.state.svc.save_config()
+        return 200, self._providers_state()
+
+    def _providers_custom(self, body: dict) -> tuple[int, dict]:
+        import re as _re
+        import time as _t
+
+        name = str(body.get("name") or "").strip()[:40] or "Custom"
+        base = str(body.get("base_url") or "").strip()
+        if not base.startswith("http"):
+            return 400, {"error": "base_url must start with http(s)://"}
+        base = base.rstrip("/")
+        if not base.endswith("/v1"):
+            base += "/v1"
+        slug = _re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "provider"
+        pid = f"custom-{slug}-{int(_t.time()) % 100000}"
+        cl = self.state.svc.config.cloud
+        cl.customs[pid] = name
+        cl.bases[pid] = base
+        self.state.svc.save_config()
+        return 200, self._providers_state()
+
+    async def _voice_say(self, body: dict) -> tuple[int, dict]:
+        from .voice import speak
+
+        text = str(body.get("text") or "").strip()
+        if not text:
+            return 400, {"error": "text required"}
+        ok, err = await speak(text)
+        return (200, {"ok": True}) if ok else (502, {"error": err or "tts failed"})
+
     async def _vision_probe(self, body: dict) -> tuple[int, dict]:
         from .vision import probe_vision, save_verdict
 
@@ -463,7 +570,7 @@ class Handler(BaseHTTPRequestHandler):
         for e in CATALOG:
             r = resolve(e)
             key, label = fit_verdict(r.size_gb, vram)
-            rows.append({"mid": e.mid, "title": r.title, "size_gb": r.size_gb,
+            rows.append({"mid": e.mid, "title": r.title, "size_gb": r.size_gb, "section": e.section,
                          "fit": key, "fit_label": label, "short": r.short,
                          "blurb": r.blurb, "repo": r.repo, "kind": r.kind,
                          "tags": list(r.tags)})

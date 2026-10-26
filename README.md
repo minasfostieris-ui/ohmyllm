@@ -86,14 +86,32 @@ everything, and rewrites. Measured on a local Qwen3.5-9B: 4.6x the reasoning
 it beats `/think max` on every model because the review pass is pure
 prompting, not an API knob.
 
-**`/market` — the model marketplace.** Eight curated picks (Qwen3.8-27B in
-two honest quants, Sushi-Coder-RL, official Gemma-4-26B QAT, GPT-OSS-20B,
-Qwen3-Coder-30B, R1-Distill-14B, Phi-4) with real GB sizes and a
-**"will it fit my GPU" verdict** from a live VRAM probe (NVIDIA, AMD, Apple
-Silicon unified memory). Enter or click starts the download straight into
-your LM Studio models folder — progress bar, MB/s, ETA, cancel; the same
-shelf appears as a **Market tab in the GUI**. NInfer builds are
-auto-selected only when a NInfer runtime is installed.
+**`/market` — the model marketplace.** Twenty-four curated downloads in
+three sections: 9 language models (Qwen3.8-27B in two honest quants,
+Sushi-Coder-RL, official Gemma-4 QAT, GPT-OSS-20B, Qwen3-Coder-30B,
+R1-Distill-14B, Phi-4), 4 **speech-to-text** models and 11 **Phonon TTS**
+voices — real sizes, a **"will it fit my GPU" verdict** from a live VRAM
+probe (NVIDIA, AMD, Apple Silicon unified memory) for LLMs, MB sizes for
+voice. Enter or click starts the download — LLMs straight into your LM
+Studio models folder, voice models into `~/.ohmyllm/voice/`; progress bar,
+MB/s, ETA, cancel; the same shelf appears as a **Market tab in the GUI**.
+NInfer builds are auto-selected only when a NInfer runtime is installed.
+
+**🔑 Providers — where API keys go.** Cloud models are first-class: type
+`/providers` (TUI) or open the **Providers** tab (GUI) — a connect screen
+like OpenCode's, grouped Popular / Other / Custom. Pick OpenRouter,
+Anthropic, OpenAI, Google Gemini, DeepSeek, OpenCode Zen, Groq, Mistral,
+xAI, Together, Fireworks, Cerebras, Vercel AI Gateway, 302.AI… paste the
+key, and it becomes the default backend (`u` / click). Keys are stored in
+`~/.ohmyllm/config.toml` (chmod 600, owner-only) and displayed masked
+everywhere; `OMLLM_KEY_OPENROUTER` / `OPENAI_API_KEY` / the vendor's own
+env var also work and win over the file — so secrets managers can inject
+them. Custom OpenAI-compatible endpoints (home vLLM, a LAN box) connect the
+same way. Anthropic speaks its own wire format; OhMyLLM translates,
+including native tool calls and thinking blocks.
+
+**🎙 Voice I/O.** **Hold Ctrl+E** in the TUI and talk — release to stop;
+the transcript lands in your input box, ready to edit before sending. OhMyLLM routes to whichever engine + model you actually have: **SenseVoice-Small** (English·한국어·中文·日本語·Cantonese, 254 MB — the multilingual default), **Parakeet TDT 0.6B v3** (best English accuracy), or **Whisper** multilingual ggmls (~99 other languages — add WhisperX for VAD on long recordings). `/tts on` makes replies spoken through the gradium **Phonon** family (en/es/fr/de/pt + multilingual, 22–85 MB); `/say <text>` speaks once; `/voice` shows what OhMyLLM can see on your system. STT runs through whisper.cpp / WhisperX / sensevoice.cpp / parakeet.cpp and TTS through audio.cpp — install any of them and OhMyLLM finds the binary on PATH. Nothing is claimed as available unless both the runtime and the model exist — and `/onboarding` walks you through the whole choice.
 
 **Ctrl+C copies your selection** (it never quits); quitting is Ctrl+Q with
 a confirm. Ctrl+V pastes clipboard images (see Vision paste below).

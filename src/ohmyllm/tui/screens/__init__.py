@@ -9,6 +9,7 @@ from .market import MarketScreen
 from .memory import MemoryScreen
 from .models import ModelsScreen
 from .perms import PermsScreen
+from .providers import ProvidersScreen
 from .settings import SettingsScreen
 from .wizard import WizardScreen
 
@@ -19,6 +20,7 @@ SCREENS: dict[str, type] = {
     "models": ModelsScreen,
     "backend": BackendScreen,
     "perms": PermsScreen,
+    "providers": ProvidersScreen,
     "memory": MemoryScreen,
     "settings": SettingsScreen,
     "doctor": DoctorScreen,

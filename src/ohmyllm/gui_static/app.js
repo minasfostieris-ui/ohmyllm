@@ -30,6 +30,34 @@ const post = (p, body) => api(p, { method: "POST", body: JSON.stringify(body || 
 const patch = (p, body) => api(p, { method: "PATCH", body: JSON.stringify(body || {}) });
 const del = (p) => api(p, { method: "DELETE" });
 
+function promptModal(title, hint, secret) {
+  return new Promise((resolve) => {
+    const m = $("#prompt-modal"), inp = $("#pm-input");
+    $("#pm-title").textContent = title;
+    const hintEl = $("#pm-hint");
+    hintEl.innerHTML = "";
+    if (hint) {
+      const span = document.createElement("span");
+      span.textContent = hint + "  ";
+      hintEl.appendChild(span);
+      const link = hint.match(/https:\/\/[^\s)]+/);
+      if (link) {
+        const a = document.createElement("a");
+        a.href = link[0]; a.target = "_blank"; a.rel = "noopener"; a.textContent = "open";
+        hintEl.appendChild(a);
+      }
+    }
+    inp.type = secret ? "password" : "text";
+    inp.value = "";
+    m.hidden = false;
+    inp.focus();
+    const done = (val) => { m.hidden = true; $("#pm-ok").onclick = null; $("#pm-cancel").onclick = null; inp.onkeydown = null; resolve(val); };
+    $("#pm-ok").onclick = () => done(inp.value.trim());
+    $("#pm-cancel").onclick = () => done(null);
+    inp.onkeydown = (e) => { if (e.key === "Enter") done(inp.value.trim()); if (e.key === "Escape") done(null); };
+  });
+}
+
 function toast(msg, kind = "") {
   const t = document.createElement("div");
   t.className = `toast ${kind}`;
@@ -444,11 +472,12 @@ function switchView(v) {
   state.view = v;
   $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   $$(".view").forEach((s) => (s.hidden = s.id !== `view-${v}`));
-  const titles = { chat: "Chat", chats: "Chats", models: "Models", backend: "Backend", memory: "Memory · soul.md", doctor: "Doctor", settings: "Settings", help: "Help & keys" };
+  const titles = { chat: "Chat", chats: "Chats", models: "Models", backend: "Backend", memory: "Memory · soul.md", doctor: "Doctor", settings: "Settings", help: "Help & keys", providers: "Providers" };
   $("#view-title").textContent = titles[v] || v;
   if (v === "chats") renderChats();
   if (v === "models") renderModels();
   if (v === "market") renderMarket();
+  if (v === "providers") renderProviders();
   if (v === "backend") renderBackends();
   if (v === "memory") renderSoul();
   if (v === "doctor") renderDoctor();
@@ -572,28 +601,121 @@ async function renderModels() {
 }
 const gib = (b) => (b / 2 ** 30).toFixed(1) + " GiB";
 
+// -------------------------------------------------------------- providers
+let _provData = null;
+
+async function renderProviders() {
+  const box = $("#prov-list");
+  if (!_provData) {
+    try { _provData = await get("/api/providers"); }
+    catch { box.innerHTML = '<p class="prov-sub">providers unavailable</p>'; return; }
+  }
+  const q = ($("#prov-search").value || "").toLowerCase();
+  const rows = _provData.providers.filter((p) =>
+    !q || p.name.toLowerCase().includes(q) || p.blurb.toLowerCase().includes(q) || p.pid.includes(q));
+  const groups = [["Popular", rows.filter((p) => p.popular)],
+                  ["Other", rows.filter((p) => !p.popular && p.pid.indexOf("custom-") !== 0)],
+                  ["Custom", rows.filter((p) => p.pid.indexOf("custom-") === 0)]];
+  box.innerHTML = groups.filter(([, list]) => list.length).map(([g, list]) =>
+    `<div class="prov-group">${g}</div>` + list.map((p) => {
+      const glyph = p.name.slice(0, 1).toUpperCase();
+      const badges = [
+        p.active ? '<span class="pb active">active</span>' : "",
+        p.recommended ? '<span class="pb rec">Recommended</span>' : "",
+        p.has_key ? `<span class="pb ok">✓ ${esc(p.masked)}</span>` : "",
+      ].join("");
+      return `<div class="prov-row" data-pid="${esc(p.pid)}" tabindex="0" role="button" aria-label="Connect ${esc(p.name)}">
+        <span class="prov-glyph">${esc(glyph)}</span>
+        <span class="prov-name">${esc(p.name)}</span>
+        <span class="prov-blurb">${esc(p.blurb)}</span>${badges}
+        <span class="prov-actions"></span>
+      </div>`;
+    }).join("")).join("")
+    + `<div class="prov-foot"><button type="button" class="btn ghost" id="prov-add-custom">✦ Custom OpenAI-compatible provider</button></div>`;
+  $$(".prov-row").forEach((r) => {
+    const go = () => provConnect(r.dataset.pid);
+    r.onclick = go;
+    r.onkeydown = (ev) => { if (ev.key === "Enter") go(); };
+  });
+  $("#prov-add-custom").onclick = provAddCustom;
+}
+
+async function provConnect(pid) {
+  const p = (_provData.providers || []).find((x) => x.pid === pid);
+  if (!p) return;
+  const cur = p.has_key ? `Stored key: ${p.masked} — paste to replace, empty to remove.` : "";
+  const signup = p.signup_url ? ` Get one: <a href="${esc(p.signup_url)}" target="_blank" rel="noopener">${esc(p.signup_url)}</a>` : "";
+  const key = await promptModal(`🔑 ${p.name} API key`, cur + (cur ? "\n" : "") + signup, true);
+  if (key === null) return;
+  const r = await post("/api/providers/key", { pid, key });
+  if (r && r.error) { toast(r.error, "bad"); return; }
+  _provData = r; renderProviders();
+  toast(key ? `${p.name} key saved` : `${p.name} key removed`);
+  if (key) {
+    const u = await post("/api/providers/use", { pid });
+    if (u && !u.error) { _provData = u; renderProviders(); toast(`${p.name} → default backend (cloud)`); }
+  }
+}
+
+async function provAddCustom() {
+  const name = await promptModal("Custom provider — name", "e.g. Home vLLM");
+  if (!name) return;
+  const base = await promptModal("Custom provider — base URL", "https://host:port/v1 (OpenAI-compatible)");
+  if (!base) return;
+  const r = await post("/api/providers/custom", { name, base_url: base });
+  if (r && r.error) { toast(r.error, "bad"); return; }
+  _provData = r; renderProviders(); toast(`${name} added — click it to paste the key`);
+}
+
+$("#prov-search")?.addEventListener("input", () => renderProviders());
+
 // ------------------------------------------------------------- marketplace
 let _marketTimer = null;
 
 async function renderMarket() {
   const grid = $("#market-grid");
   const head = $("#market-head");
-  if (grid.dataset.loaded) { _pollMarket(); return; }
-  head.textContent = "scanning your GPU…";
+  if (grid.dataset.loaded) { _paintMarket(_marketData); _pollMarket(); return; }
+  head.textContent = "scanning your hardware…";
   let data = null;
   try { data = await get("/api/market"); } catch { head.textContent = "market unavailable"; return; }
   grid.dataset.loaded = "1";
+  _marketData = data;
+  _paintMarket(data);
+}
+let _marketData = null;
+function _paintMarket(data) {
+  const grid = $("#market-grid");
+  const head = $("#market-head");
   const g = data.vram_bytes ? Math.round(data.vram_bytes / 1073741824) : null;
-  head.innerHTML = data.gpu
-    ? `<b>${esc(data.gpu)}</b> · ${g ?? "?"} GB VRAM detected`
-    : (g ? `${g} GB VRAM detected` : "VRAM unknown — sizes shown, fit not judged");
   const badge = { fits: ["✓", "ok"], tight: ["⚠", "warn"], no: ["✗", "bad"], unknown: ["?", "dim"] };
-  grid.innerHTML = (data.entries || []).map((e) => {
+  const entries = data.entries || [];
+  const SECTIONS = [["llm", "💬 Models"], ["stt", "🎤 Speech-to-text"], ["tts", "🔊 Text-to-speech"]];
+  const active = grid.dataset.section || "llm";
+  const tabs = SECTIONS.map(([k, label]) => {
+    const n = entries.filter((e) => (e.section || "llm") === k).length;
+    return `<button class="chip ${k === active ? "active" : ""}" data-sec="${k}">${label}<span class="cnt">${n}</span></button>`;
+  }).join(" ");
+  head.innerHTML = `<span class="market-gpu">${data.gpu ? esc(data.gpu) + " · " : ""}${g ? g + " GB VRAM" : "VRAM unknown — fit not judged"}</span><span class="market-seg">${tabs}</span>`;
+  $$("#market-head .chip").forEach((c) => (c.onclick = () => { grid.dataset.section = c.dataset.sec; _paintMarket(data); }));
+  const vramGb = data.vram_bytes ? data.vram_bytes / 1073741824 : null;
+  grid.innerHTML = entries.filter((e) => (e.section || "llm") === active).map((e) => {
+    const sec = e.section || "llm";
     const [txt, cls] = badge[e.fit] || badge.unknown;
-    return `<div class="market-card ${cls}" data-mid="${esc(e.mid)}" tabindex="0" role="button" aria-label="Download ${esc(e.title)}">
-      <div class="mc-top"><span class="mc-title">${esc(e.title)}</span><span class="mc-size">${e.size_gb.toFixed(1)} GB</span></div>
-      <div class="mc-fit ${cls}">${txt} ${esc(e.fit_label)}${e.kind !== "gguf" ? " · " + esc(e.kind) : ""}</div>
+    const size = sec === "llm" ? e.size_gb.toFixed(1) + " GB" : (e.size_gb * 1000).toFixed(0) + " MB";
+    const fit = sec === "llm"
+      ? `<span class="mc-fit ${cls}">${txt} ${esc(e.fit_label)}${e.kind !== "gguf" ? " · " + esc(e.kind) : ""}</span>`
+      : `<span class="mc-fit dim">${sec === "stt" ? "🎤 speech-to-text" : "🔊 text-to-speech"} · ~/.ohmyllm/voice/</span>`;
+    let bar = "";
+    if (sec === "llm" && vramGb) {
+      const pct = Math.min(100, Math.round((e.size_gb / vramGb) * 100));
+      bar = `<div class="mc-bar" title="${e.size_gb} GB of ${vramGb.toFixed(0)} GB VRAM"><i class="${cls}" style="width:${pct}%"></i></div>`;
+    }
+    return `<div class="market-card f-${cls}" data-mid="${esc(e.mid)}" tabindex="0" role="button" aria-label="Download ${esc(e.title)}">
+      <div class="mc-top"><span class="mc-title">${esc(e.title)}</span><span class="mc-size">${size}</span></div>
+      ${fit}
       <div class="mc-blurb">${esc(e.blurb)}</div>
+      ${bar}
       <div class="mc-foot"><span class="mc-repo">${esc(e.repo)}</span><span class="mc-dl">↓ Download</span></div>
     </div>`;
   }).join("");
@@ -604,6 +726,7 @@ async function renderMarket() {
   });
   _pollMarket();
 }
+
 
 async function marketDownload(mid) {
   let r = null;
@@ -832,7 +955,16 @@ function renderHelp() {
   <tr><td><code>/models</code></td><td>open the model list</td></tr>
   <tr><td><code>/mode &lt;name&gt;</code></td><td>request a permission mode (full_access needs the typed phrase)</td></tr>
   <tr><td><code>/clear</code></td><td>empty the visible stream</td></tr>
+  <tr><td><code>/market</code></td><td>models + voice models to download (Market tab)</td></tr>
+  <tr><td><code>/providers</code></td><td>connect cloud API keys — Providers tab</td></tr>
+  <tr><td><code>/voice</code></td><td>speech-to-text status (TUI: hold Ctrl+E to talk)</td></tr>
+  <tr><td><code>/tts on|off</code> · <code>/say &lt;text&gt;</code></td><td>spoken replies (Phonon voices)</td></tr>
   <tr><td><code>/help</code></td><td>this screen</td></tr></table>
+  <h3>where do API keys go?</h3>
+  <p>Open the <b>Providers</b> tab (left sidebar) → pick OpenRouter / Anthropic / OpenAI / … →
+  paste the key. It is stored in <code>~/.ohmyllm/config.toml</code> (owner-only, chmod 600)
+  and only ever shown masked. Environment keys (<code>OMLLM_KEY_OPENROUTER</code>,
+  <code>OPENAI_API_KEY</code>, …) also work and take precedence over the file.</p>
   <h3>permission modes</h3>
   <table>
   <tr><td><b>strict</b></td><td>read-only tools auto; every write/exec asks approval</td></tr>
@@ -914,6 +1046,25 @@ async function handleSlash(text) {
     case "/help": switchView("help"); break;
     case "/models": switchView("models"); break;
     case "/market": switchView("market"); break;
+    case "/providers": switchView("providers"); break;
+    case "/onboarding": toast("the guided tutorial lives in the TUI — run: oml"); break;
+    case "/voice": {
+      const r = await get("/api/voice");
+      addEvline("note", "voice · " + (r.line || "unavailable"));
+      break;
+    }
+    case "/tts": {
+      const want = (arg || "").toLowerCase();
+      const r = await post("/api/voice/tts", { on: want === "on" ? true : want === "off" ? false : null });
+      toast(r && r.error ? r.error : `TTS ${r.enabled ? "on" : "off"} — replies spoken needs audio.cpp + a Phonon voice from Market`);
+      break;
+    }
+    case "/say": {
+      if (!arg) { toast("usage: /say some words"); break; }
+      const r = await post("/api/voice/say", { text: arg });
+      toast(r && r.error ? r.error : "speaking…");
+      break;
+    }
     case "/backend": switchView("backend"); break;
     case "/rename": if (state.session) patch(`/api/chats/${state.session}`, { title: arg || "renamed" }).then(refreshStatus); break;
     case "/export": if (state.session) post(`/api/chats/${state.session}/export`, { format: arg.includes("json") ? "json" : "markdown" }).then((r) => toast(`exported → ${r.path}`)); break;

@@ -35,6 +35,11 @@ class ChatScreen(Screen):
         ("/think", "[off|low|medium|high|xhigh|max|hide|show]", "reasoning effort"),
         ("/skillimport", "", "open the skills folder (add/remove/move skills)"),
         ("/market", "", "recommended models — VRAM fit + one-key download"),
+        ("/providers", "", "connect cloud API keys — OpenRouter, Anthropic, OpenAI, …"),
+        ("/voice", "", "speech-to-text status (hold ctrl+E to talk)"),
+        ("/tts", "[on|off]", "speak replies with a Phonon voice"),
+        ("/say", "<text>", "speak once"),
+        ("/onboarding", "", "reopen the first-run tutorial"),
         ("/ultrathink", "[on|off]", "deep reasoning: think much longer and harder"),
         ("/memory", "", "soul.md editor"), ("/soul", "", "soul.md editor"), ("/doctor", "", "diagnostics"),
         ("/settings", "", "all settings"), ("/chats", "", "browse chats"), ("/new", "", "fresh chat"),
@@ -51,6 +56,7 @@ class ChatScreen(Screen):
         Binding("tab", "slash_complete", "", show=False, priority=False),
         Binding("ctrl+t", "toggle_thinking", "hide/show live thinking", priority=True),
         Binding("ctrl+v", "paste_image", "paste image from clipboard", priority=True),
+        Binding("ctrl+e", "talk", "hold to talk (STT)", priority=True),
     ]
 
     def _menu(self) -> OptionList | None:
@@ -285,6 +291,98 @@ class ChatScreen(Screen):
             return "reasoning effort (your model supports thinking)"
         return None
 
+    # ------------------------------------------------------- hold-to-talk
+    def action_talk(self) -> None:
+        """Ctrl+E: press-and-HOLD. Terminals auto-repeat the key while held;
+        the first press starts recording, repeats refresh a heartbeat, and
+        ~0.45s of silence (= release) stops + transcribes."""
+        import time as _t
+
+        now = _t.monotonic()
+        rec = getattr(self, "_rec", None)
+        if rec is not None and rec.running:
+            self._talk_last = now  # key repeat
+            return
+        self._start_talk()
+
+    @work(exclusive=True, group="talk")
+    async def _start_talk(self) -> None:
+        import time as _t
+
+        from ... import voice as _v
+        from ...voice import Recorder
+
+        lang = self.app.svc.config.voice.language
+        eng, binary = _v.pick_engine(None if lang == "auto" else lang)
+        if eng is None:
+            self.app.notify(binary, severity="warning", timeout=8)
+            return
+        if _v.find_recorder() is None:
+            self.app.notify("no mic recorder — install pipewire (pw-record), alsa-utils or ffmpeg",
+                            severity="warning")
+            return
+        wav = _v.voice_dir() / f"hold-{int(_t.time())}.wav"
+        rec = Recorder(wav)
+        err = rec.start()
+        if err:
+            self.app.notify(err, severity="error")
+            return
+        self._rec = rec
+        self._rec_path = wav
+        self._talk_last = _t.monotonic()
+        self.app.notify(f"🎙 {eng} armed — talk… release Ctrl+E when done", timeout=30)
+        old = getattr(self, "_talk_timer", None)
+        if old:
+            with contextlib.suppress(Exception):
+                old.stop()
+        self._talk_timer = self.set_interval(0.1, self._talk_tick)
+
+    def _talk_tick(self) -> None:
+        import time as _t
+
+        rec = getattr(self, "_rec", None)
+        if rec is None or not rec.running:
+            return
+        if _t.monotonic() - getattr(self, "_talk_last", 0) > 0.45:
+            timer = getattr(self, "_talk_timer", None)
+            if timer:
+                with contextlib.suppress(Exception):
+                    timer.stop()
+            self._rec = None
+            rec.stop()
+            self._transcribe_talk()
+
+    @work(exclusive=True, group="transcribe")
+    async def _transcribe_talk(self) -> None:
+
+        from ... import voice as _v
+
+        wav = getattr(self, "_rec_path", None)
+        if wav is None or not wav.exists() or wav.stat().st_size < 10_000:
+            self.app.notify("too short — hold Ctrl+E and speak", severity="warning")
+            return
+        lang = self.app.svc.config.voice.language
+        self.app.notify("🎧 transcribing…", timeout=4)
+        text, err = await _v.transcribe(wav, language=None if lang == "auto" else lang)
+        with contextlib.suppress(OSError):
+            wav.unlink(missing_ok=True)
+        if err:
+            self.app.notify(err, severity="error", timeout=8)
+            return
+        inp = self.query_one("#chat-input", Input)
+        inp.value = (inp.value + " " + text).strip() if inp.value else text
+        inp.focus()
+        self.app.notify(f"🎙 {text[:60]}{'…' if len(text) > 60 else ''}", timeout=6)
+
+    # ------------------------------------------------------------------ tts
+    @work(exclusive=False, group="speak")
+    async def _speak(self, text: str) -> None:
+        from ... import voice as _v
+
+        ok, err = await _v.speak(text)
+        if err:
+            self.app.notify(err, severity="warning", timeout=8)
+
     def action_paste_image(self) -> None:
         self._grab_clip()
 
@@ -405,6 +503,8 @@ class ChatScreen(Screen):
             if result.error:
                 self._sysline(f"backend error: {result.error} — check /backend or Ctrl+B", "error")
             app.tok_s = result.tokens_per_s or app.tok_s
+            if result.text and not result.error and app.svc.config.voice.tts_enabled:
+                self._speak(result.text[:2000])
         except AgentCancelled:
             self._finalize()
             self._sysline("turn cancelled", "system")
@@ -894,6 +994,34 @@ class ChatScreen(Screen):
                 self._sysline(f"skill cast · {name} — the agent will follow it from here", "system")
         elif cmd == "market":
             app.replace_screen("market")
+        elif cmd == "providers":
+            app.replace_screen("providers")
+        elif cmd == "onboarding":
+            app.replace_screen("wizard")
+        elif cmd == "voice":
+            from ... import voice as _v
+
+            self._sysline("voice status · " + _v.status_line(), "system")
+        elif cmd == "tts":
+            from ... import voice as _v
+
+            want = arg.lower()
+            cur = app.svc.config.voice.tts_enabled
+            if want == "on":
+                app.svc.config.voice.tts_enabled = True
+                app.svc.save_config()
+                app.notify("🔊 TTS on — replies will be spoken (needs audio.cpp + a Phonon voice from /market)")
+            elif want == "off":
+                app.svc.config.voice.tts_enabled = False
+                app.svc.save_config()
+                app.notify("🔇 TTS off")
+            else:
+                app.notify(f"tts is {'on' if cur else 'off'} — /tts on|off · /say <text> speaks once")
+        elif cmd == "say":
+            if not arg:
+                app.notify("usage: /say some words out loud")
+            else:
+                self._speak(arg)
         elif cmd == "skillimport":
             import subprocess
             import sys as _sys

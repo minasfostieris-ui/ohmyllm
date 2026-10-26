@@ -28,8 +28,8 @@ async def test_wizard() -> None:
         await pilot.pause(0.6)
         from ohmyllm.tui.screens.wizard import WizardScreen
         assert isinstance(app.screen, WizardScreen), type(app.screen)
-        # click through all 9 steps
-        for _i in range(8):
+        # click through all 10 steps
+        for _i in range(9):
             await pilot.click("#wiz-next")
             await pilot.pause(0.35)
             if _i == 0:  # step 1: backend-detect worker re-renders here (DuplicateIds race)

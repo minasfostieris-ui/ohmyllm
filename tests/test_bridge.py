@@ -129,9 +129,44 @@ def test_post_routes_not_misrouted_to_patch(bridge):
     assert r.get("error") != "no route", "skills/cast must be POST-routed"
 
 
+def test_bridge_voice_routes(bridge):
+    from ohmyllm import voice
+
+    r = bridge.get("/api/voice")
+    assert "line" in r and "🎤" in r["line"]
+    r = bridge.post("/api/voice/tts", {"on": True})
+    assert r["enabled"] is True
+    r = bridge.post("/api/voice/tts", {"on": False})
+    assert r["enabled"] is False
+    r = bridge.post("/api/voice/say", {})
+    assert "error" in r
+    r = bridge.get("/api/market")
+    secs = {e.get("section") for e in r["entries"]}
+    assert {"llm", "stt", "tts"} <= secs
+    assert voice.status_line().startswith("🎤")
+
+
+def test_bridge_providers_masked(bridge):
+    secret = "sk-bridge-super-secret-key"
+    r = bridge.post("/api/providers/key", {"pid": "openrouter", "key": secret})
+    assert "error" not in r
+    body = json.dumps(r)
+    assert secret not in body  # never returned raw
+    row = next(p for p in r["providers"] if p["pid"] == "openrouter")
+    assert row["has_key"] and secret not in row["masked"]
+    r = bridge.post("/api/providers/use", {"pid": "openrouter"})
+    assert r["active"] == "openrouter" and r["default_backend"] == "cloud"
+    r = bridge.post("/api/providers/custom", {"name": "Home vLLM", "base_url": "http://192.168.1.5:8000"})
+    cpid = next(p["pid"] for p in r["providers"] if p["name"] == "Home vLLM")
+    assert r["providers"][next(i for i, p in enumerate(r["providers"]) if p["pid"] == cpid)]["base_url"].endswith("/v1")
+    r = bridge.post("/api/providers/forget", {"pid": "openrouter"})
+    row = next(p for p in r["providers"] if p["pid"] == "openrouter")
+    assert not row["has_key"]
+
+
 def test_market_get_shape(bridge):
     r = bridge.get("/api/market")
-    assert "entries" in r and len(r["entries"]) == 9
+    assert "entries" in r and len(r["entries"]) == 24
     for e in r["entries"]:
         assert {"mid", "title", "size_gb", "fit", "fit_label", "blurb", "repo"} <= set(e)
     p = bridge.get("/api/market/progress")

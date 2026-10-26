@@ -51,6 +51,45 @@ the right calling protocol per model:
 Malformed calls bounce back to the model with a correction message instead
 of crashing the turn.
 
+## Cloud providers (hosted models)
+
+`cloud` is a real backend (`src/ohmyllm/backends/cloud.py`) driven by a
+provider registry (`src/ohmyllm/providers.py`):
+
+| provider | wire | base |
+|---|---|---|
+| OpenRouter (recommended) | openai | https://openrouter.ai/api/v1 |
+| Anthropic | anthropic | https://api.anthropic.com/v1 |
+| OpenAI · Google · DeepSeek · OpenCode Zen · Groq · Mistral · xAI · Together · Fireworks · Cerebras · Vercel AI Gateway · 302.AI | openai | vendor `/v1` |
+| custom (vLLM, LAN, …) | openai | your base URL |
+
+Keys: `[cloud]` section in config.toml (owner-only file) or env
+(`OMLLM_KEY_<ID>` > vendor var > file). UI surfaces: `/providers` TUI
+screen, Providers tab in the GUI, cloud card on Ctrl+B. The Anthropic path
+translates system prompts, tool_use/tool_result blocks and streaming
+events; `reasoning_effort` maps to each provider's vocabulary.
+
+## Voice engines
+
+Speech I/O is engine-routed by language + what is actually installed
+(`src/ohmyllm/voice.py`):
+
+| engine | covers | runtime binary (PATH) | model |
+|---|---|---|---|
+| SenseVoice | en·ko·zh·ja·yue | `sensevoice-cli` (sensevoice.cpp) | `/market → stt-sensevoice` |
+| Parakeet | English | `parakeet-cli` (parakeet.cpp) | `/market → stt-parakeet` |
+| WhisperX | ~99 languages + VAD | `whisperx` (pip) | own weights, or ggml for `whisper` |
+| Whisper | ~99 languages | `whisper-cli` (whisper.cpp) | `/market → stt-whisper-*` |
+| Phonon TTS | 6 voices + multilingual | `audio-cli` / `phonon-cli` (audio.cpp) | `/market → tts-*` |
+
+`pick_engine("ko")` → SenseVoice; `"en"` → Parakeet when its model is
+present; everything else → WhisperX then Whisper. An engine is only
+selected when **both binary and model exist**; otherwise the UI says
+exactly what is missing (runtime vs model are different fixes). Mic capture
+uses `pw-record` → `arecord` → `ffmpeg`. Hold-to-talk needs no extra
+packages; Textual has no key-release event, so release is detected via the
+auto-repeat gap (>0.45 s of silence = you let go).
+
 ## Adding a backend
 
 Subclass `BaseBackend` (`src/ohmyllm/backends/base.py`): `is_installed`,

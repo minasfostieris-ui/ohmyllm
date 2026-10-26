@@ -33,6 +33,15 @@ HELP = """\
 `/help` `/model [name]` `/backend [ollama|lmstudio|mock]` `/mode [strict|safe|sandboxed|dangerous|full_access]`
 `/memory` `/soul` `/doctor` `/settings` `/chats` `/new` `/clear` `/rename <title>` `/delete` `/think [on|off]`
 `/export [markdown|json]` `/remember <fact>` `/forget <thing>` `/gui` `/quit`
+`/market` `/providers` `/voice` `/tts [on|off]` `/say <text>` `/onboarding`
+
+**Where do API keys go?** `/providers` (or the Providers tab in the GUI):
+paste your OpenRouter / Anthropic / OpenAI / … key — stored in
+`~/.ohmyllm/config.toml` (owner-only), shown masked. Env keys
+(`OMLLM_KEY_OPENROUTER`, `OPENAI_API_KEY`, …) work too and win.
+
+**Voice**: hold `Ctrl+E` in chat to talk (SenseVoice/Parakeet/Whisper by
+language — models in `/market`), `/tts on` to hear replies (Phonon voices).
 
 
 ## Skills

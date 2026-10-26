@@ -24,7 +24,10 @@ def _mkpng(p: Path, w: int = 1563, h: int = 200) -> Path:
 
 # ------------------------------------------------------------------ catalog
 def test_catalog_curated_entries():
-    assert len(market.CATALOG) == 9
+    assert len(market.CATALOG) == 24
+    secs = {e.section for e in market.CATALOG}
+    assert secs == {"llm", "stt", "tts"}
+    assert all(e.mid.startswith("stt-") for e in market.CATALOG if e.section == "stt")
     ids = {e.mid for e in market.CATALOG}
     assert {"qwen38-iq2xs", "qwen38-q6k", "sushi-9b", "gemma4-26b", "gemma4-12b",
             "gpt-oss-20b", "qwen3-coder-30b", "r1-14b", "phi-4"} <= ids
@@ -162,7 +165,7 @@ async def test_market_download_button_flow(oml_env, svc, monkeypatch):
         screen = app.screen
         assert isinstance(screen, MarketScreen)
         lst = screen.query_one(OptionList)
-        lst.highlighted = 0
+        lst.highlighted = 1  # 0 is the disabled section header
         await pilot.press("enter")
         await pilot.pause(1.0)
         label = screen.query_one("#market-dl-label", Static)
@@ -238,9 +241,10 @@ async def test_market_screen_lists_fits(oml_env, svc):
         from textual.widgets import OptionList
 
         lst = app.screen.query_one(OptionList)
-        assert lst.option_count >= 4
-        txt = str(lst.get_option_at_index(0).prompt)
-        assert "GB" in txt
+        assert lst.option_count >= 24  # 9 llm + 4 stt + 11 phonon + 3 section headers
+        prompts = " ".join(str(lst.get_option_at_index(i).prompt) for i in range(lst.option_count))
+        assert "GB" in prompts and "SenseVoice" in prompts and "Phonon" in prompts
+        assert "Speech-to-text" in prompts and "Text-to-speech" in prompts
 
 
 async def test_paste_attaches_and_sends_parts(oml_env, svc, tmp_path, monkeypatch):

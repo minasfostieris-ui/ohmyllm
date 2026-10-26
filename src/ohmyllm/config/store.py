@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -61,4 +62,7 @@ class ConfigStore:
     def save(self, config: Config) -> Path:
         data = config.model_dump(mode="json")
         tomlio.dump_file(self.path, data)
+        # the file can contain provider API keys ([cloud] keys) — owner-only
+        with contextlib.suppress(OSError):
+            self.path.chmod(0o600)
         return self.path

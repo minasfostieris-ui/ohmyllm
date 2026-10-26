@@ -359,6 +359,7 @@ class OhMyLLMApp(App[None]):
             SystemCommand("New chat", "Start a fresh session (Ctrl+N)", lambda: self.new_chat()),
             SystemCommand("Select model", "Model manager (Ctrl+M)", lambda: self.replace_screen("models")),
             SystemCommand("Backends and servers", "Ollama / LM Studio status (Ctrl+B)", lambda: self.replace_screen("backend")),
+            SystemCommand("Providers", "Cloud API keys — OpenRouter, Anthropic, /providers", lambda: self.replace_screen("providers")),
             SystemCommand("Permission mode", "strict/safe/sandboxed/dangerous/full (Ctrl+P)", lambda: self.replace_screen("perms")),
             SystemCommand("Memory soul.md", "View and edit persistent memory (Ctrl+S)", lambda: self.replace_screen("memory")),
             SystemCommand("Settings", "Generation, safety, server config (Ctrl+G)", lambda: self.replace_screen("settings")),

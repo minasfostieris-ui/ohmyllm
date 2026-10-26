@@ -8,6 +8,7 @@ import httpx
 
 from ..config.models import BackendName, Config
 from .base import BaseBackend
+from .cloud import CloudBackend
 from .lmstudio import LMStudioBackend
 from .mock import MockBackend
 from .ollama import OllamaBackend
@@ -16,6 +17,7 @@ _CLASSES: dict[BackendName, type[BaseBackend]] = {
     BackendName.OLLAMA: OllamaBackend,
     BackendName.LMSTUDIO: LMStudioBackend,
     BackendName.MOCK: MockBackend,
+    BackendName.CLOUD: CloudBackend,
 }
 
 
@@ -35,4 +37,5 @@ async def probe(config: Config, transport: httpx.AsyncBaseTransport | None = Non
     return out
 
 
-__all__ = ["BaseBackend", "LMStudioBackend", "MockBackend", "OllamaBackend", "make_backend", "probe"]
+__all__ = ["BaseBackend", "CloudBackend", "LMStudioBackend", "MockBackend", "OllamaBackend",
+          "make_backend", "probe"]

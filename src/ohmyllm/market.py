@@ -26,6 +26,8 @@ class MarketEntry:
     size_gb: float
     blurb: str
     short: str = ""  # one-line pitch for the detail pane header
+    section: str = "llm"  # llm | stt | tts — voice models land in ~/.ohmyllm/voice/
+    zipball: bool = False  # fetch the whole repo archive (sample packs)
     kind: str = "gguf"  # gguf -> LM Studio folder; ninfer -> own runtime
     companion: str | None = None  # mmproj file needed for vision, same repo
     mtp: str | None = None  # MTP drafter file, same repo — auto-fetched beside the model
@@ -34,6 +36,8 @@ class MarketEntry:
 
     @property
     def url(self) -> str:
+        if self.zipball:
+            return f"https://huggingface.co/{self.repo}/archive/main.zip"
         return f"https://huggingface.co/{self.repo}/resolve/main/{self.file}"
 
     @property
@@ -188,6 +192,105 @@ CATALOG: list[MarketEntry] = [
 ]
 
 
+# ------------------------------------------------------------- voice shelf
+# STT: SenseVoice (multilingual default: en/ko/zh/ja/yue), Parakeet (best
+# English), Whisper multilingual ggmls (the "everything else" ~99-language
+# family; pair with WhisperX/VAD for long files).
+STT_CATALOG: list[MarketEntry] = [
+    MarketEntry(
+        mid="stt-sensevoice", section="stt",
+        title="SenseVoice-Small · Q8 (FunAudioLLM)",
+        repo="FunAudioLLM/SenseVoiceSmall-GGUF", file="sensevoice-small-q8.gguf",
+        size_gb=0.254,
+        short="multilingual default — English · Korean · Chinese · Japanese · Cantonese",
+        blurb="Alibaba's SenseVoice in GGUF: 254 MB, auto language detection "
+              "across en/ko/zh/ja/yue and more, very fast on CPU. Runtime: "
+              "sensevoice.cpp (provides sensevoice-cli — OhMyLLM finds it on PATH).",
+        tags=("stt", "multilingual", "ko", "zh", "en", "ja"),
+    ),
+    MarketEntry(
+        mid="stt-parakeet", section="stt",
+        title="Parakeet TDT 0.6B v3 · Q8 (NVIDIA)",
+        repo="handy-computer/parakeet-tdt-0.6b-v3-gguf", file="parakeet-tdt-0.6b-v3-Q8_0.gguf",
+        size_gb=0.74,
+        short="the English pick — top EN accuracy, tiny footprint",
+        blurb="NVIDIA Parakeet-TDT: best-in-class English WER at 0.6B params. "
+              "English-only by design — pick SenseVoice or Whisper for other "
+              "languages. Runtime: parakeet.cpp (parakeet-cli on PATH).",
+        tags=("stt", "english"),
+    ),
+    MarketEntry(
+        mid="stt-whisper-small", section="stt",
+        title="Whisper small · multilingual (ggml)",
+        repo="ggerganov/whisper.cpp", file="ggml-small.bin",
+        size_gb=0.488,
+        short="the everything-else option — ~99 languages incl. VAD via WhisperX",
+        blurb="whisper.cpp multilingual build: near-universal language "
+              "coverage. For long recordings add WhisperX (pip install "
+              "whisperx) for voice-activity segmentation. Runtime: "
+              "whisper-cli (whisper.cpp) — OhMyLLM finds it on PATH.",
+        tags=("stt", "multilingual", "vad"),
+    ),
+    MarketEntry(
+        mid="stt-whisper-turbo", section="stt",
+        title="Whisper large-v3-turbo · Q5 (ggml)",
+        repo="ggerganov/whisper.cpp", file="ggml-large-v3-turbo-q5_0.bin",
+        size_gb=0.574,
+        short="max multilingual accuracy, still fast",
+        blurb="The accuracy pick when VRAM allows: large-v3-turbo quantized. "
+              "Same ~99-language coverage + VAD-friendly.",
+        tags=("stt", "multilingual", "accurate"),
+    ),
+]
+
+# TTS: the whole gradium Phonon family (11 repos) — Meta-Phonon distilled,
+# tiny (22-85 MB) Apache-2.0 voices. Runtime: audio.cpp.
+def _phonon(mid: str, lang: str, repo: str, file: str, gb: float, note: str = "",
+            companion: str | None = None) -> MarketEntry:
+    return MarketEntry(
+        mid=mid, section="tts",
+        title=f"Phonon {lang} · {repo.split('-')[-1] if 'phonon' in repo else repo}",
+        repo=f"gradium/{repo}", file=file, size_gb=gb,
+        short=f"TTS voice — {lang}{note}",
+        blurb=f"gradium/{repo}: distilled Meta Phonon text-to-speech ({lang}). "
+              "Apache-2.0, runs via audio.cpp (phonon-cli/audio-cli on PATH). "
+              "OhMyLLM: /tts on makes replies spoken; /say <text> speaks once.",
+        companion=companion,
+        tags=("tts", lang.lower()),
+    )
+
+
+TTS_CATALOG: list[MarketEntry] = [
+    _phonon("tts-31m-en", "English 31M", "phonon-31m-en", "model.q8.gguf", 0.065),
+    _phonon("tts-40m-en", "English 40M", "phonon-40m-en", "model.q8.gguf", 0.075),
+    _phonon("tts-40m-es", "Spanish", "phonon-40m-es", "model.q8.gguf", 0.075),
+    _phonon("tts-40m-fr", "French", "phonon-40m-fr", "model.q8.gguf", 0.075),
+    _phonon("tts-40m-de", "German", "phonon-40m-de", "model.q8.gguf", 0.075),
+    _phonon("tts-40m-pt", "Portuguese", "phonon-40m-pt", "model.q8.gguf", 0.075),
+    _phonon("tts-40m-multi", "Multilingual", "phonon-40m-multilingual", "model.q8.gguf", 0.075,
+            " — one voice, five languages"),
+    _phonon("tts-31m-llamacpp", "English (llama.cpp build)", "phonon-31m-en-llamacpp",
+            "phonon-31m-en-Q8_0.gguf", 0.022, " — 22 MB, runs in llama.cpp",
+            companion="mmproj-phonon-31m-en-F32.gguf"),
+    _phonon("tts-31m-audiocpp", "English (audio.cpp build)", "phonon-31m-en-audiocpp",
+            "phonon-31m-en-q8_0.gguf", 0.085, " — official audio.cpp packaging"),
+    _phonon("tts-mimi", "Mimi audio tokenizer", "phonon-mimi", "model.safetensors", 0.041,
+            " — needed by some audio.cpp pipelines"),
+    MarketEntry(
+        mid="tts-voices-pack", section="tts",
+        title="Phonon voices · sample pack",
+        repo="gradium/phonon-voices", file="main.zip", size_gb=0.008,
+        short="451 reference voice samples (en/de/fr/es/pt) — audition the voices",
+        blurb="Every Phonon voice's exclamation/happy/question/support samples. "
+              "Download to audition, then pick the model that sounds right.",
+        zipball=True,
+        tags=("tts", "samples"),
+    ),
+]
+
+CATALOG = CATALOG + STT_CATALOG + TTS_CATALOG
+
+
 def resolve(entry: MarketEntry) -> MarketEntry:
     """Smart format pick: NInfer build only when a NInfer runtime exists."""
     if entry.alt is not None and entry.alt.kind == "ninfer":
@@ -253,10 +356,16 @@ def lmstudio_scan_roots() -> list[Path]:
 def download_dest(entry: MarketEntry) -> Path:
     """Per-repo subfolder: two repos can ship identically named files
     (unsloth uses mmproj-F16.gguf for several models) — a flat folder would
-    have them overwrite each other's vision projectors."""
-    sub = "ninfer" if entry.kind != "gguf" else "ohmyllm-market"
+    have them overwrite each other's vision projectors. Voice models live
+    under ~/.ohmyllm/voice/ where the engine discovers them."""
+    if entry.section in ("stt", "tts"):
+        from .voice import voice_dir
+        base = voice_dir() / entry.section
+    else:
+        sub = "ninfer" if entry.kind != "gguf" else "ohmyllm-market"
+        base = lmstudio_models_dir() / sub
     slug = re.sub(r"[^A-Za-z0-9._-]+", "__", entry.repo.strip("/"))
-    return lmstudio_models_dir() / sub / slug
+    return base / slug
 
 
 # --------------------------------------------------------------- vision scan

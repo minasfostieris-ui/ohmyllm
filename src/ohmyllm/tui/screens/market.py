@@ -22,6 +22,9 @@ from ...market import (
     vram_gib,
 )
 
+_SECTION_TITLES = {"llm": "[b]💬 Language models[/]",
+                   "stt": "[b]🎤 Speech-to-text[/]  [dim]hold ctrl+E to talk[/dim]",
+                   "tts": "[b]🔊 Text-to-speech · Phonon family[/]  [dim]/tts on[/dim]"}
 _FIT_MARK = {"fits": "[green]✓[/green]", "tight": "[yellow]⚠[/yellow]",
              "no": "[red]✗[/red]", "unknown": "[dim]?[/dim]"}
 _FIT_COLOR = {"fits": "green", "tight": "yellow", "no": "red", "unknown": "dim"}
@@ -72,14 +75,20 @@ class MarketScreen(Screen):
 
     def on_mount(self) -> None:
         lst = self.query_one(OptionList)
+        self._last_section = ""
         for raw in CATALOG:
             e = resolve(raw)
-            key, label = fit_verdict(e.size_gb, self._vram)
-            col = _FIT_COLOR[key]
-            lst.add_option(Option(
-                f"[{col}]■[/] [b]{e.title}[/b]  [b]{e.size_gb:.1f} GB[/]  [{col}]{label}[/{col}]",
-                id=f"m-{raw.mid}",
-            ))
+            if raw.section != self._last_section:
+                lst.add_option(Option(_SECTION_TITLES.get(raw.section, raw.section),
+                                      id=f"h-{raw.section}-{len(lst.options)}", disabled=True))
+                self._last_section = raw.section
+            if raw.section == "llm":
+                key, label = fit_verdict(e.size_gb, self._vram)
+                col = _FIT_COLOR[key]
+                line = f"[{col}]■[/] [b]{e.title}[/b]  [b]{e.size_gb:.1f} GB[/]  [{col}]{label}[/{col}]"
+            else:
+                line = f"[cyan]■[/] [b]{e.title}[/b]  [b]{e.size_gb * 1000:.0f} MB[/]"
+            lst.add_option(Option(line, id=f"m-{raw.mid}"))
         lst.highlighted = 0
         self._paint_detail()
 
@@ -105,8 +114,11 @@ class MarketScreen(Screen):
         e = self._entry_by_id(self._selected_id())
         if e is None:
             return
-        key, label = fit_verdict(e.size_gb, self._vram)
-        badge = f"{_FIT_MARK[key]} {label}"
+        if e.section != "llm":
+            badge = "[cyan]voice model[/] · installs into ~/.ohmyllm/voice/"
+        else:
+            key, label = fit_verdict(e.size_gb, self._vram)
+            badge = f"{_FIT_MARK[key]} {label}"
         extra = ""
         if key == "no" and e.kind == "gguf":
             extra = "\n[dim]tip: the repo ships smaller quants — see the HF page[/dim]"

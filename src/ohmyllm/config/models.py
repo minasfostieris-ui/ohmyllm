@@ -11,6 +11,7 @@ class BackendName(StrEnum):
     OLLAMA = "ollama"
     LMSTUDIO = "lmstudio"
     MOCK = "mock"
+    CLOUD = "cloud"
 
 
 class PermissionMode(StrEnum):
@@ -143,6 +144,26 @@ class LMStudioSettings(BaseModel):
     )
 
 
+class CloudSettings(BaseModel):
+    """API keys for hosted model providers — see src/ohmyllm/providers.py.
+
+    Keys live here (config.toml, chmod 0600) or in the environment
+    (OMLLM_KEY_OPENROUTER / OPENAI_API_KEY / …, which wins). The UI never
+    receives the raw value — only a masked tail."""
+
+    provider: str = "openrouter"          # active provider id
+    default_model: str = ""
+    keys: dict[str, str] = Field(default_factory=dict)
+    bases: dict[str, str] = Field(default_factory=dict)    # per-provider base_url override
+    customs: dict[str, str] = Field(default_factory=dict)  # custom-<id> -> display name
+
+
+class VoiceSettings(BaseModel):
+    language: str = Field("auto", description="STT language hint (auto|en|ko|zh|ja|es|...)")
+    engine: str = Field("auto", description="STT engine override (auto|sensevoice|parakeet|whisper|whisperx)")
+    tts_enabled: bool = Field(False, description="/tts on: speak replies via audio.cpp+Phonon")
+
+
 class MemorySettings(BaseModel):
     enabled: bool = True
     agent_writes: bool = True
@@ -218,6 +239,8 @@ class Config(BaseModel):
     lmstudio: LMStudioSettings = Field(default_factory=LMStudioSettings)
     generation: GenerationSettings = Field(default_factory=GenerationSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    voice: VoiceSettings = Field(default_factory=VoiceSettings)
+    cloud: CloudSettings = Field(default_factory=CloudSettings)
     safety: SafetySettings = Field(default_factory=SafetySettings)
     guard: GuardSettings = Field(default_factory=GuardSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)

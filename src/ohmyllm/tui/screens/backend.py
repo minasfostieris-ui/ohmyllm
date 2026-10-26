@@ -15,6 +15,7 @@ _CARDS = (
     (BackendName.OLLAMA, "ollama"),
     (BackendName.LMSTUDIO, "lmstudio"),
     (BackendName.MOCK, "mock"),
+    (BackendName.CLOUD, "cloud"),
 )
 
 
@@ -101,6 +102,16 @@ class BackendScreen(Screen):
         elif key == "lmstudio":
             from ...backends.lmstudio import SERVER_INSTRUCTIONS as lines
             title = "LM Studio — how to start the local server"
+        elif key == "cloud":
+            cl = self.app.svc.config.cloud
+            lines = [
+                "Cloud models need an API key — nothing to install.",
+                "1. /providers (or the GUI Providers tab)",
+                "2. pick a provider → paste the key → u to make it default",
+                f"currently active: {cl.provider or 'none'}",
+                "env alternative: export OMLLM_KEY_OPENROUTER=sk-or-… (wins over config)",
+            ]
+            title = "Cloud — hosted models"
         else:
             lines = ["The mock backend needs nothing; it's a scripted local model for development."]
             title = "Mock backend"

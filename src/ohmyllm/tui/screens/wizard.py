@@ -8,12 +8,12 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, OptionList, Static, Switch
-from textual.widgets._option_list import Option
+from textual.widgets.option_list import Option
 
 from ...config import BackendName, PermissionMode
 from ...vram import detect_gpus, human_bytes
 
-_STEPS = ["Welcome", "Backends detected", "Server", "Models", "Generation", "VRAM check", "Permission mode", "Memory (soul.md)", "Done"]
+_STEPS = ["Welcome", "Backends detected", "Server", "Models", "Generation", "VRAM check", "Permission mode", "Memory (soul.md)", "Voice", "Done"]
 
 
 class WizardScreen(Screen):
@@ -298,6 +298,39 @@ class WizardScreen(Screen):
         body.mount(Input(placeholder="optional: something the agent should remember about you right away", id="wiz-seed-memory"))
 
     def _step_8(self, body: Vertical) -> None:
+        from ... import voice as _v
+
+        body.mount(Static(
+            "[b]🎙 Voice[/b] — talk to OhMyLLM instead of typing, hear replies back\n\n"
+            f"  mic recorder: {'✓' if _v.find_recorder() else '✗ (need pw-record/arecord/ffmpeg)'}\n"
+            f"  STT runtime:  {_v.status_line().split(' · ')[1]}\n"
+            f"  TTS runtime:  {'✓' if _v.find_tts() else '✗ (audio.cpp for Phonon voices)'}\n\n"
+            "  [b]Do you want Speech-to-Text?[/] Hold Ctrl+E to talk — the transcript\n"
+            "  lands in your input box. Engines by language:\n"
+            "    English → Parakeet 0.6B (v3)      EN·KO·ZH·JA·YUE → SenseVoice-Small\n"
+            "    ~99 other languages → Whisper + VAD (WhisperX)\n\n"
+            "  Pick models any time: [b]/market[/] → Speech-to-text / Text-to-speech.\n"
+            "  (Skip this step — nothing is downloaded without you choosing.)\n"
+        ))
+        row = Horizontal(
+            Label("STT model: ".ljust(14)),
+            OptionList(
+                Option("skip — no speech input", id="vstt-skip"),
+                Option("SenseVoice-Small · 254 MB · en/ko/zh/ja/yue", id="vstt-sensevoice"),
+                Option("Parakeet TDT 0.6B v3 · 740 MB · best English", id="vstt-parakeet"),
+                Option("Whisper small · 488 MB · ~99 languages", id="vstt-whisper"),
+                Option("Whisper large-v3-turbo · 574 MB · max accuracy", id="vstt-turbo"),
+                id="vstt-list"),
+        )
+        body.mount(row)
+        body.mount(Static(
+            "\n  [b]Want TTS?[/] /tts on makes replies spoken through a Phonon voice\n"
+            "  (gradium family — en/es/fr/de/pt + multilingual, 22–85 MB each,\n"
+            "  pick them in /market → Text-to-speech). Needs audio.cpp installed.\n"
+            "  [dim]Tip: /onboarding reopens this tutorial any time.[/dim]"
+        ))
+
+    def _step_9(self, body: Vertical) -> None:
         body.mount(Static(
             "[b]All set 🎉[/b]\n\n"
             f"  backend: {self.chosen_backend}   model: {self.chosen_model or '—'}\n"
@@ -308,6 +341,18 @@ class WizardScreen(Screen):
         ))
 
     # ------------------------------------------------------------ finish
+    def _picked_stt(self) -> str | None:
+        try:
+            lst = self.query_one(OptionList)
+            for opt in lst.options:
+                if getattr(opt, "id", "") and str(opt.id).startswith("vstt-") and lst.highlighted is not None \
+                        and str(lst.get_option_at_index(lst.highlighted).id) == str(opt.id) \
+                        and opt.id != "vstt-skip":
+                    return str(opt.id)[5:]
+        except Exception:  # noqa: BLE001 — step may not be mounted
+            pass
+        return None
+
     def _finish(self) -> None:
         app = self.app
         cfg = app.svc.config
@@ -337,6 +382,29 @@ class WizardScreen(Screen):
             app.svc.soul.append("User", seed.strip().rstrip(".") + ".")
         app.open_resume_or_new()
         app.notify("welcome to OhMyLLM — have fun locally 🐣")
+        pick = self._picked_stt()
+        if pick:
+            self._download_stt(pick)
+
+    _STT_MID = {"sensevoice": "stt-sensevoice", "parakeet": "stt-parakeet",
+                "whisper": "stt-whisper-small", "turbo": "stt-whisper-turbo"}
+
+    @work(exclusive=True, group="wiz-stt")
+    async def _download_stt(self, pick: str) -> None:
+        from ... import market
+        from ...market import DownloadState, resolve
+
+        mid = self._STT_MID.get(pick)
+        entry = next((e for e in market.CATALOG if e.mid == mid), None)
+        if entry is None:
+            return
+        self.app.notify(f"🎤 downloading {entry.title} into ~/.ohmyllm/voice …")
+        state = DownloadState(entry=entry)
+        await market.download(resolve(entry), state)
+        if state.error:
+            self.app.notify(f"STT download failed: {state.error}", severity="error", timeout=10)
+        else:
+            self.app.notify(f"🎤 {entry.title} ready — hold Ctrl+E in chat to talk", timeout=10)
 
     def _grab(self, wid: str) -> str:
         try:
