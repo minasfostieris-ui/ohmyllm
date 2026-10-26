@@ -160,6 +160,87 @@ async def test_skill_cast_and_menu_and_folder(oml_env, svc, monkeypatch):
         assert opened and "skills" in opened[-1], opened
 
 
+def _ollama_run(handler, model: str, effort: str) -> list[dict]:
+    cfg = Config()
+    seen: list[dict] = []
+
+    def h(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content.decode())
+        if "messages" in body:
+            seen.append(body)
+        return handler(req, body)
+
+    be = OllamaBackend(cfg, transport=httpx.MockTransport(h))
+
+    async def go() -> None:
+        async for _ in be.stream_chat(model, [{"role": "user", "content": "x"}],
+                                      GenerationSettings(effort=effort)):
+            pass
+
+    asyncio.run(go())
+    return seen
+
+
+_DONE = json.dumps({"message": {}, "done": True, "done_reason": "stop"}) + "\n"
+
+
+def test_ollama_gates_think_by_template():
+    def show_nothink(req, body):
+        if "messages" not in body:
+            return httpx.Response(200, json={"template": "{{ .Prompt }}"})
+        return httpx.Response(200, text=_DONE)
+
+    runs = _ollama_run(show_nothink, "llama3", "medium")
+    assert runs and "thinking" not in runs[0], "non-thinking template must not get the knob"
+
+    def show_think(req, body):
+        if "messages" not in body:
+            return httpx.Response(200, json={"template": "{% if enable_thinking %}x{% endif %}"})
+        return httpx.Response(200, text=_DONE)
+
+    runs = _ollama_run(show_think, "qwen3", "medium")
+    assert runs[0]["thinking"] == "medium"
+
+
+def test_ollama_400_retry_drops_knob_and_caches():
+    def handler(req, body):
+        if "messages" not in body:
+            return httpx.Response(404, json={"error": "gone"})  # template unknown
+        if "thinking" in body:
+            return httpx.Response(400, json={"error": "this model does not support thinking"})
+        return httpx.Response(200, text=_DONE)
+
+    runs = _ollama_run(handler, "mystery", "high")
+    assert len(runs) == 2 and "thinking" in runs[0] and "thinking" not in runs[1]
+
+
+def test_ollama_400_retry_caches_across_calls():
+    cfg = Config()
+    seen: list[dict] = []
+
+    def h(req: httpx.Request) -> httpx.Response:
+        body = json.loads(req.content.decode())
+        if "messages" not in body:
+            return httpx.Response(404, json={})
+        seen.append(body)
+        if "thinking" in body:
+            return httpx.Response(400, json={"error": "does not support thinking"})
+        return httpx.Response(200, text=_DONE)
+
+    be = OllamaBackend(cfg, transport=httpx.MockTransport(h))
+
+    async def go() -> None:
+        for _ in range(2):
+            async for _ in be.stream_chat("m", [{"role": "user", "content": "x"}],
+                                          GenerationSettings(effort="high")):
+                pass
+
+    asyncio.run(go())
+    # call 1: probe with knob -> 400 -> retry clean (2 reqs); call 2: cached, clean (1 req)
+    assert len(seen) == 3, seen
+    assert "thinking" in seen[0] and "thinking" not in seen[1] and "thinking" not in seen[2]
+
+
 def test_status_snapshot_carries_effort(svc):
     svc.config.generation.effort = "high"
     snap = svc.status_snapshot()

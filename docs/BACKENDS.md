@@ -98,6 +98,28 @@ thinking length* depends on the model:
 - **`/ultrathink` beats every level on every model** because it does not rely
   on the knob: it adds a full critique-and-revise pass (measured 4.6x total
   reasoning on the same forced thinker vs baseline).
+- **Models without a thinking mode never see the knob.** On Ollama the
+  backend checks the model's chat template (`/api/show`) and only sends
+  `think` when the template understands it; an unexpected 400 drops the key,
+  retries clean, and caches the verdict. On LM Studio unsupported settings
+  fall back server-side (warning, not an error), and a 400 mentioning
+  reasoning triggers the same clean retry.
+
+### Support matrix — HF's most-downloaded chat models
+
+| Model | Thinking | `/think` levels | Notes |
+|---|---|---|---|
+| Qwen3 (0.6B–14B) | hybrid, on/off | on/off honored, levels map to "on" | template has a boolean, not a ladder |
+| openai/gpt-oss-20b | always | low/medium/high honored | xhigh/max clamp gracefully |
+| Qwen2.5-0.5B/1.5B/3B/7B-Instruct | none | suppressed (no-op) | knob never reaches the model |
+| meta-llama/Llama-3.1-8B, 3.2-1B-Instruct | none | suppressed | same |
+| facebook/opt-125m, openai-community/gpt2 | none (base) | suppressed | completion-only; chat via prompt fallback |
+| ornith-ai/Ornith-1.5 (9B, 35B-A3B) | none | suppressed | pure instruct |
+| dphn/dolphin-2.9-yi-34b | none | suppressed | pure instruct |
+| nvidia/Qwen3.6-35B-A3B-NVFP4 | hybrid | like Qwen3 | NVFP4 needs a supporting runtime |
+| deepseek-ai/DeepSeek-V3.2, V4-Flash | switchable | server-dependent passthrough | thinking on/off via chat_template_kwargs on vLLM/SGLang |
+
+`/ultrathink` (review pass) deepens ANY of these — it is model-agnostic.
 
 `thinking_budget`
 is opt-in per model in `[generation]`. Unloaded-model servers that answer

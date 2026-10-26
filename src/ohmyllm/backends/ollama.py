@@ -176,6 +176,20 @@ class OllamaBackend(BaseBackend):
             opts["num_thread"] = params.threads
         return opts
 
+    async def _supports_think(self, model: str) -> bool:
+        """Whether the model's chat template understands `think`. Sending
+        think to a non-thinking model (Llama-3, Qwen2.5, gpt2...) is a hard
+        400 on ollama, so gate on the template and cache the verdict."""
+        cache: dict[str, bool] = getattr(self, "_think_ok", {})
+        self._think_ok = cache
+        if model in cache:
+            return cache[model]
+        show = await self.inspect(model)
+        template = str(show.get("template") or "")
+        ok = "think" in template.lower() if template else True  # unknown -> try, 400-retry guards
+        cache[model] = ok
+        return ok
+
     async def stream_chat(
         self,
         model: str,
@@ -198,7 +212,7 @@ class OllamaBackend(BaseBackend):
         # servers); xhigh/max/ultrathink clamp to plain true (the ceiling
         # ollama exposes) — the review pass in runtime carries the extra
         lvl = "xhigh" if params.ultrathink else params.effort
-        if lvl != "off":
+        if lvl != "off" and await self._supports_think(model):
             body["thinking"] = lvl if lvl in ("low", "medium", "high") else True
         prev = getattr(self, "_last_model", None)
         if prev and prev != model:
@@ -214,10 +228,18 @@ class OllamaBackend(BaseBackend):
         content_seen = False
         thinking_parts: list[str] = []
         try:
-            async with self._client(self.config.ollama.host, timeout=httpx.Timeout(params.timeout, read=None)) as c:
+            for _attempt in range(2):
+              async with self._client(self.config.ollama.host, timeout=httpx.Timeout(params.timeout, read=None)) as c:
                 async with c.stream("POST", "/api/chat", json=body) as resp:
                     if resp.status_code != 200:
                         detail = (await resp.aread()).decode(errors="replace")[:300]
+                        if (resp.status_code == 400 and "think" in detail.lower()
+                                and "thinking" in body and _attempt == 0):
+                            # server says this model has no thinking mode —
+                            # drop the knob and retry clean, remember for later
+                            body.pop("thinking")
+                            getattr(self, "_think_ok", {})[model] = False
+                            continue
                         raise BackendError(f"Ollama chat failed ({resp.status_code}): {detail}")
                     async for line in resp.aiter_lines():
                         if not line.strip():
@@ -263,6 +285,7 @@ class OllamaBackend(BaseBackend):
                             if not content_seen and thinking_parts and not chunk.tool_calls:
                                 chunk.content = "".join(thinking_parts)
                         yield chunk
+              break
         except httpx.HTTPError as exc:
             raise BackendError(f"Ollama request error: {exc}") from exc
 
