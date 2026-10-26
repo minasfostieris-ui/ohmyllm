@@ -97,6 +97,7 @@ class AgentRuntime:
         self,
         session: Session,
         user_text: str,
+        user_content: Any = None,
         *,
         model: str | None = None,
         prompt_fn: PromptFn | None = None,
@@ -113,7 +114,7 @@ class AgentRuntime:
         session.backend = self.backend.name.value
         session.model = model
         session.permission_mode = mode.value
-        session.add_message("user", user_text)
+        session.add_message("user", user_content if user_content is not None else user_text)
         emit = on_event or (lambda _e: None)
         result = TurnResult()
         self._invalid_counts: dict[tuple[str, str], int] = {}

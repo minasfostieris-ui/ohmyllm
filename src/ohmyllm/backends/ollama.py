@@ -26,6 +26,38 @@ INSTALL_INSTRUCTIONS = [
 ]
 
 
+def _show_has_vision(show: dict) -> bool:
+    caps = show.get("capabilities") or show.get("parameter_types") or {}
+    if isinstance(caps, (list, tuple)) and any("vision" in str(c).lower() for c in caps):
+        return True
+    info = show.get("model_info") or {}
+    if any("vision" in k.lower() or "mmproj" in k.lower() for k in info):
+        return True
+    return any("vision" in str(v).lower() for v in (show.get("projector_info") or {}).values()) if show.get("projector_info") else False
+
+
+def _flatten_multimodal(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Ollama wants {role, content: str, images: [b64]} — fold OpenAI-style
+    content parts (text + image_url data URIs) into that shape."""
+    out = []
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, list):
+            text = "".join(str(p.get("text") or "") for p in c if p.get("type") == "text")
+            imgs = []
+            for p in c:
+                u = str((p.get("image_url") or {}).get("url") or "") if p.get("type") == "image_url" else ""
+                if u.startswith("data:") and ";base64," in u:
+                    imgs.append(u.split(";base64,", 1)[1])
+            nm = {**m, "content": text}
+            if imgs:
+                nm["images"] = imgs
+            out.append(nm)
+        else:
+            out.append(m)
+    return out
+
+
 class OllamaBackend(BaseBackend):
     name = BackendName.OLLAMA
     display_name = "Ollama"
@@ -150,6 +182,8 @@ class OllamaBackend(BaseBackend):
     async def get_model(self, name: str) -> ModelInfo | None:
         base = await super().get_model(name)
         show = await self.inspect(name)
+        if base is not None:
+            base.vision = _show_has_vision(show) if show else None
         if base is None and show:
             base = ModelInfo(name=name, backend=self.name)
         if base is None:
@@ -201,7 +235,7 @@ class OllamaBackend(BaseBackend):
     ) -> AsyncIterator[ChatChunk]:
         body: dict[str, Any] = {
             "model": model,
-            "messages": messages,
+            "messages": _flatten_multimodal(messages),
             "stream": True,
             "options": self._options(params),
         }

@@ -37,6 +37,9 @@ SERVER_INSTRUCTIONS = [
 _CONTENT_START_RX = re.compile(r'"content"\s*:\s*"')
 
 
+from ..market import has_vision  # noqa: E402  (module-level for typing clarity)
+
+
 class LMStudioBackend(BaseBackend):
     name = BackendName.LMSTUDIO
     display_name = "LM Studio"
@@ -141,6 +144,11 @@ class LMStudioBackend(BaseBackend):
         )
 
     # ------------------------------------------------------------- models
+    def vision_scan(self) -> set[str]:
+        from ..market import scan_vision_models
+
+        return scan_vision_models()
+
     async def list_models(self) -> list[ModelInfo]:
         base = self.config.lmstudio.base_url
         try:
@@ -151,6 +159,8 @@ class LMStudioBackend(BaseBackend):
         except httpx.HTTPError as exc:
             raise BackendError(f"Cannot list LM Studio models: {exc}") from exc
         rest = await self._rest_model_details()
+        self._vision_scan_cache = getattr(self, "_vision_scan_cache", None) or self.vision_scan()
+        vis: set[str] = self._vision_scan_cache
         for name, sizes in (await self._lms_cli_sizes()).items():
             target = rest.setdefault(name, {"id": name})
             for k, v in sizes.items():
@@ -168,6 +178,7 @@ class LMStudioBackend(BaseBackend):
                 ctx_len=_as_int(m.get("context_length") or extra.get("ctx_length") or extra.get("loaded_context_length")),
                 modified=_as_float(m.get("created")),
                 tool_capable=_tool_flag(extra),
+                vision=has_vision(name, vis),
                 loaded=bool(extra.get("loaded")) if "loaded" in extra else None,
             )
             out.append(info.apply_name_heuristics())
@@ -183,6 +194,7 @@ class LMStudioBackend(BaseBackend):
                 params_b=None,
                 ctx_len=_as_int(extra.get("max_context_length") or extra.get("ctx_length")),
                 tool_capable=_tool_flag(extra),
+                vision=has_vision(name, vis),
                 loaded=str(extra.get("state") or "").startswith("loaded"),
             )
             out.append(info.apply_name_heuristics())
@@ -526,10 +538,19 @@ class LMStudioBackend(BaseBackend):
             except httpx.HTTPError as exc:
                 raise BackendError(f"LM Studio request error: {exc}") from exc
             except BackendError as exc:
-                if (_attempt == 0 and ("reasoning" in str(exc).lower() or "effort" in str(exc).lower())
-                        and ("reasoning_effort" in body or "reasoning" in body)):
+                if _attempt == 0 and ("reasoning" in str(exc).lower() or "effort" in str(exc).lower()) \
+                        and ("reasoning_effort" in body or "reasoning" in body):
                     body.pop("reasoning_effort", None)
                     body.pop("reasoning", None)
+                    continue
+                if _attempt == 0 and any(k in str(exc).lower() for k in ("image", "vision", "multimodal")) \
+                        and any(not isinstance(m.get("content"), str) for m in body.get("messages", [])):
+                    # model/server has no vision path — resend as text-only
+                    body["messages"] = [
+                        {**m, "content": " ".join(str(x.get("text") or "") for x in m["content"]
+                                                  if isinstance(x, dict) and x.get("type") == "text").strip() or "[image]"}
+                        if not isinstance(m.get("content"), str) else m
+                        for m in body["messages"]]
                     continue
                 raise
 

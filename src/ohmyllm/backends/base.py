@@ -39,6 +39,7 @@ class ModelInfo:
     path: str | None = None
     modified: float | None = None
     tool_capable: bool | None = None  # None = unknown / needs test
+    vision: bool | None = None  # None = unknown; True from mmproj/capability scan
     loaded: bool | None = None
     notes: list[str] = field(default_factory=list)
 

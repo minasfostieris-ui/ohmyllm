@@ -75,14 +75,30 @@ Inside the TUI: `Ctrl+K` command palette, `Ctrl+O` chats, `Ctrl+M` models,
 `Ctrl+B` backend, `Ctrl+P` permission mode, `Ctrl+S` memory, `Ctrl+D`
 doctor, `Ctrl+G` settings, `Ctrl+N` new chat, `Ctrl+X` stop, `Ctrl+H` help,
 `Ctrl+Q` quit. `/remember <fact>` writes straight into soul.md; `/forget`,
-`/rename`, `/export`, `/mode`, `/model` do what they say. `/ultrathink` (also
-`/think`) turns on deep reasoning: a deliberation directive rides on your
-message, the reasoning channel + `reasoning_effort: high` go to the server,
-the output budget doubles — and every long answer gets a **critique-and-revise
+`/rename`, `/export`, `/mode`, `/model` do what they say. `/think off|low|medium|high|xhigh|max` sets the reasoning
+effort ladder — mapped to `reasoning_effort` on LM Studio/vLLM and graded
+`think` levels on Ollama, and **capability-gated**: models without a thinking
+mode never see the knob (the slash menu tells you when your model can't
+think). `/ultrathink` rides the ceiling AND adds a **critique-and-revise
 pass**: the model attacks its own draft for errors and edge cases, re-derives
-everything, and rewrites. Measured on a local Qwen3.5-9B: 4.6x the reasoning (measured on Qwen3.5-9B: 1435 -> 6596 chars, 9s -> 58s thinking)
-with a visibly better answer. Works on every model — the review pass is pure
+everything, and rewrites. Measured on a local Qwen3.5-9B: 4.6x the reasoning
+(1435 -> 6596 chars, 9s -> 58s thinking) with a visibly better answer — and
+it beats `/think max` on every model because the review pass is pure
 prompting, not an API knob.
+
+**`/market` — the model marketplace.** Curated picks (Qwen3.8-27B in two
+honest quants, Sushi-Coder-RL, Gemma-4-26B-A4B) with real GB sizes and a
+**"will it fit my GPU" verdict** from a live VRAM probe (NVIDIA, AMD, Apple
+Silicon unified memory). Enter or click starts the download straight into
+your LM Studio models folder — progress bar, MB/s, ETA, cancel with esc.
+
+**Vision paste.** `Ctrl+V` an image from the clipboard: it shows up in the
+chat as a 📷 card (real preview when the terminal supports it), and if the
+selected model has vision — detected by scanning your disk for `mmproj`
+companion files, since the server APIs don't report it — the image rides
+along as a proper multimodal message. Non-vision models get plain text and
+you get told why; a server that rejects the image gets an automatic
+text-only resend.
 
 ## GUI
 

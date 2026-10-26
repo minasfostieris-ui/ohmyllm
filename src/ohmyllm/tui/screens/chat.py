@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import time
 from typing import Any
 
@@ -33,6 +34,7 @@ class ChatScreen(Screen):
         ("/backend", "[ollama|lmstudio|mock]", "switch backend"), ("/mode", "[name]", "permission mode"),
         ("/think", "[off|low|medium|high|xhigh|max|hide|show]", "reasoning effort"),
         ("/skillimport", "", "open the skills folder (add/remove/move skills)"),
+        ("/market", "", "recommended models — VRAM fit + one-key download"),
         ("/ultrathink", "[on|off]", "deep reasoning: think much longer and harder"),
         ("/memory", "", "soul.md editor"), ("/soul", "", "soul.md editor"), ("/doctor", "", "diagnostics"),
         ("/settings", "", "all settings"), ("/chats", "", "browse chats"), ("/new", "", "fresh chat"),
@@ -48,6 +50,7 @@ class ChatScreen(Screen):
         Binding("down", "slash_next", "", show=False, priority=False),
         Binding("tab", "slash_complete", "", show=False, priority=False),
         Binding("ctrl+t", "toggle_thinking", "hide/show live thinking", priority=True),
+        Binding("ctrl+v", "paste_image", "paste image from clipboard", priority=True),
     ]
 
     def _menu(self) -> OptionList | None:
@@ -109,6 +112,8 @@ class ChatScreen(Screen):
                        for sk in skills if sk.name.lower().startswith(want)] + matches
         menu.clear_options()
         for c, a, d in matches[:12]:
+            if c == "/think":
+                d = self._think_hint() or d
             menu.add_option(Option(f"[b]{c}[/b] [dim]{a}[/dim]  [dim]{d}[/dim]", id=c))
         if matches:
             menu.display = True
@@ -258,6 +263,43 @@ class ChatScreen(Screen):
                 self.query_one("#history", VerticalScroll).mount(self._think_col)
         self.app.notify(f"live thinking {'shown' if cfg.thinking_visible else 'hidden'}")
 
+    _NO_THINK_PAT = re.compile(r"(llama-[23]|qwen2\.5|gpt2|opt-125m|ornith|dolphin|smollm|phi-3-mini$|warmchat|stupidchat)", re.I)
+    _THINK_PAT = re.compile(r"(qwen3|gpt-oss|r1|thinking|reason|deepseek-v[34]|kimi|qwq|nemotron|vibethinker)", re.I)
+
+    def _current_model(self) -> str:
+        sess = self.app.session
+        if sess is not None and sess.model:
+            return sess.model
+        cfg = self.app.svc.config
+        section = getattr(cfg, cfg.default_backend.value, None)
+        return str(getattr(section, "default_model", "") or "")
+
+    def _think_hint(self) -> str | None:
+        """Menu description for /think, aware of the selected model."""
+        model = self._current_model().lower()
+        if not model:
+            return None
+        if self._NO_THINK_PAT.search(model) and not self._THINK_PAT.search(model):
+            return "⚠ your model has no thinking mode — levels won't apply"
+        if self._THINK_PAT.search(model):
+            return "reasoning effort (your model supports thinking)"
+        return None
+
+    def action_paste_image(self) -> None:
+        from ..imagepaste import ImageBox, grab_clip_image, png_size
+
+        path = grab_clip_image()
+        if path is None:
+            self.app.notify("clipboard has no image (copy one and try ctrl+v)")
+            return
+        self._pending_images = getattr(self, "_pending_images", []) + [path]
+        n = len(self._pending_images)
+        dims = png_size(path)
+        box = ImageBox(path, n, dims if dims != (0, 0) else (1563, 200))
+        self.query_one("#history", VerticalScroll).mount(box)
+        self.query_one("#history", VerticalScroll).scroll_end(animate=False)
+        self.app.notify(f"image #{n} attached · {dims[0]}x{dims[1]} — type a prompt + enter")
+
     def _sysline(self, text: str, style: str = "system") -> None:
         try:
             hist = self.query_one("#history", VerticalScroll)
@@ -279,6 +321,18 @@ class ChatScreen(Screen):
             return
         self._send(text)
 
+    def _vision_ready(self) -> bool | None:
+        """True/False from a background scan of the selected model, None unknown."""
+        model = self._current_model()
+        cached = getattr(self.app.svc, "_vision_cache", {})
+        if model in cached:
+            return cached[model]
+        from ...market import has_vision, scan_vision_models
+
+        v = has_vision(model, scan_vision_models())
+        self.app.svc._vision_cache = {**cached, model: v}
+        return v
+
     def _send(self, text: str, memory_directive: bool = False) -> None:
         if self.app.busy:
             # queue it: lands in the session before the NEXT model call
@@ -289,10 +343,28 @@ class ChatScreen(Screen):
         self.query_one("#history", VerticalScroll).mount(Static(_who("you", text), classes="msg-user"))
         self.app.note_title(text)
         self._refresh_title()
-        self._run_turn(text, memory_directive)
+        imgs = getattr(self, "_pending_images", [])
+        self._pending_images = []
+        user_content = None
+        if imgs:
+            vis = self._vision_ready()
+            if vis is False:
+                self._sysline("this model can't see images — they stay in your terminal, not in the message",
+                              "system")
+            else:
+                from ...tui.imagepaste import data_uri
+
+                parts: list[dict[str, Any]] = (
+                    [{"type": "text", "text": text}] if text.strip() else [])
+                parts += [{"type": "image_url", "image_url": {"url": data_uri(im)}} for im in imgs]
+                user_content = parts
+                if vis is None:
+                    self._sysline("vision support unknown for this model — sending anyway; "
+                                  "if it can't see, I'll resend as text", "system")
+        self._run_turn(text, memory_directive, user_content)
 
     @work(exclusive=True, group="turn")
-    async def _run_turn(self, text: str, memory_directive: bool) -> None:
+    async def _run_turn(self, text: str, memory_directive: bool, user_content=None) -> None:
         app = self.app
         app.busy = True
         app.cancel_event.clear()
@@ -304,6 +376,7 @@ class ChatScreen(Screen):
         try:
             result = await rt.run_turn(
                 sess, text,
+                user_content=user_content,
                 prompt_fn=app.request_approval,
                 on_event=self.app.dispatch_turn_event,
                 cancel=app.cancel_event,
@@ -804,6 +877,8 @@ class ChatScreen(Screen):
                     app.svc.sessions.save(sess)
                     app.save_state = True
                 self._sysline(f"skill cast · {name} — the agent will follow it from here", "system")
+        elif cmd == "market":
+            app.replace_screen("market")
         elif cmd == "skillimport":
             import subprocess
             import sys as _sys
