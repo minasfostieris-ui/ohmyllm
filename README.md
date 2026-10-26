@@ -80,7 +80,7 @@ doctor, `Ctrl+G` settings, `Ctrl+N` new chat, `Ctrl+X` stop, `Ctrl+H` help,
 message, the reasoning channel + `reasoning_effort: high` go to the server,
 the output budget doubles — and every long answer gets a **critique-and-revise
 pass**: the model attacks its own draft for errors and edge cases, re-derives
-everything, and rewrites. Measured on a local Qwen3.5-9B: ~2.8x the reasoning (measured: 1928 -> 5315 chars, 17s -> 47s thinking)
+everything, and rewrites. Measured on a local Qwen3.5-9B: 4.6x the reasoning (measured on Qwen3.5-9B: 1435 -> 6596 chars, 9s -> 58s thinking)
 with a visibly better answer. Works on every model — the review pass is pure
 prompting, not an API knob.
 

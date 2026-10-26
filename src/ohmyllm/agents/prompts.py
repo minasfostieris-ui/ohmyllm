@@ -130,10 +130,11 @@ class PromptBuilder:
                 "workspace is yours to read and write (writes may ask once) — never claim a "
                 "path inside it is 'outside your workspace'. Anything outside needs approval."
             )
-        if self.config.memory.enabled and self.soul is not None:
-            block = self.soul.for_injection(self.config.memory.max_inject_chars)
-            if block:
-                parts.append(MEMORY_GUIDE.format(content=block))
+        # NOTE: the memory block is appended LAST (after mode_note) on purpose:
+        # llama.cpp/LM Studio/Ollama all cache the prompt PREFIX between calls,
+        # and soul.md changes mid-session. Keeping the stable blocks (base,
+        # workspace, protocol, catalog, skills, mode) first means a memory
+        # write invalidates only the tail of the cached prompt, not all of it.
         if not native:
             proto = REACT_PROTOCOL if mode is not PermissionMode.FULL_ACCESS else JSON_PROTOCOL
             parts.append(proto.format(catalog=self.catalog()))
@@ -157,6 +158,10 @@ class PromptBuilder:
             PermissionMode.FULL_ACCESS: "Current mode: full_access — no routine prompts.",
         }[mode]
         parts.append(mode_note)
+        if self.config.memory.enabled and self.soul is not None:
+            block = self.soul.for_injection(self.config.memory.max_inject_chars)
+            if block:
+                parts.append(MEMORY_GUIDE.format(content=block))
         if ultrathink:
             parts.append(ULTRATHINK)
         return "\n\n".join(parts)

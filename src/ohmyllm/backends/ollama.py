@@ -205,6 +205,8 @@ class OllamaBackend(BaseBackend):
             except httpx.HTTPError:
                 pass  # best effort
         self._last_model = model
+        from .thinksplit import ThinkSplitter
+        sp = ThinkSplitter()  # inline  tags -> reasoning channel
         content_seen = False
         thinking_parts: list[str] = []
         try:
@@ -221,18 +223,33 @@ class OllamaBackend(BaseBackend):
                         except json.JSONDecodeError:
                             continue
                         msg = data.get("message") or {}
-                        if msg.get("content"):
-                            content_seen = True
                         if msg.get("thinking"):
                             thinking_parts.append(str(msg["thinking"]))
+                        ctext, itext = "", ""
+                        if msg.get("content"):
+                            for kind, text in sp.feed(str(msg["content"])):
+                                if kind == "reasoning":
+                                    itext += text
+                                    thinking_parts.append(text)
+                                else:
+                                    ctext += text
+                        if ctext:
+                            content_seen = True
                         chunk = ChatChunk(
-                            content=msg.get("content") or "",
-                            reasoning=str(msg.get("thinking") or ""),
+                            content=ctext,
+                            reasoning=str(msg.get("thinking") or "") + itext,
                             tool_calls=msg.get("tool_calls"),
                             done=bool(data.get("done")),
                             finish=data.get("done_reason"),
                         )
                         if data.get("done"):
+                            for kind, text in sp.flush():
+                                if kind == "reasoning":
+                                    chunk.reasoning += text
+                                    thinking_parts.append(text)
+                                else:
+                                    chunk.content += text
+                                    content_seen = True
                             chunk.usage = {
                                 "eval_count": data.get("eval_count"),
                                 "prompt_eval_count": data.get("prompt_eval_count"),

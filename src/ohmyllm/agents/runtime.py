@@ -36,6 +36,17 @@ CORRECTION_MSG = (
 OnEvent = Callable[[dict[str, Any]], None] | None
 
 
+def _clip_headtail(text: str, keep: int) -> str:
+    """Head+tail clip: the middle of a huge dump is the least useful part."""
+    if len(text) <= keep:
+        return text
+    tail = keep // 3
+    return (text[: keep - tail]
+            + f"\n… [{len(text) - keep} chars skipped — re-run the tool with a narrower range if you need the middle]\n"
+            + text[-tail:])
+
+
+
 @dataclass
 class TurnResult:
     text: str = ""
@@ -461,7 +472,7 @@ class AgentRuntime:
             emit({"type": "memory_activity", "tool": name, "ok": tool_result.ok})
         if cache is not None:
             cache[cache_key] = out_text[:2500]
-        session.add_message("tool", out_text[:3000], name=name, tool_call_id=call.id)
+        session.add_message("tool", _clip_headtail(out_text, 3000), name=name, tool_call_id=call.id)
         session.record_tool(name, args, "ok" if tool_result.ok else "error", outcome.value, duration, tool_result.error)
         result.calls.append({"name": name, "status": "ok" if tool_result.ok else "error", "approval": outcome.value, "args": args, "risk": decision.risk, "duration_ms": duration})
         self._audit(name, args, outcome.value, tool_result.ok, started, mode, model, error=tool_result.error)

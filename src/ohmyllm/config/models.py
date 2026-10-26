@@ -93,6 +93,7 @@ class GenerationSettings(BaseModel):
     streaming: bool = True
     thinking: bool = Field(False, description="enable reasoning channel for thinking models (/think)")
     ultrathink: bool = Field(False, description="deep reasoning: reasoning channel + high effort + bigger budget + directive (/ultrathink)")
+    thinking_budget: int = Field(0, ge=0, description="LM Studio thinking_budget token cap for /ultrathink (0 = server default)")
 
 
 class OllamaSettings(BaseModel):

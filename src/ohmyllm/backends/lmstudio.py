@@ -389,6 +389,8 @@ class LMStudioBackend(BaseBackend):
             # ignored by older builds, so sending all three is safe)
             body["reasoning_effort"] = "high"
             body["reasoning"] = {"enabled": True, "effort": "high"}
+            if params.thinking_budget:
+                body["thinking_budget"] = params.thinking_budget
         elif params.thinking:
             body["reasoning_effort"] = "medium"
         if tools and native_tools:
@@ -396,7 +398,13 @@ class LMStudioBackend(BaseBackend):
             body["tool_choice"] = "auto"
         pending_tools: dict[int, dict[str, Any]] = {}
         # reasoning models (gpt-oss family) stream their text into delta.reasoning
-        # and may leave delta.content empty — buffer it as a fallback answer
+        # and may leave delta.content empty — buffer it as a fallback answer.
+        # Models whose servers do NOT parse inline tags (raw llama.cpp, vLLM
+        # without --reasoning-parser, Qwen3/QwQ/R1/Kimi/GLM-Z1 templates) leak
+        #  into content: the splitter routes it back to the
+        # reasoning channel so tags never reach the UI or the session.
+        from .thinksplit import ThinkSplitter
+        sp = ThinkSplitter()
         reasoning_parts: list[str] = []
         content_seen = False
         prog_seen: set[int] = set()
@@ -422,6 +430,12 @@ class LMStudioBackend(BaseBackend):
                                 msg = payload
                             raise BackendError(f"LM Studio: {str(msg)[:200]}")
                         if payload == "[DONE]":
+                            for kind, text in sp.flush():
+                                if kind == "reasoning":
+                                    reasoning_parts.append(text)
+                                else:
+                                    content_seen = True
+                                    yield ChatChunk(content=text)
                             if not content_seen and reasoning_parts and not pending_tools:
                                 yield ChatChunk(content="".join(reasoning_parts))
                             yield ChatChunk(done=True, finish="stop", tool_calls=_finish_tools(pending_tools))
@@ -454,17 +468,33 @@ class LMStudioBackend(BaseBackend):
                                         "tail": slot["args"][-900:],
                                         "content_tail": ct,
                                     })
-                        if delta.get("content"):
-                            content_seen = True
                         for key in ("reasoning", "reasoning_content"):
                             if delta.get(key):
                                 reasoning_parts.append(str(delta[key]))
+                        ctext, itext = "", ""
+                        if delta.get("content"):
+                            for kind, text in sp.feed(str(delta["content"])):
+                                if kind == "reasoning":
+                                    itext += text
+                                    reasoning_parts.append(text)
+                                else:
+                                    ctext += text
+                        if ctext:
+                            content_seen = True
                         usage = data.get("usage")
                         chunk = ChatChunk(
-                            content=delta.get("content") or "",
-                            reasoning=str(delta.get("reasoning") or delta.get("reasoning_content") or ""),
+                            content=ctext,
+                            reasoning=str(delta.get("reasoning") or delta.get("reasoning_content") or "") + itext,
                             done=bool(finish), finish=finish, usage=usage,
                         )
+                        if finish:
+                            for kind, text in sp.flush():
+                                if kind == "reasoning":
+                                    chunk.reasoning += text
+                                    reasoning_parts.append(text)
+                                else:
+                                    chunk.content += text
+                                    content_seen = True
                         if finish:
                             for fslot in pending_tools.values():
                                 if fslot["name"] and fslot["args"]:

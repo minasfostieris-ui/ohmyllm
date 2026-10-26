@@ -54,5 +54,10 @@ def preview_shell(args: dict) -> str:
 
 def _cap(text: str) -> str:
     if len(text) > OUTPUT_CAP:
-        return text[:OUTPUT_CAP] + f"\n… [{len(text) - OUTPUT_CAP} chars truncated]"
+        tail = 1500
+        # keep the end too: compilers, pytest and tracebacks put the actual
+        # error LAST — head-only clipping forces a re-run and wastes tokens
+        return (text[: OUTPUT_CAP - tail]
+                + f"\n… [{len(text) - OUTPUT_CAP} chars skipped; tail follows]\n"
+                + text[-tail:])
     return text
