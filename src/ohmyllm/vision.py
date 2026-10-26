@@ -19,7 +19,6 @@ from typing import Any
 
 from .paths import global_home
 
-
 # 5x7 bitmap font for the Pillow-free fallback path (digits only)
 _GLYPHS = {
     "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
