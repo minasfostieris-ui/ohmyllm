@@ -78,9 +78,10 @@ class ModelsScreen(Screen):
     def _populate(self) -> None:
         try:
             t = self.query_one(DataTable)
-            t.clear()
         except NoMatches:
             return
+        prev = self._selected_name()  # before clear(): clear() resets the cursor
+        t.clear()
         self._visible = []
         q = self.query_one("#model-search", Input).value.strip().lower()
         cur = self.app.svc.current_model()
@@ -110,7 +111,19 @@ class ModelsScreen(Screen):
             )
             self._visible.append(m.name)
         if t.row_count:
-            t.move_cursor(row=0)
+            # keep the user's selection across refreshes — losing it made
+            # actions fire on row 0 (the wrong-model settings bug)
+            row = self._visible.index(prev) if prev in self._visible else 0
+            t.move_cursor(row=row)
+
+    def _selected_name(self) -> str | None:
+        try:
+            t = self.query_one(DataTable)
+            if not t.row_count or not self._visible:
+                return None
+            return self._visible[min(t.cursor_coordinate.row, len(self._visible) - 1)]
+        except NoMatches:
+            return None
 
     def _selected(self) -> ModelInfo | None:
         t = self.query_one(DataTable)
@@ -139,7 +152,7 @@ class ModelsScreen(Screen):
             if f"{key}:{m.name}" not in self.app.svc.config.model_settings:
                 # first time this model is picked: ask for its per-model settings
                 self.app.notify(f"{m.name} is new here — set its per-model settings")
-                self.action_settings()
+                self._open_settings(m)
             else:
                 self.app.notify(f"default model → {key}:{m.name}")
 
@@ -147,6 +160,9 @@ class ModelsScreen(Screen):
         m = self._selected()
         if m is None:
             return
+        self._open_settings(m)
+
+    def _open_settings(self, m: ModelInfo) -> None:
         from .modals import ModelSettingsModal
 
         def _done(saved: bool) -> None:
@@ -177,11 +193,14 @@ class ModelsScreen(Screen):
         except BackendError as exc:
             self._status(f"[red]✖ test {m.name}: {exc}[/red]")
 
-    async def action_pull(self) -> None:
-        be = self.app.svc.backend()
-        name = await self.app.prompt(f"Pull a model via {be.display_name}", "e.g. qwen2.5:7b-instruct")
-        if name:
-            self._pull(name)
+    def action_pull(self) -> None:
+        async def _go() -> None:
+            be = self.app.svc.backend()
+            name = await self.app.prompt(f"Pull a model via {be.display_name}", "e.g. qwen2.5:7b-instruct")
+            if name:
+                self._pull(name)
+
+        self.run_worker(_go(), exclusive=False)
 
     @work(exclusive=True)
     async def _pull(self, name: str) -> None:

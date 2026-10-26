@@ -296,24 +296,32 @@ class OhMyLLMApp(App[None]):
                 continue
         self.notify("no clipboard tool found (wl-copy/xclip/pbcopy)", severity="warning")
 
-    async def action_safe_quit(self) -> None:
+    def action_safe_quit(self) -> None:
+        # NOTE: must not await the modal here — binding handlers run inside the
+        # message pump, and awaiting a modal would freeze every input (the old
+        # ctrl+Q "stuck on Quit?" bug). run_worker keeps the pump free.
         if not hasattr(self, "svc"):
             self.exit()
             return
         if getattr(self, "_quit_prompt_open", False):
-            return  # Ctrl+C again must not stack a second modal
+            return  # Ctrl+Q again must not stack a second modal
         if self.busy:
             self.notify("agent is working — Ctrl+X cancels the turn first", severity="warning")
             return
         if not self.svc.config.ui.confirm_quit:
-            await self._quit_and_release()
+            self.run_worker(self._quit_and_release(), exclusive=False)
             return
-        self._quit_prompt_open = True
-        try:
-            if await self.confirm("Quit OhMyLLM? Chats and memory are already saved.", ok_label="Quit", danger=True):
-                await self._quit_and_release()
-        finally:
-            self._quit_prompt_open = False
+
+        async def _go() -> None:
+            self._quit_prompt_open = True
+            try:
+                if await self.confirm("Quit OhMyLLM? Chats and memory are already saved.",
+                                      ok_label="Quit", danger=True):
+                    await self._quit_and_release()
+            finally:
+                self._quit_prompt_open = False
+
+        self.run_worker(_go(), exclusive=False)
 
     def action_cancel_turn(self) -> None:
         self.cancel_event.set()

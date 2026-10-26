@@ -334,11 +334,11 @@ async def test_quit_confirm_from_binding_context_no_crash(oml_env, svc):
     app = OhMyLLMApp()
     async with app.run_test(size=(140, 46)) as pilot:
         await pilot.pause(0.7)
-        task = asyncio.create_task(app.action_safe_quit())  # bindings await this outside any worker
+        app.action_safe_quit()  # sync binding: spawns its own worker, pump stays free
         await pilot.pause(0.5)
         assert "ConfirmModal" in type(app.screen).__name__
         await pilot.press("n")
-        await task
+        await pilot.pause(0.4)
         assert app.is_running
 
 
@@ -515,20 +515,18 @@ async def test_live_file_preview_mounts_and_seals(oml_env, svc):
 
 @pytest.mark.asyncio()
 async def test_quit_modal_single_instance_and_cancel(oml_env, svc):
-    import asyncio
-
+    # action_safe_quit is sync-by-design: it spawns a worker so the message
+    # pump stays free (a modal awaited inside a binding froze the whole CLI)
     app = OhMyLLMApp()
     async with app.run_test(size=(140, 46)) as pilot:
         await pilot.pause(0.7)
-        t1 = asyncio.create_task(app.action_safe_quit())
+        await pilot.press("ctrl+q")
         await pilot.pause(0.4)
-        t2 = asyncio.create_task(app.action_safe_quit())  # impatient double Ctrl+C
+        await pilot.press("ctrl+q")  # impatient double Ctrl+Q
         await pilot.pause(0.4)
         assert len(app.screen_stack) == 3, "second modal must not stack"
         await pilot.click("#no")
-        await asyncio.wait_for(t1, 3)
-        await asyncio.wait_for(t2, 3)
-        await pilot.pause(0.3)
+        await pilot.pause(0.4)
         assert app.is_running and "ConfirmModal" not in type(app.screen).__name__
 
 

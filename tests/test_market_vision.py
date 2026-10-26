@@ -127,6 +127,80 @@ def test_png_size_roundtrip(tmp_path):
     assert uri.startswith("data:image/png;base64,")
 
 
+async def test_market_download_button_flow(oml_env, svc, monkeypatch):
+    # end-to-end: click a card -> progress -> done label (this path once used
+    # a nonexistent App.create_task and was never exercised)
+    import asyncio as _a
+
+    from textual.widgets import OptionList, ProgressBar, Static
+
+    from ohmyllm import market as m
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.screens.market import MarketScreen
+
+    async def fake_dl(entry, state, cancel=None, **kw):
+        state.total = int(entry.size_gb * 1e9)
+        for i in range(4):
+            state.received = int(state.total * (i + 1) / 4)
+            state.mbps = 42.0
+            await _a.sleep(0.1)
+        state.done = True
+        return state
+
+    monkeypatch.setattr(m, "download", fake_dl)
+    app = OhMyLLMApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.7)
+        app.replace_screen("market")
+        await pilot.pause(0.5)
+        screen = app.screen
+        assert isinstance(screen, MarketScreen)
+        lst = screen.query_one(OptionList)
+        lst.highlighted = 0
+        await pilot.press("enter")
+        await pilot.pause(1.0)
+        label = screen.query_one("#market-dl-label", Static)
+        txt = str(label.render())
+        assert "ready" in txt, txt
+        bar = screen.query_one("#market-progress", ProgressBar)
+        assert bar.progress == 100
+
+
+async def test_choose_opens_settings_for_the_cursor_row(oml_env, svc):
+    # regression: choose() repopulated the table (cursor reset to row 0) and
+    # then re-read the selection — the settings modal opened for the WRONG
+    # model (user picked gemma, got "Settings for axon 250m")
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.screens.models import ModelsScreen
+    from textual.widgets import DataTable
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.9)
+        app.replace_screen("models")
+        await pilot.pause(1.2)
+        screen = app.screen
+        assert isinstance(screen, ModelsScreen)
+        t = screen.query_one(DataTable)
+        assert t.row_count >= 2
+        names = [screen._visible[i] for i in range(t.row_count)]
+        target = names[-1]  # last row — never row 0
+        t.move_cursor(row=len(names) - 1)
+        await pilot.pause(0.2)
+        assert screen._selected() is not None and screen._selected().name == target
+        # any re-populate (refresh, background metadata) must NOT drop the
+        # selection to row 0 — that's what opened settings for the wrong model
+        screen._populate()
+        await pilot.pause(0.2)
+        assert screen._selected() is not None and screen._selected().name == target, \
+            "cursor selection lost across repopulate"
+        screen._open_settings(screen._selected())
+        await pilot.pause(0.5)
+        modal = [sc for sc in app.screen_stack if type(sc).__name__ == "ModelSettingsModal"]
+        assert modal and modal[-1].model.name == target, \
+            (modal[-1].model.name if modal else None, target)
+
+
 async def test_think_hint_is_model_aware(oml_env, svc):
     from ohmyllm.tui.app import OhMyLLMApp
 
@@ -207,21 +281,20 @@ async def test_ctrl_c_never_opens_quit_modal(oml_env, svc):
 
 
 async def test_quit_modal_opens_and_responds(oml_env, svc):
-    import asyncio
-
+    # regression: the binding used to await the modal inside the message pump
+    # — ctrl+Q froze the whole UI (nothing clickable, nothing typeable). A
+    # plain pilot.press must return and the modal must take input.
     from ohmyllm.tui.app import OhMyLLMApp
     from ohmyllm.tui.widgets import ConfirmModal
 
     app = OhMyLLMApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(0.7)
-        # bindings that await a modal must run outside the pilot's message
-        # pump (same idiom as the established quit test)
-        task = asyncio.create_task(app.action_safe_quit())
+        await pilot.press("ctrl+q")
         await pilot.pause(0.5)
-        assert isinstance(app.screen, ConfirmModal)
+        assert isinstance(app.screen, ConfirmModal), "ctrl+Q must open the quit modal"
         await pilot.press("n")  # cancel
-        await task
+        await pilot.pause(0.5)
         assert app.is_running
         assert type(app.screen).__name__ == "ChatScreen"
 

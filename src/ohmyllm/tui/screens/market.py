@@ -157,10 +157,12 @@ class MarketScreen(Screen):
 
     @work(exclusive=True, group="market-dl")
     async def _run_download(self, e: MarketEntry) -> None:
+        import asyncio
+
         from ...market import download as dl
 
         state = DownloadState(entry=e)
-        task = self.app.create_task(dl(e, state, cancel=lambda: getattr(self, "_cancel", False)))
+        task = asyncio.ensure_future(dl(e, state, cancel=lambda: getattr(self, "_cancel", False)))
         while not task.done():
             self._paint(state)
             await self._sleep_tick()
