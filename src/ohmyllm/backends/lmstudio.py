@@ -399,6 +399,11 @@ class LMStudioBackend(BaseBackend):
         # and exceeds every level via the critique-and-revise pass in runtime.
         # xhigh is the highest level LM Studio/llama.cpp accept; "max" maps to
         # it plus the explicit thinking_budget when the user set one.
+        if params.kv_cache not in ("f16", "auto"):
+            # llama.cpp-standard keys; LM Studio applies them at model load
+            # and ignores them otherwise (verified: unknown keys never 400)
+            body["cache_type_k"] = params.kv_cache
+            body["cache_type_v"] = params.kv_cache
         lvl = "xhigh" if params.ultrathink else params.effort
         if lvl != "off":
             wire = {"low": "low", "medium": "medium", "high": "high",

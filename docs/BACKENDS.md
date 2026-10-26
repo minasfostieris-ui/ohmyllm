@@ -105,6 +105,19 @@ thinking length* depends on the model:
   fall back server-side (warning, not an error), and a 400 mentioning
   reasoning triggers the same clean retry.
 
+### K/V cache quantization (`kv_cache`, default `q4_1`)
+
+The attention K/V cache can eat gigabytes at long context. OhMyLLM sends
+`cache_type_k`/`cache_type_v` (llama.cpp-standard keys) to LM Studio/vLLM
+and `quantize_kv: true` to Ollama (its only KV knob — a boolean, so any
+non-f16 value maps to "on"). Values: `f16`, `bf16`, `q8_0`, `q4_0`,
+`q4_1`, `iq4_nl`, `fp8`, `auto`. Rough effect at 32k ctx on a 9B model:
+f16 ≈ 4 GB of cache, q4_1 ≈ 1 GB. LM Studio applies KV quant at model
+LOAD (its runtime tab) — the request keys are honored by llama.cpp
+servers and ignored harmlessly elsewhere; if a model misbehaves (repeated
+garbage at long context), set `kv_cache = "f16"` in `[generation]` or per
+model. The model settings modal and GUI settings both expose it.
+
 ### Support matrix — HF's most-downloaded chat models
 
 | Model | Thinking | `/think` levels | Notes |

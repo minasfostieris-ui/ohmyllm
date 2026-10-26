@@ -1,11 +1,14 @@
 """Marketplace catalog/VRAM/download + vision paste plumbing."""
 from __future__ import annotations
 
+import asyncio
+import json
 import struct
 import zlib
 from pathlib import Path
 
 import httpx
+import pytest
 
 from ohmyllm import market
 
@@ -353,3 +356,104 @@ async def test_paste_text_only_when_model_blind(oml_env, svc, tmp_path, monkeypa
         msgs = app.session.messages
         assert all(isinstance(m["content"], str) for m in msgs if m["role"] == "user"), \
             "non-vision model must receive plain text"
+
+
+def test_kv_cache_defaults_and_wire():
+    import asyncio as _a
+
+    from ohmyllm.backends.lmstudio import LMStudioBackend
+    from ohmyllm.config import Config
+    from ohmyllm.config.models import GenerationSettings
+
+    gen = GenerationSettings()
+    assert gen.kv_cache == "q4_1", "user default: q4_1"
+
+    def _body(kv):
+        gen = GenerationSettings(kv_cache=kv)
+        cap: dict = {}
+
+        def h(req: httpx.Request) -> httpx.Response:
+            cap["b"] = json.loads(req.content.decode())
+            return httpx.Response(200, text="data: [DONE]\n\n",
+                                  headers={"content-type": "text/event-stream"})
+
+        be = LMStudioBackend(Config(), transport=httpx.MockTransport(h))
+
+        async def go() -> None:
+            async for _ in be.stream_chat("m", [{"role": "user", "content": "x"}], gen):
+                pass
+
+        _a.run(go())
+        return cap["b"]
+
+    b = _body("q4_1")
+    assert b["cache_type_k"] == "q4_1" and b["cache_type_v"] == "q4_1"
+    b = _body("f16")
+    assert "cache_type_k" not in b
+
+
+def test_kv_validator_rejects_garbage():
+    import pydantic
+
+    from ohmyllm.config.models import GenerationSettings
+
+    with pytest.raises(pydantic.ValidationError):
+        GenerationSettings(kv_cache="q99_impossible")
+
+
+def test_sort_models_keys():
+    from ohmyllm.backends.base import ModelInfo
+    from ohmyllm.config.models import BackendName
+    from ohmyllm.tui.screens.models import sort_models
+
+    ms = [
+        ModelInfo(name="zeta-large", backend=BackendName.MOCK, size_bytes=9e9, params_b=9, quant="Q4_K_M"),
+        ModelInfo(name="alpha-small", backend=BackendName.MOCK, size_bytes=1e9, params_b=1, quant="IQ2_XS"),
+        ModelInfo(name="beta-mid", backend=BackendName.MOCK, size_bytes=5e9, params_b=4, quant="Q6_K"),
+    ]
+    assert [m.name for m in sort_models(ms, "name")] == ["alpha-small", "beta-mid", "zeta-large"]
+    assert sort_models(ms, "size")[0].name == "zeta-large"
+    assert sort_models(ms, "quant")[0].name == "alpha-small"
+    assert sort_models(ms, "params")[0].name == "zeta-large"
+
+
+def test_thinking_support_heuristics():
+    from ohmyllm.capabilities import thinking_support
+
+    assert thinking_support("qwen3.8-27b-gsq-rco") == "levels"
+    assert thinking_support("llama-3.1-8b-instruct") == "none"
+    assert thinking_support("Qwen3.5-9b-Sushi-Coder-RL") == "forced"
+    assert thinking_support("mystery-7b") is None
+
+
+def test_ollama_quantize_kv_option():
+    import json
+
+    from ohmyllm.backends.ollama import OllamaBackend
+    from ohmyllm.config import Config
+    from ohmyllm.config.models import GenerationSettings
+
+    cfg = Config()
+
+    def run(kv):
+        gen = GenerationSettings(kv_cache=kv)
+        cap: dict = {}
+
+        def h(req: httpx.Request) -> httpx.Response:
+            body = json.loads(req.content.decode())
+            if "messages" in body:
+                cap["b"] = body
+            return httpx.Response(200, text=json.dumps(
+                {"message": {}, "done": True, "done_reason": "stop", "eval_count": 1}))
+
+        be = OllamaBackend(cfg, transport=httpx.MockTransport(h))
+
+        async def go() -> None:
+            async for _ in be.stream_chat("m", [{"role": "user", "content": "x"}], gen):
+                pass
+
+        asyncio.run(go())
+        return cap["b"]
+
+    assert run("q8_0")["options"]["quantize_kv"] is True
+    assert "quantize_kv" not in run("f16")["options"]

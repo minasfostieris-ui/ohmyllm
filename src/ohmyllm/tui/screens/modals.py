@@ -23,6 +23,7 @@ _FIELDS = [
     ("seed", "Seed (0=random)", int),
     ("threads", "Threads (0=auto)", int),
     ("timeout", "Timeout (s)", float),
+    ("kv_cache", "K/V cache quant", str),
 ]
 
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -178,6 +180,13 @@ class MarketScreen(Screen):
             self.query_one("#market-dl-label", Static).update(
                 f"[green]✓ {e.title} ready[/green] — reload the model list ([b]/models[/]) and load it")
             self.app.notify(f"{e.file} downloaded — it will show up in Models")
+        self.set_timer(4.0, self._hide_dl_box)
+
+    def _hide_dl_box(self) -> None:
+        with contextlib.suppress(Exception):
+            box = self.query_one("#market-dl")
+            if not getattr(self, "_worker_running", False):
+                box.display = False
 
     async def _sleep_tick(self) -> None:
         import asyncio

@@ -127,6 +127,9 @@ class SettingsScreen(Screen):
                     with Vertical(classes="st-field"):
                         yield from _field("Reasoning effort", "st-effort", cfg.generation.effort,
                                            hint="off|low|medium|high|xhigh|max")
+                    with Vertical(classes="st-field"):
+                        yield from _field("K/V cache quant", "st-kv", cfg.generation.kv_cache,
+                                          hint="f16|q8_0|q4_1|fp8 — smaller = less VRAM")
 
             # ---------------------------------------------------------- agent
             with Vertical(classes="st-section"):
@@ -284,6 +287,7 @@ class SettingsScreen(Screen):
                 "timeout": num(q("st-gen_timeout"), float),
                 "streaming": s("st-streaming"),
                 "effort": (q("st-effort").value.strip().lower() or "off"),
+                "kv_cache": (q("st-kv").value.strip().lower() or "q4_1"),
             },
             "agent": {
                 "max_steps": num(q("st-max_steps"), int),

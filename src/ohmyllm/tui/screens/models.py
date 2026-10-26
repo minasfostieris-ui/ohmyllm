@@ -12,7 +12,26 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Input, ProgressBar, Static
 
 from ...backends.base import BackendError, ModelInfo
+from ...capabilities import family, quant_bits, thinking_support
 from ...vram import detect_gpus, human_bytes
+
+_THINK_ORDER = {"levels": 0, "forced": 1, "on-off": 2, "none": 3, None: 4}
+
+
+def sort_models(models: list[ModelInfo], key: str) -> list[ModelInfo]:
+    if key == "size":
+        return sorted(models, key=lambda m: m.size_bytes or 0, reverse=True)
+    if key == "params":
+        return sorted(models, key=lambda m: m.params_b or 0, reverse=True)
+    if key == "quant":
+        return sorted(models, key=lambda m: quant_bits(m.quant))
+    if key == "family":
+        return sorted(models, key=lambda m: (family(m.name), m.name.lower()))
+    if key == "thinking":
+        return sorted(models, key=lambda m: _THINK_ORDER.get(thinking_support(m.name), 4))
+    if key == "vision":
+        return sorted(models, key=lambda m: (m.vision is not True, m.vision is None, m.name.lower()))
+    return sorted(models, key=lambda m: m.name.lower())
 
 
 class ModelsScreen(Screen):
@@ -23,10 +42,11 @@ class ModelsScreen(Screen):
         Binding("s", "settings", "Model settings"),
         Binding("t", "test", "Test model"),
         Binding("l", "pull", "Pull (Ollama)"),
+        Binding("o", "sort_cycle", "Sort"),
     ]
 
     def compose(self) -> ComposeResult:
-        yield Static("[b]🧠 Models[/] — enter choose · s settings · t test · l pull · r refresh · / filter · esc back", id="screen-title")
+        yield Static("[b]🧠 Models[/] — enter choose · s settings · t test · l pull · r refresh · o sort · / filter · esc back", id="screen-title")
         yield Input(placeholder="filter models… (just start typing)", id="model-search")
         yield DataTable(id="models-table", cursor_type="row")
         yield ProgressBar(total=100, id="pull-progress", show_bar=True)
@@ -34,10 +54,11 @@ class ModelsScreen(Screen):
 
     def on_mount(self) -> None:
         t = self.query_one(DataTable)
-        t.add_columns("default", "model", "size", "quant", "params", "ctx", "VRAM min", "comfort", "fit", "tools")
+        t.add_columns("default", "model", "size", "quant", "params", "ctx", "VRAM min", "comfort", "fit", "tools", "vision", "thinking")
         t.focus()
         self._models: list[ModelInfo] = []
         self._visible: list[str] = []
+        self._sort = "name"
         self.refresh_models()
         self._status("probing backend…")
 
@@ -83,6 +104,7 @@ class ModelsScreen(Screen):
         prev = self._selected_name()  # before clear(): clear() resets the cursor
         t.clear()
         self._visible = []
+        self._models = sort_models(self._models, getattr(self, "_sort", "name"))
         q = self.query_one("#model-search", Input).value.strip().lower()
         cur = self.app.svc.current_model()
         gpus = detect_gpus()
@@ -97,6 +119,10 @@ class ModelsScreen(Screen):
             cap = {True: "native", False: "text", None: "?"}[m.tool_capable]
             fit = est.status if est else "?"
             style = {"comfortable": "green", "tight": "yellow", "too_large": "red"}.get(fit, "dim")
+            vis = {"True": "[green]👁 yes[/]", "False": "[dim]no[/]"}[str(bool(m.vision))] if m.vision is not None else "[dim]?[/]"
+            th = thinking_support(m.name)
+            th_cell = {"levels": "[green]⚡ levels[/]", "forced": "[cyan]★ forced[/]",
+                       "on-off": "[yellow]◐ on/off[/]", "none": "[dim]✗ none[/]"}.get(th or "", "[dim]?[/]")
             t.add_row(
                 "★" if m.name == cur else "",
                 m.name[:40],
@@ -108,6 +134,8 @@ class ModelsScreen(Screen):
                 human_bytes(est.comfortable_bytes) if est else "?",
                 f"[{style}]{fit}[/]",
                 cap,
+                vis,
+                th_cell,
             )
             self._visible.append(m.name)
         if t.row_count:
@@ -133,6 +161,14 @@ class ModelsScreen(Screen):
         return next((m for m in self._models if m.name == name), None)
 
     # -------------------------------------------------------------- actions
+    SORTS = ("name", "size", "params", "quant", "family", "thinking", "vision")
+
+    def action_sort_cycle(self) -> None:
+        cur = getattr(self, "_sort", "name")
+        self._sort = self.SORTS[(self.SORTS.index(cur) + 1) % len(self.SORTS)]
+        self._populate()
+        self._status(f"sorted by [b]{self._sort}[/]")
+
     def action_close(self) -> None:
         self.app.replace_screen("chat")
 

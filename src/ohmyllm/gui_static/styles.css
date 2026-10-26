@@ -332,7 +332,7 @@ table.grid tr.active td { background: rgba(122,199,159,.07); }
 .wz-body .opt .t { font-weight: 600; } .wz-body .opt .d { color: var(--muted); font-size: 12.5px; }
 .wizard footer { display: flex; gap: 10px; padding: 14px 22px 18px; border-top: 1px solid var(--line); }
 
-.toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 80; }
+.toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 80;  pointer-events: none; }
 .toast { background: var(--surface-3); border: 1px solid var(--line-strong); border-left: 3px solid var(--accent); border-radius: var(--radius-sm); padding: 10px 14px; font-size: 13.5px; box-shadow: var(--shadow); animation: rise .25s ease-out; max-width: 380px; }
 .toast.err { border-left-color: var(--coral); } .toast.warn { border-left-color: var(--amber); }
 @keyframes rise { from { transform: translateY(8px); opacity: 0; } }

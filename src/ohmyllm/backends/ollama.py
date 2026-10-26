@@ -208,6 +208,9 @@ class OllamaBackend(BaseBackend):
             opts["num_gpu"] = params.num_gpu
         if params.threads:
             opts["num_thread"] = params.threads
+        if params.kv_cache not in ("f16", "auto"):
+            # ollama exposes only a boolean KV-quantization switch
+            opts["quantize_kv"] = True
         return opts
 
     async def _supports_think(self, model: str) -> bool:

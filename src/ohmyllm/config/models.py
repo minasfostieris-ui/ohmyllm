@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class BackendName(StrEnum):
@@ -97,6 +97,16 @@ class GenerationSettings(BaseModel):
                                     "/ultrathink always exceeds max")
     ultrathink: bool = Field(False, description="deep reasoning: reasoning channel + high effort + bigger budget + directive (/ultrathink)")
     thinking_budget: int = Field(0, ge=0, description="LM Studio thinking_budget token cap for /ultrathink (0 = server default)")
+    kv_cache: str = Field("q4_1", description="K/V cache quantization (f16|bf16|q8_0|q4_0|q4_1|iq4_nl|fp8|auto)")
+
+    @field_validator("kv_cache")
+    @classmethod
+    def _kv(cls, v: str) -> str:
+        allowed = {"f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "fp8", "fp8_e4m3", "auto"}
+        v = v.strip().lower()
+        if v not in allowed:
+            raise ValueError(f"kv_cache must be one of {sorted(allowed)}")
+        return v
 
     @model_validator(mode="before")
     @classmethod

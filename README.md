@@ -98,6 +98,10 @@ auto-selected only when a NInfer runtime is installed.
 **Ctrl+C copies your selection** (it never quits); quitting is Ctrl+Q with
 a confirm. Ctrl+V pastes clipboard images (see Vision paste below).
 
+**K/V cache quant** (`q4_1` by default) shrinks the attention cache so long
+conversations fit your card — exposed in Settings, the per-model modal, and
+`[generation] kv_cache`; Ollama gets its boolean equivalent.
+
 **Vision paste.** `Ctrl+V` an image from the clipboard: it shows up in the
 chat as a 📷 card (real preview when the terminal supports it), and if the
 selected model has vision — detected by scanning your disk for `mmproj`

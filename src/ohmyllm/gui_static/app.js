@@ -523,7 +523,17 @@ async function renderModels() {
   const tb = $("#models-table tbody");
   tb.innerHTML = "";
   const q = ($("#model-search").value || "").toLowerCase();
-  const rows = (data.models || []).filter((m) => m.name.toLowerCase().includes(q));
+  let rows = (data.models || []).filter((m) => m.name.toLowerCase().includes(q));
+  const sort = ($("#model-sort") || {}).value || "name";
+  const QBITS = (qt) => { qt = (qt || "").toUpperCase(); if (qt.includes("IQ1")) return 1.2; if (qt.includes("IQ2")) return 2.2; if (qt.includes("IQ3")) return 3.3; if (qt.includes("IQ4") || qt.includes("MXFP4")) return 4.3; const m = qt.match(/Q(\d)/); const b = m ? +m[1] : (qt.includes("F16") || qt.includes("BF16") ? 16 : 8); return b + (qt.includes("XL") || qt.includes("_L") ? 0.4 : qt.includes("_S") ? -0.3 : 0); };
+  const TH = { levels: 0, forced: 1, "on-off": 2, none: 3 };
+  const FAM = (n) => (n.toLowerCase().split(/[/_ .-]+/)[0] || n);
+  if (sort === "size") rows.sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
+  else if (sort === "params") rows.sort((a, b) => (b.params_b || 0) - (a.params_b || 0));
+  else if (sort === "quant") rows.sort((a, b) => QBITS(a.quant) - QBITS(b.quant));
+  else if (sort === "family") rows.sort((a, b) => FAM(a.name).localeCompare(FAM(b.name)) || a.name.localeCompare(b.name));
+  else if (sort === "thinking") rows.sort((a, b) => (TH[a.thinking] ?? 4) - (TH[b.thinking] ?? 4));
+  else if (sort === "vision") rows.sort((a, b) => (b.vision === true) - (a.vision === true) || (a.vision === null) - (b.vision === null));
   if (data.error) { $("#model-detail").textContent = `backend unreachable: ${data.error}`; }
   else $("#model-detail").textContent = `${rows.length} model(s) · default: ${data.default || "none"}`;
   for (const m of rows) {
@@ -539,6 +549,8 @@ async function renderModels() {
       <td>${m.vram_comfortable ? gib(m.vram_comfortable) : "—"}</td>
       <td class="fit-${m.fit === "ok" ? "ok" : m.fit === "tight" ? "tight" : m.fit === "over" ? "over" : ""}">${m.fit}</td>
       <td>${tools}</td>
+      <td>${m.vision === true ? '<span class="fit-ok">👁 yes</span>' : m.vision === false ? '<span class="muted">no</span>' : '<span class="muted">?</span>'}</td>
+      <td>${{ levels: '<span class="fit-ok">⚡ levels</span>', forced: '<span class="fit-ok">★ forced</span>', "on-off": '<span class="fit-tight">◐ on/off</span>', none: '<span class="muted">✗ none</span>' }[m.thinking] || '<span class="muted">?</span>'}</td>
       <td><button class="btn small use">use</button></td>`;
     tr.querySelector(".use").onclick = async () => {
       await post("/api/model", { backend: sel.value || be, model: m.name });
@@ -609,13 +621,17 @@ async function _pollMarket() {
       : p.done ? `✓ ${p.title} ready — reload Models and load it`
       : `${p.title}  ${gb(p.received)}/${gb(p.total)} GB · ${p.mbps.toFixed(1)} MB/s · ${p.eta_s}s left`;
     $("#market-dl-cancel").style.visibility = (p.done || p.error) ? "hidden" : "visible";
-    if (!p.active) { clearInterval(_marketTimer); _marketTimer = null; }
+    if (!p.active) {
+      clearInterval(_marketTimer); _marketTimer = null;
+      if (p.done || p.error) setTimeout(() => { $("#market-dl").hidden = true; }, 4000);
+    }
   }, 600);
 }
 
 $("#market-dl-cancel").onclick = () => post("/api/market/cancel", {});
 
 $("#models-refresh").onclick = renderModels;
+$("#model-sort").onchange = renderModels;
 $("#model-backend").onchange = renderModels;
 $("#model-search").oninput = debounce(renderModels, 200);
 $("#models-pull").onclick = async () => {
@@ -721,6 +737,7 @@ const SCHEMA = [
   ["generation.top_k", "top_k", "num"], ["generation.repeat_penalty", "repeat penalty", "num"],
   ["generation.num_ctx", "context window", "num"], ["generation.num_gpu", "gpu layers (-1=all)", "num"],
   ["generation.num_batch", "batch size", "num"], ["generation.max_tokens", "max tokens", "num"],
+  ["generation.kv_cache", "K/V cache quant", "select", ["f16", "q8_0", "q4_0", "q4_1", "iq4_nl", "fp8", "auto"]],
   ["generation.effort", "reasoning effort", "select", ["off", "low", "medium", "high", "xhigh", "max"]],
   ["§", "agent"],
   ["agent.max_steps", "max steps per turn", "num"], ["agent.max_parse_retries", "parse retries", "num"],
