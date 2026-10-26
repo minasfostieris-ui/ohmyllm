@@ -28,6 +28,7 @@ class MarketEntry:
     short: str = ""  # one-line pitch for the detail pane header
     kind: str = "gguf"  # gguf -> LM Studio folder; ninfer -> own runtime
     companion: str | None = None  # mmproj file needed for vision, same repo
+    mtp: str | None = None  # MTP drafter file, same repo — auto-fetched beside the model
     alt: MarketEntry | None = None  # same model, other runtime format
     tags: tuple[str, ...] = ()
 
@@ -40,6 +41,12 @@ class MarketEntry:
         if not self.companion:
             return None
         return f"https://huggingface.co/{self.repo}/resolve/main/{self.companion}"
+
+    @property
+    def mtp_url(self) -> str | None:
+        if not self.mtp:
+            return None
+        return f"https://huggingface.co/{self.repo}/resolve/main/{self.mtp}"
 
 
 # The curated shelf — what the author actually runs. Sizes are the real
@@ -111,6 +118,24 @@ CATALOG: list[MarketEntry] = [
             kind="ninfer",
         ),
         tags=("vision", "MoE", "fast"),
+    ),
+    MarketEntry(
+        mid="gemma4-12b",
+        title="Gemma-4-12B QAT · Q4_K_XL (Unsloth)",
+        repo="unsloth/gemma-4-12B-it-qat-GGUF",
+        file="gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+        size_gb=6.7,
+        short="QAT quality at 6.7 GB — MTP drafter auto-included",
+        blurb="Unsloth QAT (quantization-aware trained) 12B in UD-Q4_K_XL: "
+              "vision built in, thinking toggle, and the best part — the "
+              "marketplace also fetches the matching MTP multi-token-prediction "
+              "drafter (0.3 GB) right next to it. llama.cpp builds from "
+              "2026-06-07+ auto-discover it: enable speculative decoding "
+              "(LM Studio: model runtime tab; llama.cpp: --spec-type "
+              "draft-mtp) for a big decode speedup with zero quality loss.",
+        companion="mmproj-F16.gguf",
+        mtp="mtp-gemma-4-12B-it.gguf",
+        tags=("vision", "on-off thinking", "MTP drafter", "fits 8 GB"),
     ),
     MarketEntry(
         mid="gpt-oss-20b",
@@ -219,6 +244,12 @@ def lmstudio_models_dir() -> Path:
     return Path.home() / ".lmstudio" / "models"
 
 
+def lmstudio_scan_roots() -> list[Path]:
+    """Every place LM Studio may keep weights across versions/platforms."""
+    roots = [lmstudio_models_dir(), Path.home() / ".cache" / "lm-studio" / "models"]
+    return [r for r in dict.fromkeys(roots) if r.is_dir()]
+
+
 def download_dest(entry: MarketEntry) -> Path:
     sub = "ninfer" if entry.kind != "gguf" else "ohmyllm-market"
     return lmstudio_models_dir() / sub
@@ -235,12 +266,10 @@ def scan_vision_models(root: Path | None = None) -> set[str]:
     sidecar `mmproj-*.gguf` / `*-mmproj.gguf` next to the weights — so the
     filesystem is the ground truth.
     """
-    root = root or lmstudio_models_dir()
+    roots = [root] if root is not None else lmstudio_scan_roots()
     out: set[str] = set()
-    if not root.is_dir():
-        return out
     try:
-        for d in {p.parent for p in root.rglob("*.gguf")}:
+        for d in {p.parent for rt in roots for p in rt.rglob("*.gguf")}:
             files = list(d.glob("*.gguf"))
             if not any(_MM_RE.search(f.name) for f in files):
                 continue
@@ -262,14 +291,13 @@ def _name_from_file(stem: str) -> str:
 def scan_all_models(root: Path | None = None) -> set[str]:
     """Every non-mmproj GGUF name on disk — used to turn vision '?' into a
     definitive 'no' for models we actually saw without a sidecar."""
-    root = root or lmstudio_models_dir()
+    roots = [root] if root is not None else lmstudio_scan_roots()
     out: set[str] = set()
-    if not root.is_dir():
-        return out
     try:
-        for f in root.rglob("*.gguf"):
-            if not _MM_RE.search(f.name):
-                out.add(_name_from_file(f.stem))
+        for rt in roots:
+            for f in rt.rglob("*.gguf"):
+                if not _MM_RE.search(f.name):
+                    out.add(_name_from_file(f.stem))
     except OSError:
         pass
     return out
@@ -320,6 +348,8 @@ async def download(entry: MarketEntry, state: DownloadState,
     urls = [(entry.url, entry.file)]
     if entry.companion:
         urls.append((entry.companion_url or "", entry.companion))
+    if entry.mtp:
+        urls.append((entry.mtp_url or "", entry.mtp))
     state.total = int(entry.size_gb * 1e9)
     state.dest = dest_dir
     factory = client_factory or (lambda: httpx.AsyncClient(follow_redirects=True, timeout=httpx.Timeout(30.0, read=120.0)))

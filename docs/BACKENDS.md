@@ -105,6 +105,22 @@ thinking length* depends on the model:
   fall back server-side (warning, not an error), and a 400 mentioning
   reasoning triggers the same clean retry.
 
+### Vision: proven, not guessed
+
+The model selector's vision column is a **guarantee**, in this order:
+1. server truth (Ollama `/api/show` capabilities)
+2. disk evidence (an `mmproj` sidecar next to the weights = probably yes —
+   marked `(v to prove)`; weights found with no sidecar = no)
+3. the **probe** (`v` in the TUI, "test vision" in the GUI): we render a
+   fresh 5-digit number into a PNG and demand it back — twice, with two
+   different numbers. A text model's guess odds are 1 in 100,000 per
+   attempt; two independent reads is proof. Explicit image-rejection
+   errors settle "no" instantly. Verdicts cache forever in
+   `~/.ohmyllm/vision.json` — one test per model, then it's always known.
+   Models that were never on disk and never tested show "not tested · v"
+   instead of a fake answer. (Field-verified: a sidecar on disk did NOT
+   mean the server could see — the probe caught the lie.)
+
 ### K/V cache quantization (`kv_cache`, default `q4_1`)
 
 The attention K/V cache can eat gigabytes at long context. OhMyLLM sends

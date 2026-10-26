@@ -24,10 +24,12 @@ def _mkpng(p: Path, w: int = 1563, h: int = 200) -> Path:
 
 # ------------------------------------------------------------------ catalog
 def test_catalog_curated_entries():
-    assert len(market.CATALOG) == 8
+    assert len(market.CATALOG) == 9
     ids = {e.mid for e in market.CATALOG}
-    assert {"qwen38-iq2xs", "qwen38-q6k", "sushi-9b", "gemma4-26b",
+    assert {"qwen38-iq2xs", "qwen38-q6k", "sushi-9b", "gemma4-26b", "gemma4-12b",
             "gpt-oss-20b", "qwen3-coder-30b", "r1-14b", "phi-4"} <= ids
+    g12 = next(e for e in market.CATALOG if e.mid == "gemma4-12b")
+    assert g12.mtp == "mtp-gemma-4-12B-it.gguf" and g12.mtp_url.endswith(g12.mtp)
     for e in market.CATALOG:
         assert e.size_gb > 0 and e.url.startswith("https://huggingface.co/")
         assert e.file in e.url
@@ -488,3 +490,37 @@ def test_ollama_quantize_kv_option():
 
     assert run("q8_0")["options"]["quantize_kv"] is True
     assert "quantize_kv" not in run("f16")["options"]
+
+
+class _FakeBe:
+    def __init__(self, reply=None, error=None):
+        self._reply, self._error = reply, error
+        self.name = type("N", (), {"value": "mock"})()
+
+    async def stream_chat(self, model, messages, params, **kw):
+        if self._error:
+            raise RuntimeError(self._error)
+        from ohmyllm.backends.base import ChatChunk
+
+        yield ChatChunk(content=self._reply)
+
+
+async def test_probe_verdicts(monkeypatch):
+    from ohmyllm import vision
+
+    monkeypatch.setattr(vision.random, "randint", lambda a, b: 48213)
+    assert await vision.probe_vision(_FakeBe("The digits are 48213"), "m") is True
+    assert await vision.probe_vision(_FakeBe("I see a cat"), "m") is False
+    # explicit image rejection settles on the FIRST error, no retries
+    assert await vision.probe_vision(
+        _FakeBe(error="this model does not accept image content"), "m") is False
+
+
+def test_probe_cache_roundtrip(oml_env):
+    from ohmyllm import vision
+
+    assert vision.cached_verdict("mock", "never-tested") is None
+    vision.save_verdict("mock:never-tested", True)
+    assert vision.cached_verdict("mock", "never-tested") is True
+    vision.save_verdict("mock:never-tested", False)
+    assert vision.cached_verdict("mock", "never-tested") is False

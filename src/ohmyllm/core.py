@@ -98,6 +98,9 @@ class Services:
         return self._audit
 
     # ------------------------------------------------------------- backend
+    def backend_name_str(self) -> str:
+        return self.config.default_backend.value
+
     def backend(self, name: str | None = None) -> BaseBackend:
         key = name or self.config.default_backend.value
         if key not in self._backend_cache:

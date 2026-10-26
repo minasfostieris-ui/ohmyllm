@@ -13,6 +13,7 @@ from textual.widgets import DataTable, Input, ProgressBar, Static
 
 from ...backends.base import BackendError, ModelInfo
 from ...capabilities import family, quant_bits, thinking_support
+from ...vision import cached_verdict as vision_cached
 from ...vram import detect_gpus, human_bytes
 
 _THINK_ORDER = {"levels": 0, "forced": 1, "on-off": 2, "none": 3, None: 4}
@@ -43,10 +44,11 @@ class ModelsScreen(Screen):
         Binding("t", "test", "Test model"),
         Binding("l", "pull", "Pull (Ollama)"),
         Binding("o", "sort_cycle", "Sort"),
+        Binding("v", "verify_vision", "Verify vision"),
     ]
 
     def compose(self) -> ComposeResult:
-        yield Static("[b]🧠 Models[/] — enter choose · s settings · t test · l pull · r refresh · o sort · / filter · esc back", id="screen-title")
+        yield Static("[b]🧠 Models[/] — enter choose · s settings · t test · l pull · r refresh · o sort · v verify vision · / filter · esc back", id="screen-title")
         yield Input(placeholder="filter models… (just start typing)", id="model-search")
         yield DataTable(id="models-table", cursor_type="row")
         yield ProgressBar(total=100, id="pull-progress", show_bar=True)
@@ -119,7 +121,18 @@ class ModelsScreen(Screen):
             cap = {True: "native", False: "text", None: "?"}[m.tool_capable]
             fit = est.status if est else "?"
             style = {"comfortable": "green", "tight": "yellow", "too_large": "red"}.get(fit, "dim")
-            vis = {"True": "[green]👁 yes[/]", "False": "[dim]no[/]"}[str(bool(m.vision))] if m.vision is not None else "[dim]?[/]"
+            key = self.app.svc.backend_name_str()
+            tested = vision_cached(key, m.name)
+            if m.name in getattr(self, "_probing", set()):
+                vis = "[yellow]⏳ probing[/]"
+            elif tested is not None:
+                vis = "[green]👁 yes[/]" if tested else "[dim]no[/]"
+            elif m.vision is True:
+                vis = "[green]👁 yes[/] [dim](v to prove)[/]"
+            elif m.vision is False:
+                vis = "[dim]no[/]"
+            else:
+                vis = "[dim]not tested · v[/]"
             th = m.thinking or thinking_support(m.name, m.params_b)
             th_cell = {"levels": "[green]⚡ levels[/]", "forced": "[cyan]★ forced[/]",
                        "on-off": "[yellow]◐ on/off[/]", "none": "[dim]✗ none[/]"}.get(th or "", "[dim]?[/]")
@@ -168,6 +181,36 @@ class ModelsScreen(Screen):
         self._sort = self.SORTS[(self.SORTS.index(cur) + 1) % len(self.SORTS)]
         self._populate()
         self._status(f"sorted by [b]{self._sort}[/]")
+
+    def action_verify_vision(self) -> None:
+        m = self._selected()
+        if m is None:
+            return
+        # re-probing is allowed: the disk sidecar can lie (LM Studio may not
+        # wire the projector) — only a passed probe is a guarantee
+
+        self._probing = getattr(self, "_probing", set()) | {m.name}
+        self._populate()
+        self._verify(m.name)
+
+    @work(exclusive=True, group="vision")
+    async def _verify(self, name: str) -> None:
+        from ...vision import probe_vision, save_verdict
+
+        be = self.app.svc.backend()
+        self._status(f"👁 probing [b]{name}[/] — loading it and reading two random numbers "
+                     f"(up to a minute on cold models)…")
+        try:
+            verdict = await probe_vision(be, name)
+        except Exception as exc:  # noqa: BLE001
+            self._status(f"[red]probe failed:[/] {str(exc)[:120]}")
+            self._probing = getattr(self, "_probing", set()) - {name}
+            self._populate()
+            return
+        save_verdict(f"{be.name.value}:{name}", verdict)
+        self._probing = getattr(self, "_probing", set()) - {name}
+        self._status(f"👁 [b]{name}[/] {'[green]CAN see images[/green]' if verdict else '[red]cannot see images[/red]'} — verdict cached forever")
+        self._populate()
 
     def action_close(self) -> None:
         self.app.replace_screen("chat")

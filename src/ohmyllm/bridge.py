@@ -30,6 +30,7 @@ from urllib.parse import parse_qs, urlparse
 
 from . import __version__, paths
 from .capabilities import thinking_support as _thinking_support
+from .vision import cached_verdict as _vision_cached
 from .config import BackendName, Config, PermissionMode
 from .core import Services
 from .doctor import run_checks, summarize
@@ -264,6 +265,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._skill_cast(body)
             if path == "/api/market/download":
                 return self._market_download(body)
+            if path == "/api/vision/probe":
+                return self._run(self._vision_probe(body))
             if path == "/api/market/cancel":
                 self.state.market_cancel = True
                 return self._json(200, {"ok": True})
@@ -379,7 +382,8 @@ class Handler(BaseHTTPRequestHandler):
                 "quant": m.quant, "params_b": m.params_b, "ctx_len": m.ctx_len,
                 "tool_capable": m.tool_capable, "why_weak": m.why_tool_weak(),
                 "loaded": m.loaded,
-                "vision": m.vision, "thinking": m.thinking or _thinking_support(m.name, m.params_b),
+                "vision": m.vision if m.vision is not None else _vision_cached(be.name.value, m.name),
+                "thinking": m.thinking or _thinking_support(m.name, m.params_b),
                 "vram_min": est.min_bytes if est else None,
                 "vram_comfortable": est.comfortable_bytes if est else None,
                 "fit": est.status if est else "unknown",
@@ -426,6 +430,20 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "mode": mode.value})
         else:
             self._json(403, {"error": f"full_access requires the exact phrase: {self.state.svc.full_access_phrase()!r}"})
+
+    async def _vision_probe(self, body: dict) -> tuple[int, dict]:
+        from .vision import probe_vision, save_verdict
+
+        model = str(body.get("model") or "")
+        if not model:
+            return 400, {"error": "model required"}
+        be = self.state.svc.backend(body.get("backend"))
+        try:
+            verdict = await probe_vision(be, model)
+        except Exception as exc:  # noqa: BLE001
+            return 502, {"error": f"probe failed: {str(exc)[:160]}"}
+        save_verdict(f"{be.name.value}:{model}", verdict)
+        return 200, {"model": model, "vision": verdict}
 
     def _market(self) -> None:
         from .market import CATALOG, detect_vram_bytes, fit_verdict, resolve

@@ -111,6 +111,8 @@ class MarketScreen(Screen):
         if key == "no" and e.kind == "gguf":
             extra = "\n[dim]tip: the repo ships smaller quants — see the HF page[/dim]"
         kind = "" if e.kind == "gguf" else f" · [yellow]{e.kind} format[/yellow]"
+        if e.mtp:
+            kind += " · [green]MTP drafter auto-downloads beside it[/green]"
         if e.alt is not None:
             import shutil
 

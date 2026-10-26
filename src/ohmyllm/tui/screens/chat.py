@@ -334,6 +334,11 @@ class ChatScreen(Screen):
     def _vision_ready(self) -> bool | None:
         """True/False from a background scan of the selected model, None unknown."""
         model = self._current_model()
+        from ...vision import cached_verdict
+
+        v = cached_verdict(self.app.svc.backend_name_str(), model)
+        if v is not None:
+            return v
         cached = getattr(self.app.svc, "_vision_cache", {})
         if model in cached:
             return cached[model]

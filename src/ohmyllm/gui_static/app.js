@@ -549,9 +549,19 @@ async function renderModels() {
       <td>${m.vram_comfortable ? gib(m.vram_comfortable) : "—"}</td>
       <td class="fit-${m.fit === "ok" ? "ok" : m.fit === "tight" ? "tight" : m.fit === "over" ? "over" : ""}">${m.fit}</td>
       <td>${tools}</td>
-      <td>${m.vision === true ? '<span class="fit-ok">👁 yes</span>' : m.vision === false ? '<span class="muted">no</span>' : '<span class="muted">?</span>'}</td>
+      <td>${m.vision === true ? '<span class="fit-ok">👁 yes</span>' : m.vision === false ? '<span class="muted">no</span>' : `<button class="btn small ghost vision-test" title="Send two random numbers as images and check the model reads them (loads the model — up to a minute)">test vision</button>`}</td>
       <td>${{ levels: '<span class="fit-ok">⚡ levels</span>', forced: '<span class="fit-ok">★ forced</span>', "on-off": '<span class="fit-tight">◐ on/off</span>', none: '<span class="muted">✗ none</span>' }[m.thinking] || '<span class="muted">?</span>'}</td>
       <td><button class="btn small use">use</button></td>`;
+    const vt = tr.querySelector(".vision-test");
+    if (vt) vt.onclick = async (ev) => {
+      ev.stopPropagation();
+      vt.disabled = true; vt.textContent = "probing…";
+      try {
+        const r = await post("/api/vision/probe", { backend: sel.value || be, model: m.name });
+        toast(`${m.name}: ${r.vision ? "CAN see images" : "cannot see images"} — cached`, r.vision ? "" : "bad");
+      } catch (e) { toast(`vision probe failed: ${e.message}`, "bad"); }
+      renderModels();
+    };
     tr.querySelector(".use").onclick = async () => {
       await post("/api/model", { backend: sel.value || be, model: m.name });
       toast(`${m.name} → default`); renderModels(); refreshStatus();

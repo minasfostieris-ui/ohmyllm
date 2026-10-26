@@ -131,7 +131,7 @@ def test_post_routes_not_misrouted_to_patch(bridge):
 
 def test_market_get_shape(bridge):
     r = bridge.get("/api/market")
-    assert "entries" in r and len(r["entries"]) == 8
+    assert "entries" in r and len(r["entries"]) == 9
     for e in r["entries"]:
         assert {"mid", "title", "size_gb", "fit", "fit_label", "blurb", "repo"} <= set(e)
     p = bridge.get("/api/market/progress")
