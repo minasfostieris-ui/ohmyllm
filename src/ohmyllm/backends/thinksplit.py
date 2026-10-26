@@ -21,6 +21,7 @@ from collections.abc import Iterable
 _PAIRS: dict[str, str] = {
     '<think>': '</think>',
     '＜think＞': '＜/think＞',
+    '\u25c1think\u25b7': '\u25c1/think\u25b7',
     '<thinking>': '</thinking>',
     '<reasoning>': '</reasoning>',
     '<thought>': '</thought>',

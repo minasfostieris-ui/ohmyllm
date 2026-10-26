@@ -104,7 +104,7 @@ def _sse(deltas: list[dict]) -> httpx.MockTransport:
     lines.append("data: [DONE]\n\n")
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text="".join(lines))
+        return httpx.Response(200, text="".join(lines), headers={"content-type": "text/event-stream"})
 
     return httpx.MockTransport(handler)
 
@@ -223,7 +223,7 @@ def test_thinking_budget_opt_in_wire():
 
     def handler(request: httpx.Request) -> httpx.Response:
         cap["body"] = json.loads(request.content.decode())
-        return httpx.Response(200, text="data: [DONE]\n\n")
+        return httpx.Response(200, text="data: [DONE]\n\n", headers={"content-type": "text/event-stream"})
 
     import httpx as _h
     be = LMStudioBackend(cfg, transport=_h.MockTransport(handler))
@@ -234,3 +234,30 @@ def test_thinking_budget_opt_in_wire():
 
     asyncio.run(go())
     assert cap["body"]["thinking_budget"] == 8000
+
+
+def test_kimi_triangle_delimiters():
+    raw = "ans\u25c1think\u25b7deep thought\u25c1/think\u25b7final"
+    reasoning, content = split(_chunks(raw, 5))
+    assert reasoning == "deep thought"
+    assert content == "ansfinal"
+
+
+def test_unloaded_model_json_error_surfaces():
+    import pytest
+
+    from ohmyllm.backends.base import BackendError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"error": "Model is unloaded."},
+                              headers={"content-type": "application/json"})
+
+    cfg = Config()
+    be = LMStudioBackend(cfg, transport=httpx.MockTransport(handler))
+
+    async def go():
+        async for _ in be.stream_chat("m", [{"role": "user", "content": "x"}], GenerationSettings()):
+            pass
+
+    with pytest.raises(BackendError, match="unloaded"):
+        asyncio.run(go())

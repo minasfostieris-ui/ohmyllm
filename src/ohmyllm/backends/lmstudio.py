@@ -414,6 +414,12 @@ class LMStudioBackend(BaseBackend):
                     if resp.status_code != 200:
                         detail = (await resp.aread()).decode(errors="replace")[:300]
                         raise BackendError(f"LM Studio chat failed ({resp.status_code}): {detail}")
+                    if "text/event-stream" not in (resp.headers.get("content-type") or ""):
+                        # LM Studio answers some failures (unloaded model, disk
+                        # not mounted) as 200 + plain JSON — surface it instead
+                        # of streaming silence
+                        detail = (await resp.aread()).decode(errors="replace")[:300]
+                        raise BackendError(f"LM Studio chat: expected SSE, got {detail}")
                     event_name = ""
                     async for line in resp.aiter_lines():
                         line = line.strip()

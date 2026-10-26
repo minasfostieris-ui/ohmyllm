@@ -144,8 +144,10 @@ def test_lmstudio_stream_sse():
                 'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
                 "data: [DONE]",
             ]
-            return httpx.Response(200, content=("\n\n".join(chunks) + "\n\n").encode())
-        return httpx.Response(200, content=SSE)
+            return httpx.Response(200, content=("\n\n".join(chunks) + "\n\n").encode(),
+                    headers={"content-type": "text/event-stream"})
+        return httpx.Response(200, content=SSE,
+                              headers={"content-type": "text/event-stream"})
 
     import asyncio
 
@@ -220,7 +222,7 @@ def _sse_body(deltas: list[dict]) -> str:
 def _lmstudio_stream(deltas: list[dict], captured: dict):
     def handler(request: httpx.Request) -> httpx.Response:
         captured["body"] = json.loads(request.content.decode())
-        return httpx.Response(200, text=_sse_body(deltas))
+        return httpx.Response(200, text=_sse_body(deltas), headers={"content-type": "text/event-stream"})
     return httpx.MockTransport(handler)
 
 
@@ -376,7 +378,8 @@ def test_lmstudio_streams_tool_args_progress():
             lines.append("data: " + json.dumps({"choices": [{"delta": delta}]}) + "\n")
         lines.append('data: {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}\n')
         lines.append("data: [DONE]\n")
-        return httpx.Response(200, text="\n".join(lines))
+        return httpx.Response(200, text="\n".join(lines),
+                             headers={"content-type": "text/event-stream"})
 
     be = LMStudioBackend(Config(), transport=httpx.MockTransport(handler))
 
