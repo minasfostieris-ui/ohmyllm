@@ -109,9 +109,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args: Any) -> None:  # silence stderr spam
         with contextlib.suppress(OSError, TypeError):
+            line = f"{time.strftime('%H:%M:%S')} gui {fmt % args}"
+            tok = getattr(self.state, "token", "")
+            if tok:
+                line = line.replace(tok, "…token…")  # never persist the auth token
             paths.app_log_path().parent.mkdir(parents=True, exist_ok=True)
-            with open(paths.app_log_path(), "a", encoding="utf-8") as fh:
-                fh.write(f"{time.strftime('%H:%M:%S')} gui {fmt % args}\n")
+            log = paths.app_log_path()
+            is_new = not log.exists()
+            with open(log, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+            if is_new:
+                with contextlib.suppress(OSError):
+                    log.chmod(0o600)
 
     def _cors_preflight(self) -> bool:
         if self.command == "OPTIONS":
@@ -195,7 +204,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(200, {"skills": [
                     {"name": sk.name, "description": sk.description} for sk in self.state.svc.skills.list()]})
             if path == "/api/config":
-                return self._json(200, json.loads(self.state.svc.config.model_dump_json()))
+                return self._json(200, _safe_config(self.state.svc.config))
             if path == "/api/backends":
                 return self._run(self._backends())
             if path == "/api/models":
@@ -497,8 +506,11 @@ class Handler(BaseHTTPRequestHandler):
     def _providers_use(self, body: dict) -> tuple[int, dict]:
         pid = str(body.get("pid") or "").strip()
         cl = self.state.svc.config.cloud
-        from .providers import key_for
+        from .providers import get as _pg
+        from .providers import is_custom, key_for
 
+        if _pg(pid) is None and not (is_custom(pid) and pid in cl.customs):
+            return 400, {"error": f"unknown provider {pid!r}"}
         if not key_for(pid, cl.keys):
             return 400, {"error": "connect a key for this provider first"}
         cl.provider = pid
@@ -521,13 +533,19 @@ class Handler(BaseHTTPRequestHandler):
 
         name = str(body.get("name") or "").strip()[:40] or "Custom"
         base = str(body.get("base_url") or "").strip()
-        if not base.startswith("http"):
-            return 400, {"error": "base_url must start with http(s)://"}
+        from urllib.parse import urlparse
+
+        if urlparse(base).scheme not in ("http", "https") or not urlparse(base).netloc:
+            return 400, {"error": "base_url must be a valid http(s) URL"}
         base = base.rstrip("/")
         if not base.endswith("/v1"):
             base += "/v1"
         slug = _re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "provider"
         pid = f"custom-{slug}-{int(_t.time()) % 100000}"
+        n = 2
+        while pid in self.state.svc.config.cloud.customs:
+            pid = f"custom-{slug}-{int(_t.time()) % 100000}-{n}"
+            n += 1
         cl = self.state.svc.config.cloud
         cl.customs[pid] = name
         cl.bases[pid] = base
@@ -641,7 +659,24 @@ class Handler(BaseHTTPRequestHandler):
 
     def _config(self, body: dict) -> None:
         cfg = self.state.svc.config
+        body = dict(body)
+        # API keys are owned by /api/providers/key — a config PATCH must never
+        # write them (the GET we hand the UI is masked, and echoing that back
+        # would silently destroy the real values)
+        if "cloud" in body and isinstance(body["cloud"], dict):
+            body["cloud"] = {k: v for k, v in body["cloud"].items() if k != "keys"}
         merged = {**json.loads(cfg.model_dump_json()), **body}
+        if isinstance(merged.get("cloud"), dict) and isinstance(body.get("cloud"), dict):
+            # merge section-wise so a partial {"cloud": {...}} PATCH cannot
+            # erase bases/customs/model_lists it never mentioned
+            base_cloud = merged["cloud"]
+            live = json.loads(cfg.model_dump_json()).get("cloud", {})
+            for field in ("bases", "customs", "model_lists"):
+                if field in body["cloud"]:
+                    continue
+                base_cloud[field] = live.get(field, {})
+            if "keys" not in body["cloud"]:
+                base_cloud["keys"] = dict(cfg.cloud.keys)
         # never allow flipping to full_access over the plain config API
         if merged.get("permission_mode") == PermissionMode.FULL_ACCESS.value:
             merged["permission_mode"] = cfg.permission_mode.value
@@ -650,7 +685,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             return self._json(400, {"error": str(exc)[:400]})
         self.state.svc.apply_config(new)
-        self._json(200, {"ok": True, "config": json.loads(new.model_dump_json())})
+        self._json(200, {"ok": True, "config": _safe_config(new)})
 
     def _soul(self, body: dict) -> None:
         soul = self.state.svc.soul
@@ -825,6 +860,17 @@ class Handler(BaseHTTPRequestHandler):
             return
 
 
+def _safe_config(cfg: Config) -> dict:
+    """Config as JSON for the UI — provider API keys replaced by their mask."""
+    from .providers import mask
+
+    d = json.loads(cfg.model_dump_json())
+    cloud = d.get("cloud")
+    if isinstance(cloud, dict) and isinstance(cloud.get("keys"), dict):
+        cloud["keys"] = {k: mask(v) for k, v in cloud["keys"].items()}
+    return d
+
+
 def serve(workspace: str | None = None, port: int = 0, token_file: str | None = None,
           write_port_file: str | None = None, stop: threading.Event | None = None) -> None:
     """Run the bridge until killed. Used by `ohmyllm gui` and the Tauri shell."""
@@ -858,10 +904,28 @@ def serve(workspace: str | None = None, port: int = 0, token_file: str | None = 
     actual = httpd.server_address[1]
     httpd.omllm_port = actual  # type: ignore[attr-defined]
     info = f"{actual} {state.token}"
+
+    def _secret_write(path: str) -> None:
+        # the file holds the bridge token — owner-only, and it lands in /tmp
+        import os
+        import tempfile
+
+        d = str(Path(path).parent)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".omllm-", suffix=".port")
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(info)
+            os.replace(tmp, path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
     if write_port_file:
-        Path(write_port_file).write_text(info, encoding="utf-8")
+        _secret_write(write_port_file)
     if token_file:
-        Path(token_file).write_text(info, encoding="utf-8")
+        _secret_write(token_file)
     print(f"OMLLM_BRIDGE port={actual} token={state.token}", flush=True)
     _done = False
 

@@ -260,7 +260,33 @@ class CloudBackend(BaseBackend):
                 }]})
                 continue
             blocks: list[dict[str, Any]] = []
-            content = str(m.get("content", ""))
+            raw = m.get("content", "")
+            if isinstance(raw, list):
+                # OpenAI parts list (ctrl+V vision paste): fold into anthropic
+                # text/image blocks — base64 data URLs become source blocks
+                import base64 as _b64
+
+                for part in raw:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") == "text":
+                        blocks.append({"type": "text", "text": str(part.get("text", ""))})
+                    elif part.get("type") == "image_url":
+                        url = str((part.get("image_url") or {}).get("url", ""))
+                        if url.startswith("data:"):
+                            try:
+                                head, _, b64 = url.partition(",")
+                                media = head[5:].split(";")[0] or "image/png"
+                                _b64.b64decode(b64[:64])  # validate it really is base64
+                                blocks.append({"type": "image", "source": {
+                                    "type": "base64", "media_type": media, "data": b64}})
+                            except Exception:  # noqa: BLE001 — skip an undecodable image
+                                continue
+                        elif url.startswith("http"):
+                            blocks.append({"type": "image", "source": {"type": "url", "url": url}})
+                content = ""
+            else:
+                content = str(raw)
             if content.strip():
                 blocks.append({"type": "text", "text": content})
             for tc in m.get("tool_calls") or []:

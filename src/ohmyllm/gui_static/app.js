@@ -2,6 +2,10 @@
 "use strict";
 
 const BOOT = window.__OMLLM__ || { token: "", port: 0 };
+// the boot URL (?t=…) only authenticates the first HTML fetch; the token is
+// already injected into the page — scrub the query so it never lingers in
+// browser history / the address bar
+if (location.search && BOOT.token) { history.replaceState(null, "", location.pathname); }
 const BASE = `http://127.0.0.1:${BOOT.port}`;
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));

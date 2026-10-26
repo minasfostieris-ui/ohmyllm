@@ -7,6 +7,7 @@ with the exact install command instead of pretending. Models live under
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import shutil
 import signal
 import subprocess
@@ -72,7 +73,7 @@ def pick_engine(lang: str | None = None) -> tuple[str, str] | tuple[None, str]:
         return "sensevoice", sv
     if lg == "en" and pk and stt_model_of("parakeet"):
         return "parakeet", pk
-    if wx and (stt_model_of("whisper") or True):
+    if wx and stt_model_of("whisper"):
         return "whisperx", wx
     if wh and stt_model():
         return "whisper", wh
@@ -224,14 +225,22 @@ async def transcribe(wav: Path, *, language: str | None = None,
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         text = " ".join(ln.strip() for ln in out.decode(errors="replace").splitlines() if ln.strip())
         if engine == "whisperx" and not text.strip():
-            for cand in wav.parent.glob("*.txt"):
+            cand = wav.with_suffix(".txt")  # whisperx names it after the input stem
+            if cand.exists():
                 text = cand.read_text(errors="replace").strip()
-                break
     except TimeoutError:
+        await _kill(proc)
         return "", "transcription timed out"
     except OSError as exc:
         return "", f"{engine} failed: {exc}"
     return text.strip() or "", None if text.strip() else "nothing heard"
+
+
+async def _kill(proc: asyncio.subprocess.Process) -> None:
+    """wait_for cancels the reader, not the child — reap it or leak a process."""
+    with contextlib.suppress(Exception):
+        proc.kill()
+        await proc.wait()
 
 
 # -------------------------------------------------------------------- speak
@@ -252,7 +261,10 @@ async def speak(text: str, *, timeout: float = 180.0) -> tuple[bool, str | None]
         proc = await asyncio.create_subprocess_exec(
             *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except (TimeoutError, OSError) as exc:
+    except TimeoutError:
+        await _kill(proc)
+        return False, "tts timed out"
+    except OSError as exc:
         return False, f"tts failed: {exc}"
     if not out_wav.exists() or out_wav.stat().st_size < 1000:
         return False, "tts produced no audio"
@@ -261,7 +273,10 @@ async def speak(text: str, *, timeout: float = 180.0) -> tuple[bool, str | None]
         proc = await asyncio.create_subprocess_exec(
             *play_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
         await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except (TimeoutError, OSError):
+    except TimeoutError:
+        await _kill(proc)
+        return False, "playback timed out"
+    except OSError:
         return False, "playback failed"
     return True, None
 

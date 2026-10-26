@@ -106,7 +106,11 @@ class SkillManager:
     def _copy_skill(self, src: Path) -> str:
         meta = self._read_meta(src / "SKILL.md")
         slug = _SLUG_RE.sub("-", meta.name.lower()).strip("-") or "skill"
+        if slug in {".", ".."} or slug.startswith("."):
+            raise ValueError(f"invalid skill name {meta.name!r}")
         dest = self.root / slug
+        if dest.resolve().parent != self.root.resolve():
+            raise ValueError(f"skill name escapes the skills folder: {meta.name!r}")
         if dest.exists():
             shutil.rmtree(dest)
         shutil.copytree(src, dest)

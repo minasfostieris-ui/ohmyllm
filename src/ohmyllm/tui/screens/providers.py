@@ -235,9 +235,9 @@ class ProvidersScreen(Screen):
         if not base.startswith("http"):
             self.app.notify("usage: Name|https://my-host/v1|model-a,model-b", severity="warning")
             return
-        import time
+        import uuid
 
-        pid = f"custom-{int(time.time())}"
+        pid = f"custom-{uuid.uuid4().hex[:8]}"
         cl = self.app.svc.config.cloud
         cl.customs[pid] = name
         base = base.rstrip("/")
