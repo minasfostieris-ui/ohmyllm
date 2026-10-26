@@ -171,21 +171,22 @@ class ProvidersScreen(Screen):
 
     @work(exclusive=True)
     async def _test(self, pid: str) -> None:
-        cl = self.app.svc.config.cloud
-        was = cl.provider
-        cl.provider = pid
-        try:
-            from ...backends import make_backend
+        # health-check on a deep copy: swapping the live config.provider here
+        # raced with action_use on slow runners and silently reverted the pick
+        from ...backends import make_backend
 
-            be = make_backend("cloud", self.app.svc.config)
-            ok, info = await be.health()
+        cfg = self.app.svc.config.model_copy(deep=True)
+        cfg.cloud.provider = pid
+        try:
+            ok, info = await make_backend("cloud", cfg).health()
             if ok:
                 self.app.notify(f"🔑 {self._label(pid)}: live — {info.get('models', '?')} models", timeout=8)
             else:
                 self.app.notify(f"{self._label(pid)}: {info.get('error', 'unreachable')}",
                                 severity="warning", timeout=10)
-        finally:
-            cl.provider = was
+        except Exception as exc:  # noqa: BLE001 — never let the ping kill the screen
+            self.app.notify(f"{self._label(pid)}: {type(exc).__name__}: {exc}",
+                            severity="warning", timeout=10)
 
     def action_use(self) -> None:
         pid = self._pid()
