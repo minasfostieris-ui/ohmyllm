@@ -101,8 +101,14 @@ NInfer builds are auto-selected only when a NInfer runtime is installed.
 `/providers` (TUI) or open the **Providers** tab (GUI) — a connect screen
 like OpenCode's, grouped Popular / Other / Custom. Pick OpenRouter,
 Anthropic, OpenAI, Google Gemini, DeepSeek, OpenCode Zen, Groq, Mistral,
-xAI, Together, Fireworks, Cerebras, Vercel AI Gateway, 302.AI… paste the
-key, and it becomes the default backend (`u` / click). Keys are stored in
+xAI, Together, Fireworks, Cerebras, Vercel AI Gateway, 302.AI,
+**Alibaba Token Plan / Coding Plan / PAYG (DashScope)**, Moonshot Kimi,
+Z.ai GLM, NVIDIA NIM, GitHub Models, Hugging Face, Perplexity, Cohere,
+SambaNova, Lambda, Nebius, MiniMax… paste the key, and it becomes the
+default backend (`u` / click). Removing the key deselects the provider —
+nothing ever shows "active" without a key behind it. **Custom** providers
+configure name + base URL + explicit model ids (comma-separated) — for
+endpoints without a `/models` listing — and `e` edits them later. Keys are stored in
 `~/.ohmyllm/config.toml` (chmod 600, owner-only) and displayed masked
 everywhere; `OMLLM_KEY_OPENROUTER` / `OPENAI_API_KEY` / the vendor's own
 env var also work and win over the file — so secrets managers can inject

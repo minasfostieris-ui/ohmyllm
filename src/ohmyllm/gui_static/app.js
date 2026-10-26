@@ -624,10 +624,11 @@ async function renderProviders() {
         p.recommended ? '<span class="pb rec">Recommended</span>' : "",
         p.has_key ? `<span class="pb ok">✓ ${esc(p.masked)}</span>` : "",
       ].join("");
+      const blurb = p.models ? `${p.blurb} · ${p.models}` : p.blurb;
       return `<div class="prov-row" data-pid="${esc(p.pid)}" tabindex="0" role="button" aria-label="Connect ${esc(p.name)}">
         <span class="prov-glyph">${esc(glyph)}</span>
         <span class="prov-name">${esc(p.name)}</span>
-        <span class="prov-blurb">${esc(p.blurb)}</span>${badges}
+        <span class="prov-blurb">${esc(blurb)}</span>${badges}
         <span class="prov-actions"></span>
       </div>`;
     }).join("")).join("")
@@ -662,7 +663,9 @@ async function provAddCustom() {
   if (!name) return;
   const base = await promptModal("Custom provider — base URL", "https://host:port/v1 (OpenAI-compatible)");
   if (!base) return;
-  const r = await post("/api/providers/custom", { name, base_url: base });
+  const models = await promptModal("Model ids (optional)", "comma-separated, e.g. qwen3-coder, llama-3.3-70b — leave empty to list from /models");
+  if (models === null) return;
+  const r = await post("/api/providers/custom", { name, base_url: base, models: models || "" });
   if (r && r.error) { toast(r.error, "bad"); return; }
   _provData = r; renderProviders(); toast(`${name} added — click it to paste the key`);
 }

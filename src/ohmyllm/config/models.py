@@ -151,11 +151,12 @@ class CloudSettings(BaseModel):
     (OMLLM_KEY_OPENROUTER / OPENAI_API_KEY / …, which wins). The UI never
     receives the raw value — only a masked tail."""
 
-    provider: str = "openrouter"          # active provider id
+    provider: str = ""                    # active provider id ("" = none connected)
     default_model: str = ""
     keys: dict[str, str] = Field(default_factory=dict)
     bases: dict[str, str] = Field(default_factory=dict)    # per-provider base_url override
     customs: dict[str, str] = Field(default_factory=dict)  # custom-<id> -> display name
+    model_lists: dict[str, str] = Field(default_factory=dict)  # custom-<id> -> "model-a,model-b" (static catalog)
 
 
 class VoiceSettings(BaseModel):

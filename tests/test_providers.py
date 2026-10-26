@@ -15,6 +15,13 @@ from ohmyllm.config import Config
 # ---------------------------------------------------------------- registry
 def test_registry_shape():
     assert {"openrouter", "anthropic", "openai", "google", "deepseek", "groq"} <= {p.pid for p in providers.PROVIDERS}
+    assert {"alibaba-token-plan", "alibaba-coding-plan", "alibaba", "moonshot", "zai",
+            "nvidia", "github", "huggingface", "perplexity", "cohere", "sambanova",
+            "lambda", "nebius", "minimax"} <= {p.pid for p in providers.PROVIDERS}
+    tp = providers.get("alibaba-token-plan")
+    assert tp and tp.base_url == "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"
+    payg = providers.get("alibaba")
+    assert payg and payg.env_var == "DASHSCOPE_API_KEY"
     anth = providers.get("anthropic")
     assert anth and anth.kind == "anthropic"
     orr = providers.get("openrouter")
@@ -122,6 +129,35 @@ def test_cloud_anthropic_translation():
     # assistant tool_calls → tool_use block; tool msg → tool_result block
     assert body["messages"][1]["content"][0]["type"] == "tool_use"
     assert body["messages"][2]["content"][0]["type"] == "tool_result"
+
+
+def test_no_provider_selected_is_honest():
+    cfg = Config()
+    assert cfg.cloud.provider == ""
+    be = make_backend("cloud", cfg)
+
+    async def go():
+        return await be.health()
+
+    ok, info = asyncio.run(go())
+    assert not ok and "no provider connected" in info["error"]
+
+
+def test_custom_static_model_list_no_http():
+    def boom(req):
+        raise AssertionError("must not hit the network when a static list exists")
+
+    cfg = Config()
+    cfg.cloud.provider = "custom-home"
+    cfg.cloud.keys["custom-home"] = "k"
+    cfg.cloud.customs = {"custom-home": "Home vLLM"}
+    cfg.cloud.bases = {"custom-home": "http://192.168.1.5:8000/v1"}
+    cfg.cloud.model_lists = {"custom-home": "qwen3-coder,llama-3.3-70b"}
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(boom))
+    models = asyncio.run(be.list_models())
+    assert [m.name for m in models] == ["qwen3-coder", "llama-3.3-70b"]
+    ok, info = asyncio.run(be.health())
+    assert ok and info["models"] == 2
 
 
 def test_cloud_requires_key():

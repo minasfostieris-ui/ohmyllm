@@ -161,7 +161,10 @@ def test_bridge_providers_masked(bridge):
     assert r["providers"][next(i for i, p in enumerate(r["providers"]) if p["pid"] == cpid)]["base_url"].endswith("/v1")
     r = bridge.post("/api/providers/forget", {"pid": "openrouter"})
     row = next(p for p in r["providers"] if p["pid"] == "openrouter")
-    assert not row["has_key"]
+    assert not row["has_key"] and not row["active"]  # removing the key deselects it
+    assert r["active"] == ""
+    r = bridge.get("/api/providers")
+    assert all(not p["active"] or p["has_key"] for p in r["providers"])
 
 
 def test_market_get_shape(bridge):

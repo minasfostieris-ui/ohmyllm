@@ -60,8 +60,11 @@ provider registry (`src/ohmyllm/providers.py`):
 |---|---|---|
 | OpenRouter (recommended) | openai | https://openrouter.ai/api/v1 |
 | Anthropic | anthropic | https://api.anthropic.com/v1 |
-| OpenAI · Google · DeepSeek · OpenCode Zen · Groq · Mistral · xAI · Together · Fireworks · Cerebras · Vercel AI Gateway · 302.AI | openai | vendor `/v1` |
-| custom (vLLM, LAN, …) | openai | your base URL |
+| Alibaba Token Plan (subscription, sk-sp-style dedicated keys) | openai | https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1 |
+| Alibaba Coding Plan | openai | https://coding-intl.dashscope.aliyuncs.com/v1 |
+| Alibaba PAYG (DashScope; env `DASHSCOPE_API_KEY`) | openai | https://dashscope.aliyuncs.com/compatible-mode/v1 |
+| Moonshot · Z.ai · OpenAI · Google · DeepSeek · OpenCode Zen · Groq · Mistral · xAI · Together · Fireworks · Cerebras · Vercel AI Gateway · 302.AI · NVIDIA · GitHub · Hugging Face · Perplexity · Cohere · SambaNova · Lambda · Nebius · MiniMax | openai | vendor `/v1` |
+| custom (vLLM, LAN, …) | openai | your base URL + optional static model ids (`model_lists`) for endpoints without `/models` |
 
 Keys: `[cloud]` section in config.toml (owner-only file) or env
 (`OMLLM_KEY_<ID>` > vendor var > file). UI surfaces: `/providers` TUI

@@ -468,13 +468,14 @@ class Handler(BaseHTTPRequestHandler):
             rows.append({"pid": p.pid, "name": p.name, "blurb": p.blurb, "kind": p.kind,
                          "base_url": p.base_url, "popular": p.popular, "recommended": p.recommended,
                          "signup_url": p.signup_url, "has_key": bool(key),
-                         "masked": mask(key), "active": cl.provider == p.pid})
+                         "masked": mask(key), "active": cl.provider == p.pid and bool(key)})
         for pid, name in sorted(cl.customs.items()):
             key = key_for(pid, cl.keys)
             rows.append({"pid": pid, "name": name, "blurb": "custom OpenAI-compatible endpoint",
                          "kind": "openai", "base_url": cl.bases.get(pid, ""), "popular": False,
                          "recommended": False, "signup_url": "", "has_key": bool(key),
-                         "masked": mask(key), "active": cl.provider == pid})
+                         "masked": mask(key), "active": cl.provider == pid and bool(key),
+                         "models": cl.model_lists.get(pid, "")})
         return {"providers": rows, "active": cl.provider,
                 "default_backend": self.state.svc.config.default_backend.value}
 
@@ -488,6 +489,8 @@ class Handler(BaseHTTPRequestHandler):
             cl.keys[pid] = key
         else:
             cl.keys.pop(pid, None)
+            if cl.provider == pid:
+                cl.provider = ""
         self.state.svc.save_config()
         return 200, self._providers_state()
 
@@ -507,6 +510,8 @@ class Handler(BaseHTTPRequestHandler):
         pid = str(body.get("pid") or "").strip()
         cl = self.state.svc.config.cloud
         cl.keys.pop(pid, None)
+        if cl.provider == pid:
+            cl.provider = ""  # a provider without a key is not "active"
         self.state.svc.save_config()
         return 200, self._providers_state()
 
@@ -526,6 +531,9 @@ class Handler(BaseHTTPRequestHandler):
         cl = self.state.svc.config.cloud
         cl.customs[pid] = name
         cl.bases[pid] = base
+        models = str(body.get("models") or "").strip()
+        if models:
+            cl.model_lists[pid] = models
         self.state.svc.save_config()
         return 200, self._providers_state()
 

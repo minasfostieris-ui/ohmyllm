@@ -58,6 +58,7 @@ class ProvidersScreen(Screen):
         Binding("u", "use", "Use as default backend"),
         Binding("x", "forget", "Remove key"),
         Binding("c", "custom", "Add custom OpenAI-compatible"),
+        Binding("e", "edit", "Edit base/models of highlighted custom"),
         Binding("r", "refresh", "Refresh"),
     ]
 
@@ -80,31 +81,33 @@ class ProvidersScreen(Screen):
 
     # ------------------------------------------------------------------ list
     def _rows(self) -> list[tuple[str, str, str, str]]:
-        """(pid, line, group, detail)"""
+        """(pid, line, group, detail) — grouped Popular → Other → Custom."""
         cl = self.app.svc.config.cloud
-        out: list[tuple[str, str, str, str]] = []
+        rows: dict[str, list[tuple[str, str, str, str]]] = {"Popular": [], "Other": [], "Custom": []}
         for p in PROVIDERS:
             key = key_for(p.pid, cl.keys)
             state = f"[green]✓ {mask(key)}[/green]" if key else "[dim]no key[/dim]"
-            active = "  [b][cyan]← active[/b][/cyan]" if cl.provider == p.pid else ""
+            active = "  [b][cyan]← active[/b][/cyan]" if cl.provider == p.pid and key else ""
             star = " [dim](recommended)[/dim]" if p.recommended else ""
             line = f"{p.name:<16} {state}{active}   [dim]{p.blurb}[/dim]{star}"
-            out.append((p.pid, line, "Popular" if p.popular else "Other",
-                        f"[b]{p.name}[/]  [dim]{p.kind} · {p.base_url}[/dim]\n"
-                        f"  {p.blurb}\n"
-                        f"  get a key: {p.signup_url or '(custom endpoint)'}\n"
-                        f"  [dim]enter connect · u use as default backend · x remove key[/dim]"))
+            detail = (f"[b]{p.name}[/]  [dim]{p.kind} · {p.base_url}[/dim]\n"
+                      f"  {p.blurb}\n"
+                      f"  get a key: {p.signup_url or '(custom endpoint)'}\n"
+                      f"  [dim]enter connect · u use as default backend · x remove key[/dim]")
+            rows["Popular" if p.popular else "Other"].append((p.pid, line, "Popular" if p.popular else "Other", detail))
         for pid, name in sorted(cl.customs.items()):
             key = key_for(pid, cl.keys)
             state = f"[green]✓ {mask(key)}[/green]" if key else "[dim]no key[/dim]"
-            active = "  [b][cyan]← active[/b][/cyan]" if cl.provider == pid else ""
+            active = "  [b][cyan]← active[/b][/cyan]" if cl.provider == pid and key else ""
             base = cl.bases.get(pid, "")
-            out.append((pid, f"{name:<16} {state}{active}   [dim]custom · {base}[/dim]",
-                        "Custom",
-                        f"[b]{name}[/]  [dim]openai · {base}[/dim]\n"
-                        "  your own OpenAI-compatible endpoint (vLLM, Ollama-cloud, LAN box…)\n"
-                        "  [dim]enter connect · u use as default backend · x remove key[/dim]"))
-        return out
+            ml = cl.model_lists.get(pid, "")
+            line = f"{name:<16} {state}{active}   [dim]custom · {base}{' · ' + ml if ml else ''}[/dim]"
+            detail = (f"[b]{name}[/]  [dim]openai · {base}[/dim]\n"
+                      f"  models: {ml or '(listed from the endpoint via /models)'}\n"
+                      "  your own OpenAI-compatible endpoint (vLLM, Ollama-cloud, LAN box…)\n"
+                      "  [dim]enter connect · u use · x remove key · e edit base/models[/dim]")
+            rows["Custom"].append((pid, line, "Custom", detail))
+        return rows["Popular"] + rows["Other"] + rows["Custom"]
 
     def refresh_list(self) -> None:
         lst = self.query_one(OptionList)
@@ -206,32 +209,74 @@ class ProvidersScreen(Screen):
             return
         cl = self.app.svc.config.cloud
         cl.keys.pop(pid, None)
+        deselected = ""
+        if cl.provider == pid:
+            cl.provider = ""
+            deselected = " — provider deselected (it had no key)"
         self.app.svc.save_config()
         self.refresh_list()
-        self.app.notify(f"removed the stored key for {self._label(pid)}")
+        self.app.notify(f"removed the stored key for {self._label(pid)}{deselected}")
 
     def action_custom(self) -> None:
-        self.app.push_screen(KeyModal("custom provider name + URL (Name|https://host/v1)", "", secret=False),
-                             lambda val: self._add_custom(val))
+        self.app.push_screen(KeyModal(
+            "custom provider — Name|https://host/v1|model-a,model-b",
+            "the last part (model ids, comma-separated) is optional — needed when the "
+            "endpoint has no /models listing; edit later with e", secret=False),
+            lambda val: self._add_custom(val))
 
     def _add_custom(self, val: str | None) -> None:
         if not val:
             return
-        name, _, base = val.partition("|")
-        base = base.strip() or name.strip()
-        name = name.strip() or base
+        parts = [x.strip() for x in val.split("|")]
+        name = parts[0] or (parts[1] if len(parts) > 1 else "") or "Custom"
+        base = parts[1] if len(parts) > 1 else ""
+        models = parts[2] if len(parts) > 2 else ""
         if not base.startswith("http"):
-            self.app.notify("usage: Name|https://my-host/v1", severity="warning")
+            self.app.notify("usage: Name|https://my-host/v1|model-a,model-b", severity="warning")
             return
         import time
 
         pid = f"custom-{int(time.time())}"
         cl = self.app.svc.config.cloud
         cl.customs[pid] = name
-        cl.bases[pid] = base.rstrip("/") + ("/v1" if not base.rstrip("/").endswith("v1") else "")
+        base = base.rstrip("/")
+        cl.bases[pid] = base if base.endswith("v1") else base + "/v1"
+        if models:
+            cl.model_lists[pid] = models
         self.app.svc.save_config()
         self.refresh_list()
         self.app.notify(f"added {name} — now enter → paste its key")
+
+    def action_edit(self) -> None:
+        pid = self._pid()
+        if pid is None:
+            return
+        cl = self.app.svc.config.cloud
+        if pid not in cl.customs:
+            self.app.notify("only custom providers are editable — registry URLs are fixed", severity="warning")
+            return
+        current = f"{cl.customs[pid]}|{cl.bases.get(pid, '')}|{cl.model_lists.get(pid, '')}"
+        self.app.push_screen(KeyModal(f"edit {cl.customs[pid]} — Name|URL|models", current, secret=False),
+                             lambda val: self._apply_edit(pid, val))
+
+    def _apply_edit(self, pid: str, val: str | None) -> None:
+        if not val:
+            return
+        parts = [x.strip() for x in val.split("|")]
+        cl = self.app.svc.config.cloud
+        if parts and parts[0]:
+            cl.customs[pid] = parts[0]
+        if len(parts) > 1 and parts[1].startswith("http"):
+            base = parts[1].rstrip("/")
+            cl.bases[pid] = base if base.endswith("v1") else base + "/v1"
+        if len(parts) > 2:
+            if parts[2]:
+                cl.model_lists[pid] = parts[2]
+            else:
+                cl.model_lists.pop(pid, None)
+        self.app.svc.save_config()
+        self.refresh_list()
+        self.app.notify(f"updated {cl.customs[pid]}")
 
     def _label(self, pid: str) -> str:
         from ...providers import get

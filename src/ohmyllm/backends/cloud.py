@@ -30,6 +30,8 @@ class CloudBackend(BaseBackend):
         """(pid, base_url, kind, key, display_name) for the chosen provider."""
         cl = self.config.cloud
         pid = cl.provider
+        if not pid:
+            raise BackendError("no provider connected — open /providers (TUI) or the Providers tab (GUI)")
         r = resolve(pid, cl.bases, cl.customs)
         if r is None:
             raise BackendError(f"unknown provider '{pid}' — connect one in /providers")
@@ -73,8 +75,14 @@ class CloudBackend(BaseBackend):
                     except Exception:  # noqa: BLE001
                         n = -1
                     return True, {"provider": label, "models": n}
+                static = self._static_models(pid, label)
+                if static:
+                    return True, {"provider": label, "models": len(static), "note": "static model list"}
                 return False, {"error": f"HTTP {r.status_code}: {r.text[:160]}"}
         except Exception as exc:  # noqa: BLE001
+            static = self._static_models(pid, label)
+            if static:
+                return True, {"provider": pid, "models": len(static), "note": "static model list"}
             return False, {"error": str(exc)}
 
     async def ensure_running(self) -> StartResult:
@@ -92,10 +100,25 @@ class CloudBackend(BaseBackend):
         return StartResult(ok=True, was_already_running=True, message=f"{label} key present")
 
     # --------------------------------------------------------------- models
+    def _static_models(self, pid: str, label: str) -> list[ModelInfo]:
+        raw = self.config.cloud.model_lists.get(pid, "")
+        out: list[ModelInfo] = []
+        for mid in (x.strip() for x in raw.split(",")):
+            if not mid:
+                continue
+            m = ModelInfo(name=mid, backend=BackendName.CLOUD, tool_capable=True)
+            m.apply_name_heuristics()
+            m.notes.append(label)
+            out.append(m)
+        return out
+
     async def list_models(self) -> list[ModelInfo]:
         pid, base, kind, key, label = self._active()
         if not key:
             raise BackendError(f"{label}: no API key — connect it in /providers")
+        static = self._static_models(pid, label)
+        if static:
+            return static
         async with httpx.AsyncClient(timeout=15.0, transport=self._transport) as c:
             r = await c.get(f"{base}/models", headers=self._headers(kind, key))
             if r.status_code != 200:
