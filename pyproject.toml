@@ -32,6 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+vision = ["Pillow>=10"]  # crisper probe images + real previews; probe works without it
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
