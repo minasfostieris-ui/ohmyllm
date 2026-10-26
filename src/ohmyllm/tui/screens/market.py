@@ -16,6 +16,7 @@ from ...market import (
     MarketEntry,
     detect_vram_bytes,
     fit_verdict,
+    resolve,
     vram_gib,
 )
 
@@ -69,14 +70,13 @@ class MarketScreen(Screen):
 
     def on_mount(self) -> None:
         lst = self.query_one(OptionList)
-        for e in CATALOG:
+        for raw in CATALOG:
+            e = resolve(raw)
             key, label = fit_verdict(e.size_gb, self._vram)
             col = _FIT_COLOR[key]
             lst.add_option(Option(
-                f"[{col}]■[/] [b]{e.title}[/b]  [b]{e.size_gb:.1f} GB[/]  "
-                f"[{col}]{label}[/{col}]\n"
-                f"  [dim]{e.short}[/dim]",
-                id=f"m-{e.mid}",
+                f"[{col}]■[/] [b]{e.title}[/b]  [b]{e.size_gb:.1f} GB[/]  [{col}]{label}[/{col}]",
+                id=f"m-{raw.mid}",
             ))
         lst.highlighted = 0
         self._paint_detail()
@@ -109,6 +109,12 @@ class MarketScreen(Screen):
         if key == "no" and e.kind == "gguf":
             extra = "\n[dim]tip: the repo ships smaller quants — see the HF page[/dim]"
         kind = "" if e.kind == "gguf" else f" · [yellow]{e.kind} format[/yellow]"
+        if e.alt is not None:
+            import shutil
+
+            have = bool(shutil.which("ninfer"))
+            kind += (" · [green]NInfer build selected (runtime detected)[/green]" if have else
+                     " · GGUF for LM Studio — NInfer MTP build auto-used if installed")
         try:
             self.query_one("#market-detail", Static).update(
                 f"{badge}  ·  {e.repo}{kind}\n\n{e.blurb}{extra}\n\n"
@@ -130,7 +136,9 @@ class MarketScreen(Screen):
 
     def action_close(self) -> None:
         self._cancel = True
-        self.app.pop_screen()
+        # the app uses replace_screen (not push) to get here — pop would
+        # empty the stack and brick the UI
+        self.app.replace_screen("chat")
 
     # -------------------------------------------------------------- download
     def _start_download(self) -> None:

@@ -21,12 +21,22 @@ def _mkpng(p: Path, w: int = 1563, h: int = 200) -> Path:
 
 # ------------------------------------------------------------------ catalog
 def test_catalog_curated_entries():
-    assert len(market.CATALOG) == 4
+    assert len(market.CATALOG) == 8
     ids = {e.mid for e in market.CATALOG}
-    assert ids == {"qwen38-iq2xs", "qwen38-q6k", "sushi-9b", "gemma4-26b"}
+    assert {"qwen38-iq2xs", "qwen38-q6k", "sushi-9b", "gemma4-26b",
+            "gpt-oss-20b", "qwen3-coder-30b", "r1-14b", "phi-4"} <= ids
     for e in market.CATALOG:
         assert e.size_gb > 0 and e.url.startswith("https://huggingface.co/")
         assert e.file in e.url
+
+
+def test_resolve_picks_ninfer_only_when_runtime_exists(monkeypatch):
+    gemma = next(e for e in market.CATALOG if e.mid == "gemma4-26b")
+    monkeypatch.setattr("shutil.which", lambda name: None)
+    assert market.resolve(gemma).kind == "gguf", "no NInfer runtime -> official GGUF"
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/ninfer" if name == "ninfer" else None)
+    assert market.resolve(gemma).kind == "ninfer", "NInfer installed -> MTP build"
+    assert market.resolve(gemma).file.endswith(".ninfer")
 
 
 def test_fit_verdict_thresholds():

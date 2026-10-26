@@ -25,9 +25,10 @@ class MarketEntry:
     file: str          # file inside the repo
     size_gb: float
     blurb: str
-    short: str = ""  # one-line pitch for the list row
+    short: str = ""  # one-line pitch for the detail pane header
     kind: str = "gguf"  # gguf -> LM Studio folder; ninfer -> own runtime
     companion: str | None = None  # mmproj file needed for vision, same repo
+    alt: MarketEntry | None = None  # same model, other runtime format
     tags: tuple[str, ...] = ()
 
     @property
@@ -50,14 +51,13 @@ CATALOG: list[MarketEntry] = [
         repo="ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF",
         file="Qwen3.8-27B-GSQ-RCO-IQ2_XS.gguf",
         size_gb=8.4,
-        short="ETH research quant — best 27B per gigabyte, vision-capable",
-        blurb="ETH ISTA-DASLab research quant: GSQ (Gumbel-Softmax) learns the "
-              "scalar grid per tensor, RCO assigns quant types under a size "
-              "budget. At the SAME 8.4 GB it beats Unsloth's dynamic quants by "
-              "~7.7% wikitext perplexity — best 27B per gigabyte right now. "
-              "Vision-capable (grab the mmproj below it in the repo).",
+        short="ETH research quant — best 27B per gigabyte, vision",
+        blurb="GSQ (Gumbel-Softmax) learns the scalar grid per tensor, RCO "
+              "assigns quant types under a size budget. At the SAME 8.4 GB it "
+              "beats Unsloth's dynamic quants by ~7.7% wikitext perplexity. "
+              "Thinking model; vision-capable (mmproj included).",
         companion="mmproj-Qwen3.8-27B-BF16.gguf",
-        tags=("thinking", "vision", "27B", "fits 12 GB"),
+        tags=("thinking", "vision", "fits 12 GB"),
     ),
     MarketEntry(
         mid="qwen38-q6k",
@@ -65,13 +65,13 @@ CATALOG: list[MarketEntry] = [
         repo="unsloth/Qwen3.8-27B-GGUF",
         file="Qwen3.8-27B-UD-Q6_K.gguf",
         size_gb=22.0,
-        short="near-original quality — the safe pick on 24 GB+ cards",
+        short="near-original quality — the 24 GB+ card pick",
         blurb="Unsloth Dynamic 2.0: near-original quality, the safe choice "
               "when you have the VRAM. ~2.6x the size of IQ2_XS for a few "
               "points of perplexity — pick this for coding/agent work on "
               "24 GB+ cards (3090/4090/5090, Mac 32 GB+).",
         companion="mmproj-F16.gguf",
-        tags=("thinking", "vision", "27B", "needs 24 GB"),
+        tags=("thinking", "vision", "needs 24 GB"),
     ),
     MarketEntry(
         mid="sushi-9b",
@@ -79,29 +79,98 @@ CATALOG: list[MarketEntry] = [
         repo="bigatuna/Qwen3.5-9b-Sushi-Coder-RL-GGUF",
         file="Qwen3.5-9b-Sushi-Coder-RL.Q6_K.gguf",
         size_gb=7.4,
-        short="RL coder that always thinks — fits 8 GB cards and Macs",
+        short="RL coder that always thinks — fits 8 GB cards",
         blurb="RL-tuned coder that always thinks (forced reasoning). Sharp on "
               "refactors and tool calls, small enough for 8-12 GB cards and "
-              "Macs. Vision companion: BF16-mmproj in the same repo.",
+              "Macs. Vision companion included.",
         companion="Qwen3.5-9b-Sushi-Coder-RL.BF16-mmproj.gguf",
         tags=("forced thinking", "vision", "coder", "fits 8 GB"),
     ),
     MarketEntry(
         mid="gemma4-26b",
-        title="Gemma-4-26B-A4B · QAT Q4_0 (NInfer)",
-        repo="WaveCut/gemma-4-26B-A4B-it-QAT-Q4_0-MTP-NInfer-v3",
-        file="gemma-4-26B-A4B-it-QAT-Q4_0-MTP-ninfer-v3.ninfer",
-        size_gb=15.8,
-        short="MoE 26B/4B-active, vision, MTP-fast — NInfer runtime only",
-        blurb="Mixture-of-Experts (26B total / 4B active) with MTP "
-              "speculative decoding — fast like a 4B, smart like a 26B, "
-              "vision built in. NOTE: .ninfer format — runs in the NInfer "
-              "runtime (RTX-3090 tuned), not LM Studio. Downloaded to the "
-              "same folder; point NInfer at it.",
-        kind="ninfer",
-        tags=("vision", "MoE", "fast", "NInfer runtime"),
+        title="Gemma-4-26B-A4B QAT · Q4_0",
+        repo="google/gemma-4-26B-A4B-it-qat-q4_0-gguf",
+        file="gemma-4-26B_q4_0-it.gguf",
+        size_gb=14.4,
+        short="MoE 26B/4B-active, vision, official Google QAT",
+        blurb="Mixture-of-Experts (26B total / 4B active) — fast like a 4B, "
+              "smart like a 26B, vision built in. Official Google QAT Q4_0 "
+              "in GGUF for LM Studio. If a NInfer runtime is detected on "
+              "this machine, the marketplace automatically swaps to the "
+              "WaveCut MTP-speculative NInfer build of the same weights "
+              "instead (faster decode, same quant).",
+        companion="gemma-4-26B-it-mmproj.gguf",
+        alt=MarketEntry(
+            mid="gemma4-26b-ninfer",
+            title="Gemma-4-26B-A4B QAT · Q4_0 (NInfer)",
+            repo="WaveCut/gemma-4-26B-A4B-it-QAT-Q4_0-MTP-NInfer-v3",
+            file="gemma-4-26B-A4B-it-QAT-Q4_0-MTP-ninfer-v3.ninfer",
+            size_gb=15.8,
+            short="same weights, NInfer MTP build",
+            blurb="NInfer runtime build with MTP speculative decoding.",
+            kind="ninfer",
+        ),
+        tags=("vision", "MoE", "fast"),
+    ),
+    MarketEntry(
+        mid="gpt-oss-20b",
+        title="GPT-OSS-20B · Q4_K_M",
+        repo="unsloth/gpt-oss-20b-GGUF",
+        file="gpt-oss-20b-Q4_K_M.gguf",
+        size_gb=11.6,
+        short="OpenAI's open reasoning MoE — honors /think levels",
+        blurb="One of the few local models whose reasoning_effort levels "
+              "actually change thinking length (low/medium/high). MoE 20B/"
+              "3.6B-active — fast, sharp tool caller, fits 12-16 GB.",
+        tags=("thinking levels", "tools", "MoE"),
+    ),
+    MarketEntry(
+        mid="qwen3-coder-30b",
+        title="Qwen3-Coder-30B-A3B · Q4_K_M",
+        repo="unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+        file="Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+        size_gb=18.6,
+        short="the agentic coder MoE — 24 GB+ cards",
+        blurb="30B total / 3B active: long-context agentic coding that "
+              "punches far above its active size. The model to run for "
+              "OhMyLLM's tool loop on a 4090/Mac 32 GB.",
+        tags=("coder", "agent", "MoE"),
+    ),
+    MarketEntry(
+        mid="r1-14b",
+        title="DeepSeek-R1-Distill-14B · Q4_K_M",
+        repo="unsloth/DeepSeek-R1-Distill-Qwen-14B-GGUF",
+        file="DeepSeek-R1-Distill-Qwen-14B-Q4_K_M.gguf",
+        size_gb=9.0,
+        short="pure reasoning model — always thinks",
+        blurb="R1 distillation: extended chain-of-thought on tap in 9 GB. "
+              "Pairs perfectly with /ultrathink for math and logic-heavy "
+              "asks. No vision, no tools — a thinker.",
+        tags=("forced thinking", "fits 12 GB"),
+    ),
+    MarketEntry(
+        mid="phi-4",
+        title="Phi-4 14B · Q4_K_M",
+        repo="unsloth/phi-4-GGUF",
+        file="phi-4-Q4_K_M.gguf",
+        size_gb=8.9,
+        short="Microsoft's compact heavyweight",
+        blurb="Exceptionally strong for 14B on reasoning and instruction "
+              "following. Solid all-rounder when you want quality in under "
+              "9 GB without an RL-thinking tax on every reply.",
+        tags=("instruct", "fits 12 GB"),
     ),
 ]
+
+
+def resolve(entry: MarketEntry) -> MarketEntry:
+    """Smart format pick: NInfer build only when a NInfer runtime exists."""
+    if entry.alt is not None and entry.alt.kind == "ninfer":
+        import shutil as _sh
+
+        if _sh.which("ninfer"):
+            return entry.alt
+    return entry
 
 
 # ------------------------------------------------------------------ VRAM
@@ -226,6 +295,7 @@ async def download(entry: MarketEntry, state: DownloadState,
                    client_factory=None) -> DownloadState:
     """Stream a market file into the LM Studio folder. HF follows redirects
     to the CDN; we resume from an existing .part when the server agrees."""
+    entry = resolve(entry)
     dest_dir = download_dest(entry)
     dest_dir.mkdir(parents=True, exist_ok=True)
     urls = [(entry.url, entry.file)]
