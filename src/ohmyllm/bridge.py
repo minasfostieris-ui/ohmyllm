@@ -379,7 +379,7 @@ class Handler(BaseHTTPRequestHandler):
                 "quant": m.quant, "params_b": m.params_b, "ctx_len": m.ctx_len,
                 "tool_capable": m.tool_capable, "why_weak": m.why_tool_weak(),
                 "loaded": m.loaded,
-                "vision": m.vision, "thinking": _thinking_support(m.name),
+                "vision": m.vision, "thinking": m.thinking or _thinking_support(m.name, m.params_b),
                 "vram_min": est.min_bytes if est else None,
                 "vram_comfortable": est.comfortable_bytes if est else None,
                 "fit": est.status if est else "unknown",

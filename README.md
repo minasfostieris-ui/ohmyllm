@@ -98,6 +98,14 @@ auto-selected only when a NInfer runtime is installed.
 **Ctrl+C copies your selection** (it never quits); quitting is Ctrl+Q with
 a confirm. Ctrl+V pastes clipboard images (see Vision paste below).
 
+The **model selector** (`/models`, `Ctrl+M`) sorts by size, params, quant,
+family, thinking, or vision (`o` in the TUI, a dropdown in the GUI) and
+shows what each model can do: 👁 vision comes from scanning your disk for
+`mmproj` sidecars — a model file with no sidecar is a definitive *no*, not
+a shrug — and thinking support (`⚡ levels / ◐ on-off / ★ forced / ✗ none`)
+from the server's chat template where it exists, else the model's base
+family with all the `-uncensored-heretic-abliterated` noise stripped.
+
 **K/V cache quant** (`q4_1` by default) shrinks the attention cache so long
 conversations fit your card — exposed in Settings, the per-model modal, and
 `[generation] kv_cache`; Ollama gets its boolean equivalent.

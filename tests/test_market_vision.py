@@ -418,12 +418,43 @@ def test_sort_models_keys():
 
 
 def test_thinking_support_heuristics():
-    from ohmyllm.capabilities import thinking_support
+    from ohmyllm.capabilities import base_family, thinking_support
 
     assert thinking_support("qwen3.8-27b-gsq-rco") == "levels"
     assert thinking_support("llama-3.1-8b-instruct") == "none"
     assert thinking_support("Qwen3.5-9b-Sushi-Coder-RL") == "forced"
     assert thinking_support("mystery-7b") is None
+    # fine-tune noise stripped: these all used to be "?"
+    assert thinking_support("gemma-4-e2b-uncensored-hauhaucs-aggressive", 2.3) == "on-off"
+    assert thinking_support("granite-4.2-8b-uncensored", 8) == "on-off"
+    assert thinking_support("mistralai/ministral-3-3b", 3) == "none"
+    assert thinking_support("qwen-rp") == "none"
+    assert thinking_support("tiny-thing", 0.4) == "none"
+    assert base_family("gemma-4-e2b-uncensored-hauhaucs-aggressive").startswith("gemma-4")
+
+
+def test_scan_all_models_definitive_vision(tmp_path):
+    from ohmyllm.market import has_vision, scan_all_models, scan_vision_models
+
+    d = tmp_path / "llama-3.1-8b"
+    d.mkdir()
+    (d / "llama-3.1-8b-instruct.Q4_K_M.gguf").write_bytes(b"x")
+    allm = scan_all_models(tmp_path)
+    assert any("llama-3.1-8b" in a for a in allm)
+    vis = scan_vision_models(tmp_path)
+    # on disk but NO sidecar -> definitive False once the caller checks allm
+    assert has_vision("llama-3.1-8b-instruct", vis) is False  # name heuristic
+    assert has_vision("brand-new-family-9b", vis) is None     # not on disk: honest ?
+
+
+def test_params_inference():
+    from ohmyllm.backends.base import ModelInfo
+    from ohmyllm.config.models import BackendName
+
+    m = ModelInfo(name="axon 250m", backend=BackendName.MOCK, size_bytes=725537218, quant="F16")
+    assert m.apply_name_heuristics().params_b == 0.25
+    m2 = ModelInfo(name="gemma-convo", backend=BackendName.MOCK, size_bytes=int(4.9e9), quant="Q8_0")
+    assert m2.apply_name_heuristics().params_b == 4.9
 
 
 def test_ollama_quantize_kv_option():

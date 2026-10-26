@@ -15,7 +15,21 @@ _HYBRID = re.compile(r"(qwen3\.5-\d|qwen3[.-]\d|tongyi|my-finetune-conversationa
 _NONE = re.compile(r"(llama-[234]|qwen2\.5|gemma-?3(?![-.]4)|gpt2|opt-|phi-3-mini|phi-4|ornith|dolphin|smollm|mistral-7b|warmchat|uncensored-?rp|qwythos|lfm2|matrix-mini|axon|prism|bonsai)", re.I)
 
 
-def thinking_support(name: str) -> str | None:
+# fine-tune / merge / quant noise that hides the base family
+_MODIFIERS = re.compile(
+    r"(uncensored|heretic|heretic[-_]abliterated|abliterated|warmchat|stupidchat|aggressive|"
+    r"balanced|my-finetune|finetuned?|lora|convo|rp|chatml|gguf|qat|awq|mtp|ninfer|"
+    r"hauhaucs|gsq|rco|sushi|v\d+[-\.]?\d*|\d{4}|it-|mlx|nvfp4|fp8|dynamic|distill)", re.I)
+
+
+def base_family(name: str) -> str:
+    """'gemma-4-e2b-uncensored-hauhaucs-aggressive' -> 'gemma-4-e2b'."""
+    s = name.lower().split("/")[-1]
+    s = _MODIFIERS.sub(" ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def thinking_support(name: str, params_b: float | None = None) -> str | None:
     low = name.lower()
     if _FORCED.search(low):
         return "forced"
@@ -25,6 +39,19 @@ def thinking_support(name: str) -> str | None:
         return "none"
     if _HYBRID.search(low):
         return "on-off"
+    base = base_family(low)
+    if re.search(r"gemma[-.]?4", base):
+        return "on-off"          # Gemma-4 family ships a thinking toggle
+    if re.search(r"granite[-.]?4", base):
+        return "on-off"          # Granite 4.x hybrid thinking
+    if re.search(r"(ministral|mistral|lfm|phi-?4|exaone|command-r|internlm)", base):
+        return "none"
+    if params_b is not None and params_b < 1.0:
+        return "none"            # sub-billion models have no real thinking mode
+    if re.search(r"\bgemma\b", base):
+        return "none"            # gemma 1/2/3 conversation tunes: no thinking
+    if re.search(r"\bqwen\b", base):
+        return "none"            # qwen 1/2 lineage (3+ always carries the digit)
     return None
 
 

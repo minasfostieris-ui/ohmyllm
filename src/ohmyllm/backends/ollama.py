@@ -184,6 +184,10 @@ class OllamaBackend(BaseBackend):
         show = await self.inspect(name)
         if base is not None:
             base.vision = _show_has_vision(show) if show else None
+            if show:
+                tpl = str(show.get("template") or "")
+                if tpl:
+                    base.thinking = "on-off" if "think" in tpl.lower() else "none"
         if base is None and show:
             base = ModelInfo(name=name, backend=self.name)
         if base is None:

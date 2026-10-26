@@ -37,7 +37,7 @@ SERVER_INSTRUCTIONS = [
 _CONTENT_START_RX = re.compile(r'"content"\s*:\s*"')
 
 
-from ..market import has_vision  # noqa: E402  (module-level for typing clarity)
+from ..market import has_vision, scan_all_models  # noqa: E402
 
 
 class LMStudioBackend(BaseBackend):
@@ -144,6 +144,13 @@ class LMStudioBackend(BaseBackend):
         )
 
     # ------------------------------------------------------------- models
+    def _vis(self, name: str, vis: set[str], allm: set[str]) -> bool | None:
+        v = has_vision(name, vis)
+        if v is not None:
+            return v
+        low = name.lower()
+        return False if any(s2 in low or low in s2 for s2 in allm) else None
+
     def vision_scan(self) -> set[str]:
         from ..market import scan_vision_models
 
@@ -161,6 +168,11 @@ class LMStudioBackend(BaseBackend):
         rest = await self._rest_model_details()
         self._vision_scan_cache = getattr(self, "_vision_scan_cache", None) or self.vision_scan()
         vis: set[str] = self._vision_scan_cache
+        try:
+            self._all_scan_cache = getattr(self, "_all_scan_cache", None) or scan_all_models()
+            allm: set[str] = self._all_scan_cache
+        except Exception:  # noqa: BLE001
+            allm = set()
         for name, sizes in (await self._lms_cli_sizes()).items():
             target = rest.setdefault(name, {"id": name})
             for k, v in sizes.items():
@@ -178,7 +190,7 @@ class LMStudioBackend(BaseBackend):
                 ctx_len=_as_int(m.get("context_length") or extra.get("ctx_length") or extra.get("loaded_context_length")),
                 modified=_as_float(m.get("created")),
                 tool_capable=_tool_flag(extra),
-                vision=has_vision(name, vis),
+                vision=self._vis(name, vis, allm),
                 loaded=bool(extra.get("loaded")) if "loaded" in extra else None,
             )
             out.append(info.apply_name_heuristics())
@@ -194,7 +206,7 @@ class LMStudioBackend(BaseBackend):
                 params_b=None,
                 ctx_len=_as_int(extra.get("max_context_length") or extra.get("ctx_length")),
                 tool_capable=_tool_flag(extra),
-                vision=has_vision(name, vis),
+                vision=self._vis(name, vis, allm),
                 loaded=str(extra.get("state") or "").startswith("loaded"),
             )
             out.append(info.apply_name_heuristics())

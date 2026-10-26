@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Callable
@@ -40,6 +41,7 @@ class ModelInfo:
     modified: float | None = None
     tool_capable: bool | None = None  # None = unknown / needs test
     vision: bool | None = None  # None = unknown; True from mmproj/capability scan
+    thinking: str | None = None  # server-truth thinking mode (ollama template); None = infer
     loaded: bool | None = None
     notes: list[str] = field(default_factory=list)
 
@@ -48,6 +50,15 @@ class ModelInfo:
             q, p = model_size_and_quant_from_name(self.name)
             self.quant = self.quant or q
             self.params_b = self.params_b or p
+        if self.params_b is None:
+            m = re.search(r"(\d+(?:\.\d+)?)m\b", self.name.lower())
+            if m:
+                self.params_b = float(m.group(1)) / 1000
+            elif self.size_bytes and self.quant:
+                from ..capabilities import quant_bits
+                bits = quant_bits(self.quant)
+                if bits < 16:
+                    self.params_b = round(self.size_bytes * 8 / bits / 1e9, 1)
         if self.tool_capable is None:
             low = self.name.lower()
             if any(h in low for h in TOOL_CAPABLE_HINTS):

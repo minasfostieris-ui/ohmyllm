@@ -28,7 +28,7 @@ def sort_models(models: list[ModelInfo], key: str) -> list[ModelInfo]:
     if key == "family":
         return sorted(models, key=lambda m: (family(m.name), m.name.lower()))
     if key == "thinking":
-        return sorted(models, key=lambda m: _THINK_ORDER.get(thinking_support(m.name), 4))
+        return sorted(models, key=lambda m: _THINK_ORDER.get(m.thinking or thinking_support(m.name, m.params_b), 4))
     if key == "vision":
         return sorted(models, key=lambda m: (m.vision is not True, m.vision is None, m.name.lower()))
     return sorted(models, key=lambda m: m.name.lower())
@@ -120,7 +120,7 @@ class ModelsScreen(Screen):
             fit = est.status if est else "?"
             style = {"comfortable": "green", "tight": "yellow", "too_large": "red"}.get(fit, "dim")
             vis = {"True": "[green]👁 yes[/]", "False": "[dim]no[/]"}[str(bool(m.vision))] if m.vision is not None else "[dim]?[/]"
-            th = thinking_support(m.name)
+            th = m.thinking or thinking_support(m.name, m.params_b)
             th_cell = {"levels": "[green]⚡ levels[/]", "forced": "[cyan]★ forced[/]",
                        "on-off": "[yellow]◐ on/off[/]", "none": "[dim]✗ none[/]"}.get(th or "", "[dim]?[/]")
             t.add_row(

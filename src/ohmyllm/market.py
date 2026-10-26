@@ -259,6 +259,22 @@ def _name_from_file(stem: str) -> str:
     return s.lower()
 
 
+def scan_all_models(root: Path | None = None) -> set[str]:
+    """Every non-mmproj GGUF name on disk — used to turn vision '?' into a
+    definitive 'no' for models we actually saw without a sidecar."""
+    root = root or lmstudio_models_dir()
+    out: set[str] = set()
+    if not root.is_dir():
+        return out
+    try:
+        for f in root.rglob("*.gguf"):
+            if not _MM_RE.search(f.name):
+                out.add(_name_from_file(f.stem))
+    except OSError:
+        pass
+    return out
+
+
 def has_vision(model_name: str, scanned: set[str]) -> bool | None:
     """True/False from the disk scan, else name heuristic, else None (unknown)."""
     low = model_name.lower()
