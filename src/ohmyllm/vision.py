@@ -29,7 +29,7 @@ def _png_with_digits(digits: str) -> bytes:
     d = ImageDraw.Draw(img)
     from PIL import ImageFont
 
-    font: ImageFont.ImageFont
+    font: Any
     try:
         font = ImageFont.truetype(
             "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 150)
