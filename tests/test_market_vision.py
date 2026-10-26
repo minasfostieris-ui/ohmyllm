@@ -95,9 +95,10 @@ async def test_market_download_streams_with_progress(tmp_path, monkeypatch):
     factory = lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: E731
     out = await market.download(entry, state, client_factory=factory)
     assert out.done and out.error is None
-    dest = tmp_path / "ohmyllm-market" / "test.gguf"
+    dest = market.download_dest(entry) / "test.gguf"
+    assert dest.parent.name == "acme__test-gguf", dest
     assert dest.read_bytes() == payload
-    assert not (tmp_path / "ohmyllm-market" / "test.gguf.part").exists()
+    assert not (dest.parent / "test.gguf.part").exists()
 
 
 async def test_market_download_cancel_keeps_part(tmp_path, monkeypatch):
@@ -119,7 +120,7 @@ async def test_market_download_cancel_keeps_part(tmp_path, monkeypatch):
     factory = lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: E731
     out = await market.download(entry, state, cancel=cancel, chunk=4096, client_factory=factory)
     assert out.error == "cancelled" and not out.done
-    assert (tmp_path / "ohmyllm-market" / "big.gguf.part").stat().st_size > 0
+    assert (market.download_dest(entry) / "big.gguf.part").stat().st_size > 0
 
 
 # ------------------------------------------------------------------ paste
@@ -524,3 +525,26 @@ def test_probe_cache_roundtrip(oml_env):
     assert vision.cached_verdict("mock", "never-tested") is True
     vision.save_verdict("mock:never-tested", False)
     assert vision.cached_verdict("mock", "never-tested") is False
+
+
+async def test_download_fetches_companion_and_mtp(tmp_path, monkeypatch):
+    monkeypatch.setenv("LMSTUDIO_MODEL_PATH", str(tmp_path))
+    files = {"big.gguf": b"W" * 50_000, "mmproj-F16.gguf": b"M" * 5_000,
+             "mtp-draft.gguf": b"T" * 3_000}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        name = req.url.path.rsplit("/", 1)[-1]
+        data = files[name]
+        return httpx.Response(200, content=data, headers={"content-length": str(len(data))})
+
+    entry = market.MarketEntry(mid="trio", title="T", repo="a/b", file="big.gguf",
+                               size_gb=0.05, blurb="x", companion="mmproj-F16.gguf",
+                               mtp="mtp-draft.gguf")
+    state = market.DownloadState(entry=entry)
+    factory = lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))  # noqa: E731
+    out = await market.download(entry, state, client_factory=factory)
+    assert out.done and not out.error
+    dest = market.download_dest(entry)
+    assert (dest / "big.gguf").read_bytes() == files["big.gguf"]
+    assert (dest / "mmproj-F16.gguf").read_bytes() == files["mmproj-F16.gguf"]
+    assert (dest / "mtp-draft.gguf").read_bytes() == files["mtp-draft.gguf"]

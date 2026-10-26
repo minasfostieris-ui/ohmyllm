@@ -251,8 +251,12 @@ def lmstudio_scan_roots() -> list[Path]:
 
 
 def download_dest(entry: MarketEntry) -> Path:
+    """Per-repo subfolder: two repos can ship identically named files
+    (unsloth uses mmproj-F16.gguf for several models) — a flat folder would
+    have them overwrite each other's vision projectors."""
     sub = "ninfer" if entry.kind != "gguf" else "ohmyllm-market"
-    return lmstudio_models_dir() / sub
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "__", entry.repo.strip("/"))
+    return lmstudio_models_dir() / sub / slug
 
 
 # --------------------------------------------------------------- vision scan
