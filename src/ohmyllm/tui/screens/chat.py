@@ -388,6 +388,11 @@ class ChatScreen(Screen):
         elif t == "tool_stream":
             panel.add_event(ev)
             self._file_preview(ev)
+        elif t == "ultrathink_review":
+            self._buffer = ""
+            if self._stream_md is not None:
+                self._stream_md.update("")
+            self._sysline("ultrathink: reviewing the draft, re-deriving everything, rewriting…", "system")
         elif t == "compaction":
             panel.add_event(ev)
             self._sysline(f"compacted context: {ev.get('before')} → {ev.get('after')} messages", "system")

@@ -158,6 +158,9 @@ class OhMyLLMApp(App[None]):
             self.turn_text += str(ev.get("text", ""))
         elif t == "thinking_text":
             self.turn_thinking += str(ev.get("text", ""))
+        elif t == "ultrathink_review":
+            self.turn_text = ""
+            self.turn_thinking = ""
         elif t == "turn_end":
             self.turn_active = False
         from .screens.chat import ChatScreen

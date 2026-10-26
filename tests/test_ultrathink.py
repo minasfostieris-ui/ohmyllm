@@ -89,3 +89,78 @@ def test_ultrathink_note_lands_on_the_wire_copy_only():
     assert ULTRATHINK_NOTE not in stored["content"], "stored session must stay clean"
     AgentRuntime._ultrathink_note(wire, GenerationSettings(ultrathink=False))
     assert wire[0]["content"].count(ULTRATHINK_NOTE) == 1, "no double-append when off"
+
+
+DRAFT = ("The answer requires careful analysis of the farm situation. " * 3)
+REFINED = "REFINED: 34 legs. Two derivations agree; the draft miscounted the goats."
+
+
+def _rt_with_script(svc, chunks_script):
+    from ohmyllm.agents.runtime import AgentRuntime
+    from ohmyllm.backends.base import ChatChunk
+
+    be = svc.backend()
+    be.script = [[ChatChunk(content=c, done=True)] for c in chunks_script]
+    rt = AgentRuntime(backend=be, registry=svc.registry, policy=svc.policy,
+                      approvals=svc.approvals, audit=svc.audit, config=svc.config, soul=svc.soul)
+    return rt, be
+
+
+def test_ultrathink_refines_the_draft(oml_env, svc):
+    svc.config.generation.ultrathink = True
+    rt, be = _rt_with_script(svc, [DRAFT, REFINED])
+    sess = svc.new_session()
+    events: list[dict] = []
+    res = asyncio.run(rt.run_turn(sess, "farm riddle?", model="m", on_event=events.append))
+    assert any(e.get("type") == "ultrathink_review" for e in events), "review event missing"
+    last = [m for m in sess.messages if m.get("role") == "assistant"][-1]
+    assert last["content"] == REFINED, "session must store the refined answer, not the draft"
+    assert not any(m.get("role") == "assistant" and m.get("content") == DRAFT for m in sess.messages)
+    assert res.text == REFINED
+    # the review call carried the draft + the attack instruction on the wire
+    assert not be.script, "second pass must have run"
+
+
+def test_ultrathink_skips_refine_for_short_answers(oml_env, svc):
+    svc.config.generation.ultrathink = True
+    rt, be = _rt_with_script(svc, ["4.", "DECOY-MUST-NOT-RUN"])
+    sess = svc.new_session()
+    events: list[dict] = []
+    asyncio.run(rt.run_turn(sess, "2+2?", model="m", on_event=events.append))
+    assert not any(e.get("type") == "ultrathink_review" for e in events)
+    assert len(be.script) == 1, "tiny answers must not trigger the review pass"
+
+
+def test_no_refine_without_ultrathink(oml_env, svc):
+    svc.config.generation.ultrathink = False
+    rt, be = _rt_with_script(svc, [DRAFT])
+    sess = svc.new_session()
+    events: list[dict] = []
+    asyncio.run(rt.run_turn(sess, "farm riddle?", model="m", on_event=events.append))
+    assert not any(e.get("type") == "ultrathink_review" for e in events)
+    last = [m for m in sess.messages if m.get("role") == "assistant"][-1]
+    assert last["content"].startswith("The answer requires")
+
+
+def test_refine_failure_keeps_draft(oml_env, svc):
+    from ohmyllm.agents.runtime import AgentRuntime
+    from ohmyllm.backends.base import ChatChunk
+
+    svc.config.generation.ultrathink = True
+
+    class Boom(svc.backend().__class__):
+        async def _stream(self, model, messages, tools, native, params=None):
+            if self._calls == 0:
+                self._calls += 1
+                yield ChatChunk(content=DRAFT, done=True)
+            raise RuntimeError("backend exploded mid-review")
+        def __init__(self, config, transport=None):
+            super().__init__(config, transport)
+            self._calls = 0
+
+    be = Boom(svc.config)
+    rt = AgentRuntime(backend=be, registry=svc.registry, policy=svc.policy,
+                      approvals=svc.approvals, audit=svc.audit, config=svc.config, soul=svc.soul)
+    sess = svc.new_session()
+    res = asyncio.run(rt.run_turn(sess, "farm riddle?", model="m"))
+    assert DRAFT.strip() in res.text, "a failed review must never eat the draft"

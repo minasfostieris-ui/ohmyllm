@@ -31,6 +31,15 @@ ULTRATHINK_NOTE = ("<system-directive>ULTRATHINK MODE: before answering, reason 
                    "re-deriving it a second, different way. Be exhaustive; do not rush."
                    "</system-directive>")
 
+ULTRATHINK_REVIEW = (
+    "ULTRATHINK REVIEW: the draft answer you just produced is NOT final. Before the user "
+    "sees it, attack it in your reasoning: hunt for factual errors, wrong arithmetic, "
+    "missed interpretations, unhandled edge cases, and unstated assumptions. Re-derive "
+    "every key step independently — do not trust the first pass. Then write the "
+    "definitive, improved answer. Output ONLY the final answer with no preamble and no "
+    "mention of this review."
+)
+
 ULTRATHINK = """## ULTRATHINK mode (active)
 
 The user asked you to think this one through properly. Before answering or

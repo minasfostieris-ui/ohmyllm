@@ -245,6 +245,11 @@ class AgentRuntime:
 
             if not parsed:
                 final_text = self._clean_final(assistant_text)
+                if params.ultrathink and len(final_text) > 80:
+                    refined = await self._ultrathink_refine(
+                        session, model, params, final_text, emit, cancel)
+                    if refined:
+                        final_text = refined
                 session.add_message("assistant", final_text)
                 result.reasoning = "".join(reasoning_text)[:20000]
                 self._finish(session, result, final_text, gen_time, total_tokens, eval_count, eval_ns,
@@ -463,6 +468,42 @@ class AgentRuntime:
         emit({"type": "tool_result", "name": name, "ok": tool_result.ok, "approval": outcome.value, "output": out_text[:4000], "duration_ms": duration, "call_id": call.id, "file": tool_result.meta or None})
 
     # ------------------------------------------------------------- plumbing
+
+    async def _ultrathink_refine(
+        self,
+        session: Session,
+        model: str,
+        params: Any,
+        draft: str,
+        emit: Any,
+        cancel: asyncio.Event | None,
+    ) -> str | None:
+        """Critique-and-revise second pass. Pure prompting, so it works on every
+        model — no reasoning_effort knob required. Returns the improved answer,
+        or None (keep the draft) on any problem."""
+        from .prompts import ULTRATHINK_REVIEW
+        if cancel is not None and cancel.is_set():
+            return None
+        wire = self.prompt_builder.assemble(
+            self.prompt_builder.system_prompt(mode=self.policy.mode, native=False, ultrathink=True),
+            self._outgoing(session) + [{"role": "assistant", "content": draft},
+                                       {"role": "user", "content": ULTRATHINK_REVIEW}],
+        )
+        emit({"type": "ultrathink_review"})
+        parts: list[str] = []
+        try:
+            async for ch in self.backend.stream_chat(model, wire, params):
+                if cancel is not None and cancel.is_set():
+                    break
+                if ch.reasoning:
+                    emit({"type": "thinking_text", "text": str(ch.reasoning)})
+                if ch.content:
+                    parts.append(str(ch.content))
+                    emit({"type": "token", "text": str(ch.content)})
+        except Exception:  # noqa: BLE001 — refine is an upgrade, never a regression
+            return None
+        refined = self._clean_final("".join(parts))
+        return refined if len(refined) > 20 else None
 
     @staticmethod
     def _ultrathink_note(messages: list[dict[str, Any]], params: Any) -> None:

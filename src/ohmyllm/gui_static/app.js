@@ -347,6 +347,7 @@ function handleEvent(ev, d) {
     case "tool_stream": liveThinkProgress(d.name, d.chars); liveFileProgress(d); break;
     case "compaction": addEvline("ctx", `🗜 compacted ${d.before}→${d.after} messages`, "dim"); break;
     case "interjection": addMsg("user", d.text || ""); break;
+    case "ultrathink_review": liveText = ""; addEvline("ultra", "🌀 reviewing draft, re-deriving, rewriting…", "dim"); break;
     case "retry": addEvline("retry", d.reason || "", "warn"); break;
     case "thinking": state.reasonBuf = ""; state.thinkNode = null; addEvline("think", `💭 ${thinkVerb()} (step ${d.step || "?"})`, "dim"); break;
     case "thinking_text": liveThink(d.text || ""); break;

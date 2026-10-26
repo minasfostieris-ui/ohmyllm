@@ -76,9 +76,13 @@ Inside the TUI: `Ctrl+K` command palette, `Ctrl+O` chats, `Ctrl+M` models,
 doctor, `Ctrl+G` settings, `Ctrl+N` new chat, `Ctrl+X` stop, `Ctrl+H` help,
 `Ctrl+Q` quit. `/remember <fact>` writes straight into soul.md; `/forget`,
 `/rename`, `/export`, `/mode`, `/model` do what they say. `/ultrathink` (also
-`/think`) turns on deep reasoning: the model gets a thorough-deliberation
-directive, the reasoning channel, high reasoning effort, and a 16k-token
-thinking budget — it thinks about WAY more, for WAY longer.
+`/think`) turns on deep reasoning: a deliberation directive rides on your
+message, the reasoning channel + `reasoning_effort: high` go to the server,
+the output budget doubles — and every long answer gets a **critique-and-revise
+pass**: the model attacks its own draft for errors and edge cases, re-derives
+everything, and rewrites. Measured on a local Qwen3.5-9B: ~2.8x the reasoning (measured: 1928 -> 5315 chars, 17s -> 47s thinking)
+with a visibly better answer. Works on every model — the review pass is pure
+prompting, not an API knob.
 
 ## GUI
 
