@@ -26,6 +26,7 @@ class WizardScreen(Screen):
         self.chosen_model: str | None = None
         self.detected: dict[str, dict] = {}
         self.models: list = []
+        self._stt_pick: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Static("", id="wizard-progress")
@@ -300,10 +301,12 @@ class WizardScreen(Screen):
     def _step_8(self, body: Vertical) -> None:
         from ... import voice as _v
 
+        eng = [e for e, ok in (("sensevoice", _v.find_sensevoice()), ("parakeet", _v.find_parakeet()),
+                               ("whisperx", _v.find_whisperx()), ("whisper", _v.find_whisper())) if ok]
         body.mount(Static(
             "[b]🎙 Voice[/b] — talk to OhMyLLM instead of typing, hear replies back\n\n"
             f"  mic recorder: {'✓' if _v.find_recorder() else '✗ (need pw-record/arecord/ffmpeg)'}\n"
-            f"  STT runtime:  {_v.status_line().split(' · ')[1]}\n"
+            f"  STT runtime:  {'✓ ' + '/'.join(eng) if eng else '✗ (whisper.cpp / whisperx / sensevoice.cpp / parakeet.cpp)'}\n"
             f"  TTS runtime:  {'✓' if _v.find_tts() else '✗ (audio.cpp for Phonon voices)'}\n\n"
             "  [b]Do you want Speech-to-Text?[/] Hold Ctrl+E to talk — the transcript\n"
             "  lands in your input box. Engines by language:\n"
@@ -341,17 +344,15 @@ class WizardScreen(Screen):
         ))
 
     # ------------------------------------------------------------ finish
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        # the step's widgets are unmounted before _finish runs — capture the
+        # pick while it happens instead of querying a dead OptionList
+        oid = str(event.option_id or "")
+        if oid.startswith("vstt-"):
+            self._stt_pick = None if oid == "vstt-skip" else oid[5:]
+
     def _picked_stt(self) -> str | None:
-        try:
-            lst = self.query_one(OptionList)
-            for opt in lst.options:
-                if getattr(opt, "id", "") and str(opt.id).startswith("vstt-") and lst.highlighted is not None \
-                        and str(lst.get_option_at_index(lst.highlighted).id) == str(opt.id) \
-                        and opt.id != "vstt-skip":
-                    return str(opt.id)[5:]
-        except Exception:  # noqa: BLE001 — step may not be mounted
-            pass
-        return None
+        return getattr(self, "_stt_pick", None)
 
     def _finish(self) -> None:
         app = self.app

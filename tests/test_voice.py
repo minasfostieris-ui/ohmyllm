@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
@@ -42,7 +43,7 @@ def test_pick_engine_runtime_without_model_is_honest(vdir, no_bins, monkeypatch)
                                                             "parakeet-cli", "audio-cli") else None)
     eng, msg = voice.pick_engine("en")
     assert eng is None
-    assert "no model downloaded" in msg and "/market" in msg
+    assert "no matching model" in msg and "/market" in msg
 
 
 def test_pick_engine_en_prefers_parakeet(vdir, no_bins):
@@ -252,3 +253,164 @@ async def test_onboarding_reopens_wizard(oml_env, svc):
 
 # ------------------------------------------------------------------ bridge
 # (HTTP routes exercised in test_bridge.py::test_bridge_voice_routes)
+
+
+# ---- VoiceMarketProbe regressions (autonomous adversarial run)
+def test_yue_and_locale_normalization(vdir, no_bins):
+    s = vdir / "stt"
+    s.mkdir(parents=True)
+    (s / "sensevoice-small-q8.gguf").write_bytes(b"x")
+    (s / "ggml-small.bin").write_bytes(b"xx")
+    eng, _ = voice.pick_engine("yue")          # not truncated to "yu" anymore
+    assert eng == "sensevoice"
+    assert voice.norm_lang("zh-TW") == "zh"
+    assert voice.norm_lang("pt_BR") == "pt"
+    assert voice.norm_lang("auto") == ""
+
+
+def test_no_cross_engine_model_fallback(vdir, monkeypatch):
+    # only whisper-cli on PATH + ONLY a parakeet gguf: must NOT claim whisper
+    # with the wrong file — honest "no matching model" instead
+    monkeypatch.setattr(voice.shutil, "which",
+                        lambda n: "/usr/bin/whisper-cli" if n == "whisper-cli" else None)
+    s = vdir / "stt"
+    s.mkdir(parents=True)
+    (s / "parakeet-tdt-0.6b-v3-Q8_0.gguf").write_bytes(b"x")
+    eng, msg = voice.pick_engine("fi")
+    assert eng is None and "no matching model" in msg
+
+
+def test_transcribe_surfaces_engine_stderr(vdir, monkeypatch):
+    monkeypatch.setattr(voice.shutil, "which",
+                        lambda n: "/usr/bin/whisper-cli" if n == "whisper-cli" else None)
+    s = vdir / "stt"
+    s.mkdir(parents=True)
+    (s / "ggml-small.bin").write_bytes(b"x")
+
+    class Proc:
+        returncode = 3
+
+        async def communicate(self):
+            return b"", b"error: input file not found"
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 3
+
+    async def fake_exec(*a, **k):
+        return Proc()
+
+    monkeypatch.setattr(voice.asyncio, "create_subprocess_exec", fake_exec)
+    wav = vdir / "r.wav"
+    wav.write_bytes(b"RIFF")
+    text, err = asyncio.run(voice.transcribe(wav))
+    assert not text
+    assert "exited 3" in err and "input file not found" in err  # not "nothing heard"
+
+
+def test_recorder_stop_is_fast(vdir):
+    import subprocess
+    import time
+
+    rec = voice.Recorder(vdir / "x.wav")
+    rec._proc = subprocess.Popen(
+        [sys.executable, "-c",
+         "import signal, time; "
+         "signal.signal(signal.SIGINT, lambda *a: exit(0)); "
+         "time.sleep(5)"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)  # cooperative like pw-record; dash defers traps
+    time.sleep(0.2)
+    t0 = time.monotonic()
+    rec.stop()
+    assert time.monotonic() - t0 < 1.0  # was ~2.03s freezing the UI per release
+
+
+def test_tts_model_matches_dir_names(vdir):
+    d = vdir / "tts" / "gradium__phonon-40m-en"
+    d.mkdir(parents=True)
+    (d / "model.q8.gguf").write_bytes(b"x")
+    assert voice.tts_model() is not None  # file name has no "phonon" — dir does
+
+
+def test_speak_no_stale_replay(vdir, monkeypatch):
+
+    (vdir / "tts").mkdir(parents=True)
+    (vdir / "tts" / "gradium__phonon-40m-en").mkdir()
+    (vdir / "tts" / "gradium__phonon-40m-en" / "model.q8.gguf").write_bytes(b"x")
+    monkeypatch.setattr(voice, "find_tts", lambda: "/usr/bin/audio-cli")
+    monkeypatch.setattr(voice.shutil, "which", lambda n: "/usr/bin/paplay" if n == "paplay" else None)
+
+    class Proc:
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b"segfault"
+
+        def kill(self):
+            pass
+
+        async def wait(self):
+            return 1
+
+    async def fake_exec(*a, **k):
+        return Proc()
+
+    monkeypatch.setattr(voice.asyncio, "create_subprocess_exec", fake_exec)
+    ok, err = asyncio.run(voice.speak("anything"))
+    assert not ok and "exited 1" in err  # failed engine never plays an old wav
+
+
+async def test_market_voice_highlight_no_crash(oml_env, svc):
+    from textual.widgets import OptionList
+
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.screens.market import MarketScreen
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        inp = app.screen.query_one("#chat-input")
+        inp.value = "/market"
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert isinstance(app.screen, MarketScreen)
+        lst = app.screen.query_one(OptionList)
+        for i in range(lst.option_count):  # every row, voice included, must hover cleanly
+            lst.highlighted = i
+            await pilot.pause(0.02)
+
+
+async def test_wizard_voice_pick_survives_navigation(oml_env, svc, monkeypatch):
+    from textual.widgets import OptionList
+
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.screens.wizard import WizardScreen
+
+    fired = []
+    monkeypatch.setattr(WizardScreen, "_download_stt",
+                        lambda self, pick: fired.append(pick))
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        app.replace_screen("wizard")
+        await pilot.pause(0.4)
+        wiz = app.screen
+        assert isinstance(wiz, WizardScreen)
+        for _ in range(8):
+            await wiz._advance()
+        await pilot.pause(0.3)
+        lst = wiz.query_one("#vstt-list", OptionList)
+        for i in range(lst.option_count):
+            if str(lst.get_option_at_index(i).id) == "vstt-sensevoice":
+                lst.highlighted = i
+                break
+        await pilot.pause(0.2)
+        await wiz._advance()  # to Done step — OptionList unmounts HERE
+        await pilot.pause(0.2)
+        # the pick must survive the unmount (the old bug: query dead widget → None)
+        assert wiz._picked_stt() == "sensevoice"
+        fired.append(wiz._picked_stt())
+        assert fired == ["sensevoice"]

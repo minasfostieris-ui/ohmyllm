@@ -116,7 +116,8 @@ def dump_file(path: Path, data: Mapping[str, Any]) -> None:
     target = path.resolve() if path.is_symlink() else path  # dotfiles users symlink config.toml
     fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
     try:
-        os.fchmod(fd, 0o600)
+        if hasattr(os, "fchmod"):  # NTFS has no POSIX modes
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             fh.write(dumps(data))
         os.replace(tmp, target)

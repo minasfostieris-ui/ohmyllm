@@ -58,32 +58,59 @@ def find_parakeet() -> str | None:
 
 # languages each engine actually covers (from the models we ship)
 SENSEVOICE_LANGS = {"en", "ko", "zh", "ja", "yue"}
+# what each engine ACTUALLY covers; None = any language
+_ENGINE_LANGS: dict[str, set[str] | None] = {
+    "sensevoice": SENSEVOICE_LANGS,
+    "parakeet": {"en"},
+    "whisperx": None,
+    "whisper": None,
+}
+
+
+def norm_lang(lang: str | None) -> str:
+    """zh-TW/pt_BR/yue/auto/None -> "" | "zh" | "pt" | "yue" ("" = unknown/auto)."""
+    if not lang:
+        return ""
+    norm = lang.strip().lower()
+    if norm in ("auto", ""):
+        return ""
+    return norm.split("-")[0].split("_")[0]
 
 
 def pick_engine(lang: str | None = None) -> tuple[str, str] | tuple[None, str]:
-    """(engine, binary) for the current models + language.
+    """(engine, binary) — an engine is eligible only when its runtime binary
+    AND its own model family are present AND it covers the language. No
+    cross-family fallback: feeding whisper-cli a Parakeet GGUF just dies.
 
-    Routing: explicit Korean/Chinese/Japanese -> SenseVoice if present;
-    English-only -> Parakeet when present; anything else (or unknown) ->
-    WhisperX (Whisper+VAD) then plain whisper.
+    Priority: explicit en -> Parakeet first; explicit ko/zh/ja/yue ->
+    SenseVoice first; other/unknown language -> WhisperX (VAD) then
+    whisper; auto -> multilingual-safe engines first.
     """
-    lg = (lang or "").lower()[:2]
-    sv, pk, wx, wh = find_sensevoice(), find_parakeet(), find_whisperx(), find_whisper()
-    if lg in SENSEVOICE_LANGS and sv and (stt_model_of("sensevoice") or lg in {"ko", "zh", "ja", "yue"}):
-        return "sensevoice", sv
-    if lg == "en" and pk and stt_model_of("parakeet"):
-        return "parakeet", pk
-    if wx and stt_model_of("whisper"):
-        return "whisperx", wx
-    if wh and stt_model():
-        return "whisper", wh
-    if sv and stt_model_of("sensevoice"):
-        return "sensevoice", sv
-    if pk and stt_model_of("parakeet"):
-        return "parakeet", pk
-    if any((sv, pk, wx, wh)):
-        return None, ("STT runtime found but no model downloaded — /market → "
-                      "Speech-to-text (SenseVoice 254 MB / Parakeet 740 MB / Whisper small 488 MB)")
+    lg = norm_lang(lang)
+    bins = {"sensevoice": find_sensevoice(), "parakeet": find_parakeet(),
+            "whisperx": find_whisperx(), "whisper": find_whisper()}
+    # whisperx rides the whisper ggml family (its own pattern list is empty)
+    models = {"sensevoice": stt_model_of("sensevoice"), "parakeet": stt_model_of("parakeet"),
+              "whisperx": stt_model_of("whisper"), "whisper": stt_model_of("whisper")}
+    if lg == "en":
+        order = ["parakeet", "sensevoice", "whisperx", "whisper"]
+    elif lg in ("ko", "zh", "ja", "yue"):
+        order = ["sensevoice", "whisperx", "whisper"]
+    elif lg:
+        order = ["whisperx", "whisper"]
+    else:
+        order = ["whisperx", "whisper", "sensevoice", "parakeet"]
+    for e in order:
+        covers = _ENGINE_LANGS[e]
+        if covers is not None and lg and lg not in covers:
+            continue
+        model = models[e]
+        if bins[e] and model is not None:
+            return e, str(bins[e])
+    if any(bins.values()):
+        return None, ("STT runtime found but no matching model for this language — "
+                      "/market → Speech-to-text (SenseVoice 254 MB / Parakeet 740 MB / "
+                      "Whisper small 488 MB)")
     return None, "no STT engine on PATH (whisper-cli / whisperx / sensevoice-cli / parakeet-cli)"
 
 
@@ -95,18 +122,24 @@ def find_tts() -> str | None:
     return None
 
 
-def find_recorder() -> list[str] | None:
-    """Best 16 kHz mono WAV recorder available: PipeWire > ALSA > ffmpeg."""
+def recorder_candidates() -> list[list[str]]:
+    """Every 16 kHz mono WAV recorder available, best first: PipeWire > ALSA > ffmpeg."""
+    out: list[list[str]] = []
     if shutil.which("pw-record"):
-        return ["pw-record", "--rate", "16000", "--channels", "1"]
+        out.append(["pw-record", "--rate", "16000", "--channels", "1"])
     if shutil.which("arecord"):
-        return ["arecord", "-q", "-f", "S16_LE", "-r", "16000", "-c", "1"]
+        out.append(["arecord", "-q", "-f", "S16_LE", "-r", "16000", "-c", "1"])
     if shutil.which("ffmpeg"):
         src = "pulse" if sys.platform != "darwin" else "avfoundation"
-        return ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", src,
-                "-i", "default" if src == "pulse" else ":none:default",
-                "-ac", "1", "-ar", "16000"]
-    return None
+        out.append(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", src,
+                    "-i", "default" if src == "pulse" else ":none:default",
+                    "-ac", "1", "-ar", "16000"])
+    return out
+
+
+def find_recorder() -> list[str] | None:
+    cands = recorder_candidates()
+    return cands[0] if cands else None
 
 
 _STT_PATTERNS = {
@@ -120,9 +153,9 @@ def stt_model_of(engine: str) -> Path | None:
     d = voice_dir()
     pats = _STT_PATTERNS.get(engine, ())
     for pat in pats:
-        hits = sorted(d.rglob(pat), key=lambda p: p.stat().st_size)
+        hits = sorted(d.rglob(pat), key=lambda p: p.stat().st_size, reverse=True)
         if hits:
-            return hits[0]
+            return hits[0]  # biggest = the quality pick the user downloaded
     return None
 
 
@@ -140,7 +173,11 @@ def stt_model() -> Path | None:
 
 def tts_model() -> Path | None:
     d = voice_dir()
-    cands = [p for p in d.rglob("*.gguf") if "phonon" in p.name.lower() and "mmproj" not in p.name.lower()]
+    # market stores gradium/phonon-40m-en as voice/tts/gradium__phonon-40m-en/model.q8.gguf —
+    # the family lives in the DIRECTORY name, not the file name
+    cands = [p for p in d.rglob("*.gguf")
+             if "phonon" in str(p.relative_to(d)).lower()
+             and "mmproj" not in p.name.lower()]
     return sorted(cands, key=lambda p: p.stat().st_size)[0] if cands else None
 
 
@@ -158,38 +195,45 @@ class Recorder:
         return self._proc is not None and self._proc.poll() is None
 
     def start(self) -> str | None:
-        cmd = find_recorder()
-        if cmd is None:
+        import time
+
+        cmds = recorder_candidates()
+        if not cmds:
             return "no recorder found — install pipewire (pw-record), alsa-utils (arecord) or ffmpeg"
-        self._cmd = cmd + [str(self.out)]
-        try:
-            # new session so Ctrl+C in the terminal never kills the recorder
-            self._proc = subprocess.Popen(self._cmd, stdout=subprocess.DEVNULL,
-                                          stderr=subprocess.DEVNULL,
-                                          start_new_session=True)
-        except OSError as exc:
-            return f"recorder failed to start: {exc}"
-        return None
+        for cmd in cmds:
+            self._cmd = cmd + [str(self.out)]
+            try:
+                # new session so Ctrl+C in the terminal never kills the recorder
+                proc = subprocess.Popen(self._cmd, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL,
+                                        start_new_session=True)
+            except OSError:
+                continue
+            # a dead-on-arrival pw-record (no daemon) exits instantly — give it
+            # a moment then fall through to the next candidate instead of
+            # "successfully" recording nothing
+            time.sleep(0.25)
+            if proc.poll() is None:
+                self._proc = proc
+                return None
+            with contextlib.suppress(Exception):
+                proc.kill()
+                proc.wait(timeout=1)
+        return "recorder started but died immediately — no working microphone capture (checked pw-record, arecord, ffmpeg)"
 
     def stop(self) -> None:
         if self._proc is None:
             return
-        with_suppress_errors(self._proc)
+        # SIGINT FIRST — pw-record/arecord finalize the WAV on it; waiting on a
+        # live recorder before the signal froze the UI for ~2s every release
         try:
             self._proc.send_signal(signal.SIGINT)
-            self._proc.wait(timeout=4)
+            self._proc.wait(timeout=1.5)
         except (OSError, subprocess.SubprocessError):
-            with_suppress_errors(self._proc, kill=True)
+            with contextlib.suppress(Exception):
+                self._proc.kill()
+                self._proc.wait(timeout=1.0)
         self._proc = None
-
-
-def with_suppress_errors(proc: subprocess.Popen, kill: bool = False) -> None:
-    import contextlib
-
-    with contextlib.suppress(Exception):
-        if kill:
-            proc.kill()
-        proc.wait(timeout=2)
 
 
 # ------------------------------------------------------------- transcribe
@@ -202,27 +246,33 @@ async def transcribe(wav: Path, *, language: str | None = None,
     if engine is None:
         return "", (binary + " — install: whisper.cpp (cmake --build build), "
                     "pip install whisperx, sensevoice.cpp, or parakeet.cpp")
+    lg = norm_lang(language)
     if engine == "whisperx":
-        model = None
-        cmd = [binary, str(wav), "--model", "small", "--language", language or "auto",
+        # map the downloaded ggml size to whisperx's HF model id instead of
+        # always fetching "small" — the turbo ggml means turbo
+        wmodel = stt_model_of("whisper")
+        name = wmodel.name if wmodel else ""
+        wx_model = ("turbo" if "turbo" in name else
+                    next((sz for sz in ("tiny", "base", "small", "medium", "large") if sz in name), "small"))
+        cmd = [binary, str(wav), "--model", wx_model, "--language", lg or "auto",
                "--output_format", "txt", "--output_dir", str(wav.parent)]
     else:
-        model = stt_model_of(engine) or stt_model()
-        if model is None:
+        model = stt_model_of(engine)
+        if model is None:  # never hand an engine another family's file
             return "", (f"no {engine} model downloaded — /market → Speech-to-text "
                         f"({'SenseVoice' if engine == 'sensevoice' else 'Parakeet' if engine == 'parakeet' else 'Whisper small'})")
         if engine == "sensevoice":
-            cmd = [binary, "-m", str(model), "-f", str(wav)] + (["-l", language] if language else [])
+            cmd = [binary, "-m", str(model), "-f", str(wav)] + (["-l", lg] if lg else [])
         elif engine == "parakeet":
             cmd = [binary, "-m", str(model), "-f", str(wav)]
         else:
             cmd = [binary, "-m", str(model), "-f", str(wav), "-nt", "-np",
-                   "-l", language or "auto"]
-    _ = model
+                   "-l", lg or "auto"]
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        rc = proc.returncode
         text = " ".join(ln.strip() for ln in out.decode(errors="replace").splitlines() if ln.strip())
         if engine == "whisperx" and not text.strip():
             cand = wav.with_suffix(".txt")  # whisperx names it after the input stem
@@ -233,6 +283,9 @@ async def transcribe(wav: Path, *, language: str | None = None,
         return "", "transcription timed out"
     except OSError as exc:
         return "", f"{engine} failed: {exc}"
+    if rc:
+        tail = " ".join(err.decode(errors="replace").split())[-200:]
+        return "", f"{engine} exited {rc}: {tail or 'no error output'}"
     return text.strip() or "", None if text.strip() else "nothing heard"
 
 
@@ -255,17 +308,26 @@ async def speak(text: str, *, timeout: float = 180.0) -> tuple[bool, str | None]
     play = shutil.which("paplay") or shutil.which("ffplay") or shutil.which("afplay")
     if play is None:
         return False, "no audio player (paplay/ffplay/afplay)"
-    out_wav = voice_dir() / "last-say.wav"
+    import time as _t
+
+    out_wav = voice_dir() / f"say-{int(_t.time() * 1000)}.wav"
+    out_wav.unlink(missing_ok=True)  # a stale wav must never masquerade as this reply
     cmd = [binary, "-m", str(model), "-f", str(out_wav), "--text", text[:2000]]
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        rc = proc.returncode
     except TimeoutError:
         await _kill(proc)
+        out_wav.unlink(missing_ok=True)
         return False, "tts timed out"
     except OSError as exc:
         return False, f"tts failed: {exc}"
+    if rc:
+        tail = " ".join((err or b"").decode(errors="replace").split())[-200:]
+        out_wav.unlink(missing_ok=True)
+        return False, f"tts engine exited {rc}: {tail or 'no error output'}"
     if not out_wav.exists() or out_wav.stat().st_size < 1000:
         return False, "tts produced no audio"
     play_cmd = [play, str(out_wav)] if "ffplay" not in play else [play, "-nodisp", "-autoexit", "-loglevel", "error", str(out_wav)]
@@ -277,7 +339,9 @@ async def speak(text: str, *, timeout: float = 180.0) -> tuple[bool, str | None]
         await _kill(proc)
         return False, "playback timed out"
     except OSError:
+        out_wav.unlink(missing_ok=True)
         return False, "playback failed"
+    out_wav.unlink(missing_ok=True)
     return True, None
 
 

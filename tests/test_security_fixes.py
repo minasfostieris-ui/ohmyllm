@@ -114,7 +114,7 @@ def test_whisperx_requires_whisper_model(tmp_path, monkeypatch):
     monkeypatch.setattr(voice.shutil, "which",
                         lambda n: "/usr/bin/" + n if n in ("whisperx", "whisper-cli") else None)
     eng, msg = voice.pick_engine("fi")
-    assert eng is None and "no model" in msg
+    assert eng is None and "no matching model" in msg
     vdir.mkdir(parents=True)
     (vdir / "ggml-small.bin").write_bytes(b"x")
     eng, _ = voice.pick_engine("fi")

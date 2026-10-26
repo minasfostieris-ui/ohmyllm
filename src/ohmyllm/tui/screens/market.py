@@ -114,6 +114,7 @@ class MarketScreen(Screen):
         e = self._entry_by_id(self._selected_id())
         if e is None:
             return
+        key = ""
         if e.section != "llm":
             badge = "[cyan]voice model[/] · installs into ~/.ohmyllm/voice/"
         else:
@@ -131,11 +132,13 @@ class MarketScreen(Screen):
             have = bool(shutil.which("ninfer"))
             kind += (" · [green]NInfer build selected (runtime detected)[/green]" if have else
                      " · GGUF for LM Studio — NInfer MTP build auto-used if installed")
+        dest = ("~/.ohmyllm/voice/ (where the STT/TTS engines find it)"
+                if e.section != "llm" else
+                "~/.lmstudio/models (vision companion included)")
         try:
             self.query_one("#market-detail", Static).update(
                 f"{badge}  ·  {e.repo}{kind}\n\n{e.blurb}{extra}\n\n"
-                f"[dim]enter or click → downloads into ~/.lmstudio/models "
-                f"(vision companion included)[/dim]")
+                f"[dim]enter or click → downloads into {dest}[/dim]")
         except NoMatches:
             pass
 
