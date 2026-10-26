@@ -329,7 +329,6 @@ async def test_turn_finishing_on_detached_screen_no_crash(oml_env, svc):
 
 @pytest.mark.asyncio()
 async def test_quit_confirm_from_binding_context_no_crash(oml_env, svc):
-    import asyncio
 
     app = OhMyLLMApp()
     async with app.run_test(size=(140, 46)) as pilot:

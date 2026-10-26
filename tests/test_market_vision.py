@@ -170,9 +170,10 @@ async def test_choose_opens_settings_for_the_cursor_row(oml_env, svc):
     # regression: choose() repopulated the table (cursor reset to row 0) and
     # then re-read the selection — the settings modal opened for the WRONG
     # model (user picked gemma, got "Settings for axon 250m")
+    from textual.widgets import DataTable
+
     from ohmyllm.tui.app import OhMyLLMApp
     from ohmyllm.tui.screens.models import ModelsScreen
-    from textual.widgets import DataTable
 
     app = OhMyLLMApp()
     async with app.run_test(size=(140, 46)) as pilot:
