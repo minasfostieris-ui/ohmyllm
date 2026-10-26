@@ -261,3 +261,29 @@ def test_unloaded_model_json_error_surfaces():
 
     with pytest.raises(BackendError, match="unloaded"):
         asyncio.run(go())
+
+
+def test_glm53_interleaved_thinking_across_turns():
+    """GLM-5.3-Flash forces thinking and interleaves it with tool calls: every
+    content segment between tools starts a fresh think block. Each block must
+    route to reasoning while the tool JSON between blocks stays clean content
+    for the ReAct parser."""
+    sp = ThinkSplitter()
+    turns = [
+        THINK_OPEN + "I should list the dir first" + THINK_CLOSE + '{"tool_calls": [{"name": "list_dir"}]}',
+        THINK_OPEN + "now I see the files, reading main.py" + THINK_CLOSE + '{"tool_calls": [{"name": "read_file"}]}',
+        THINK_OPEN + "the bug is on line 42" + THINK_CLOSE + "The bug is on line 42 — fix the off-by-one.",
+    ]
+    _ = sp
+    for raw in turns:
+        r, c = [], []
+        sp2 = ThinkSplitter()
+        for chunk in _chunks(raw, 9):
+            for kind, text in sp2.feed(chunk):
+                (r if kind == "reasoning" else c).append(text)
+        for kind, text in sp2.flush():
+            (r if kind == "reasoning" else c).append(text)
+        reasoning, content = "".join(r), "".join(c)
+        assert ("tool_calls" in content) or ("line 42" in content), raw
+        assert THINK_OPEN not in content and THINK_CLOSE not in content
+        assert reasoning.strip(), "each turn must carry reasoning"
