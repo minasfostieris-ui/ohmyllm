@@ -284,8 +284,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._run(self._vision_probe(body))
             if path == "/api/voice/tts":
                 v = self.state.svc.config.voice
-                if "on" in body:
-                    v.tts_enabled = bool(body["on"])
+                want = body.get("on", None)
+                if want is not None:
+                    if isinstance(want, bool):
+                        v.tts_enabled = want
+                    elif isinstance(want, str) and want.lower() in ("on", "true", "yes", "1"):
+                        v.tts_enabled = True
+                    elif isinstance(want, str) and want.lower() in ("off", "false", "no", "0"):
+                        v.tts_enabled = False
+                    else:
+                        return self._json(400, {"error": "on must be true/false"})
                     self.state.svc.save_config()
                 return self._json(200, {"enabled": v.tts_enabled})
             if path == "/api/voice/say":
@@ -490,7 +498,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _providers_key(self, body: dict) -> tuple[int, dict]:
         pid = str(body.get("pid") or "").strip()
-        key = str(body.get("key") or "").strip()
+        raw_key = body.get("key", "")
+        if not isinstance(raw_key, str):
+            return 400, {"error": "key must be a string (empty to remove)"}
+        if len(raw_key) > 4096:
+            return 400, {"error": "key unreasonably long"}
+        key = raw_key.strip()
         if not pid:
             return 400, {"error": "pid required"}
         from .providers import get as _pg
@@ -630,8 +643,13 @@ class Handler(BaseHTTPRequestHandler):
 
             from .market import download as dl
 
-            _a.run(dl(entry, state, cancel=lambda: st.market_cancel))
-            st.market_thread = None
+            try:
+                _a.run(dl(entry, state, cancel=lambda: st.market_cancel))
+            except Exception as exc:  # noqa: BLE001 — never leave market_thread set
+                state.error = state.error or f"{type(exc).__name__}: {exc}"
+                state.done = True
+            finally:
+                st.market_thread = None
 
         t = threading.Thread(target=run, daemon=True)
         st.market_thread = t
@@ -643,7 +661,8 @@ class Handler(BaseHTTPRequestHandler):
         state = getattr(st, "market_state", None)
         if state is None:
             return self._json(200, {"active": False})
-        alive = bool(getattr(st, "market_thread", None))
+        th = getattr(st, "market_thread", None)
+        alive = bool(th and th.is_alive())
         self._json(200, {
             "active": alive and not state.done and not state.error,
             "title": state.entry.title, "received": state.received, "total": state.total,

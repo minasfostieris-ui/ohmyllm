@@ -390,8 +390,9 @@ async def test_wizard_voice_pick_survives_navigation(oml_env, svc, monkeypatch):
     from ohmyllm.tui.screens.wizard import WizardScreen
 
     fired = []
-    monkeypatch.setattr(WizardScreen, "_download_stt",
-                        lambda self, pick: fired.append(pick))
+    import ohmyllm.tui.screens.wizard as wz
+    monkeypatch.setattr(wz, "_download_stt_app",
+                        lambda app, pick: fired.append(pick))
     app = OhMyLLMApp()
     async with app.run_test(size=(140, 46)) as pilot:
         await pilot.pause(0.7)

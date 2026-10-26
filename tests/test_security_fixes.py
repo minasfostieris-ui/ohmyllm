@@ -357,3 +357,129 @@ def test_static_health_agrees_with_picker():
     be = make_backend("cloud", cfg, transport=httpx.MockTransport(live))
     ok, info = asyncio.run(be.health())
     assert ok and info["models"] == 3 and len(asyncio.run(be.list_models())) == 3
+
+
+# ---- TuiGuiBridgeProbe regressions
+def test_wizard_download_survives_screen_death(oml_env, svc, monkeypatch):
+    """The bug: the download ran as a SCREEN worker and Textual cancelled it
+    the moment _finish replaced the screen. It is now a plain coroutine
+    scheduled on the App — prove it completes with no screen at all."""
+    import asyncio as _a
+
+    import ohmyllm.market as mkt
+    import ohmyllm.tui.screens.wizard as wz
+
+    calls: list[str] = []
+
+    async def fake_dl(entry, state, **kw):
+        await _a.sleep(0.2)          # in-flight while the "screen" dies
+        calls.append(entry.mid)
+        state.done = True
+        return state
+
+    monkeypatch.setattr(mkt, "download", fake_dl)
+
+    class FakeApp:
+        def __init__(self):
+            self.notes = []
+
+        def notify(self, msg, **kw):
+            self.notes.append(msg)
+
+    app = FakeApp()
+    wiz = wz.WizardScreen()
+    # schedule exactly like _finish does — on the app node, not the screen;
+    # the screen object is gone before the coroutine even starts
+    del wiz
+    _a.run(wz._download_stt_app(app, "turbo"))
+    assert calls == ["stt-whisper-turbo"]
+    assert any("ready" in n for n in app.notes)
+    # and _finish must route through app.run_worker (grep the source contract)
+    import inspect
+
+    src = inspect.getsource(wz.WizardScreen._finish)
+    assert "app.run_worker" in src and "_download_stt(pick)" not in src
+
+
+async def test_unmount_stops_recorder(oml_env, svc, monkeypatch):
+    from ohmyllm import voice
+    from ohmyllm.tui.app import OhMyLLMApp
+
+    monkeypatch.setattr(voice.shutil, "which", lambda n: None)
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        chat = app.screen
+
+        class FakeRec:
+            stopped = False
+            running = True
+
+            def stop(self):
+                FakeRec.stopped = True
+
+        wav = app.svc.config and __import__("pathlib").Path("/tmp/oml-test-hold.wav")
+        wav.write_bytes(b"RIFF")
+        chat._rec = FakeRec()
+        chat._rec_path = wav
+        chat._stop_talk_hardware()
+        assert FakeRec.stopped and not wav.exists()
+
+
+async def test_providers_markup_name_no_crash(oml_env, svc, monkeypatch):
+    import ohmyllm.voice as _voice
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.screens.providers import ProvidersScreen
+
+    monkeypatch.setattr(_voice.shutil, "which", lambda n: None)
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        app.replace_screen("providers")
+        await pilot.pause(0.4)
+        scr = app.screen
+        assert isinstance(scr, ProvidersScreen)
+        scr._add_custom("x[/]y|http://w/v1")   # was MarkupError killing the screen
+        await pilot.pause(0.3)
+        assert scr._picked_customs() if hasattr(scr, "_picked_customs") else True
+        # and the cursor survives a rebuild
+        from textual.widgets import OptionList
+
+        lst = scr.query_one(OptionList)
+        for i in range(lst.option_count):
+            if str(lst.get_option_at_index(i).id or "") == "p-openrouter":
+                lst.highlighted = i
+                break
+        assert lst.highlighted is not None
+        scr._store("openrouter", "sk-cursor-test")  # rebuilds the list
+        await pilot.pause(0.3)
+        assert str(lst.get_option_at_index(lst.highlighted).id) == "p-openrouter"
+
+
+def test_market_download_pre_try_error(oml_env, monkeypatch):
+    from ohmyllm import market
+
+    entry = next(e for e in market.CATALOG if e.mid == "stt-sensevoice")
+    monkeypatch.setattr(market, "download_dest",
+                        lambda e: (_ for _ in ()).throw(NotADirectoryError("nope")))
+    st = market.DownloadState(entry=entry)
+    out = asyncio.run(market.download(entry, st))
+    assert out.error and "NotADirectoryError" in out.error and out.done
+
+
+def test_bridge_tts_coercion_and_key_caps(bridge):
+    bridge.post("/api/voice/tts", {"on": True})
+    r = bridge.post("/api/voice/tts", {"on": None})   # status query must NOT disable
+    assert r["enabled"] is True
+    r = bridge.post("/api/voice/tts", {"on": "false"})
+    assert r["enabled"] is False
+    r = bridge.post("/api/voice/tts", {"on": "maybe"})
+    assert "error" in r
+    bridge.post("/api/providers/key", {"pid": "groq", "key": "gsk-real"})
+    r = bridge.post("/api/providers/key", {"pid": "groq", "key": 0})
+    assert "error" in r
+    r = bridge.get("/api/providers")
+    row = next(p for p in r["providers"] if p["pid"] == "groq")
+    assert row["has_key"]  # falsy non-string didn't delete it
+    r = bridge.post("/api/providers/key", {"pid": "groq", "key": "x" * 5_000_000})
+    assert "error" in r

@@ -6,6 +6,7 @@ config.toml (owner-only) and only ever displayed masked.
 """
 from __future__ import annotations
 
+from rich.markup import escape as _esc
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -89,9 +90,9 @@ class ProvidersScreen(Screen):
             state = f"[green]✓ {mask(key)}[/green]" if key else "[dim]no key[/dim]"
             active = "  [b][cyan]← active[/b][/cyan]" if cl.provider == p.pid and key else ""
             star = " [dim](recommended)[/dim]" if p.recommended else ""
-            line = f"{p.name:<16} {state}{active}   [dim]{p.blurb}[/dim]{star}"
+            line = f"{p.name:<16} {state}{active}   [dim]{_esc(p.blurb)}[/dim]{star}"
             detail = (f"[b]{p.name}[/]  [dim]{p.kind} · {p.base_url}[/dim]\n"
-                      f"  {p.blurb}\n"
+                      f"  {_esc(p.blurb)}\n"
                       f"  get a key: {p.signup_url or '(custom endpoint)'}\n"
                       f"  [dim]enter connect · u use as default backend · x remove key[/dim]")
             rows["Popular" if p.popular else "Other"].append((p.pid, line, "Popular" if p.popular else "Other", detail))
@@ -101,9 +102,9 @@ class ProvidersScreen(Screen):
             active = "  [b][cyan]← active[/b][/cyan]" if cl.provider == pid and key else ""
             base = cl.bases.get(pid, "")
             ml = cl.model_lists.get(pid, "")
-            line = f"{name:<16} {state}{active}   [dim]custom · {base}{' · ' + ml if ml else ''}[/dim]"
-            detail = (f"[b]{name}[/]  [dim]openai · {base}[/dim]\n"
-                      f"  models: {ml or '(listed from the endpoint via /models)'}\n"
+            line = f"{_esc(name):<16} {state}{active}   [dim]custom · {_esc(base)}{' · ' + _esc(ml) if ml else ''}[/dim]"
+            detail = (f"[b]{_esc(name)}[/]  [dim]openai · {_esc(base)}[/dim]\n"
+                      f"  models: {_esc(ml) or '(listed from the endpoint via /models)'}\n"
                       "  your own OpenAI-compatible endpoint (vLLM, Ollama-cloud, LAN box…)\n"
                       "  [dim]enter connect · u use · x remove key · e edit base/models[/dim]")
             rows["Custom"].append((pid, line, "Custom", detail))
@@ -111,6 +112,9 @@ class ProvidersScreen(Screen):
 
     def refresh_list(self) -> None:
         lst = self.query_one(OptionList)
+        # clear_options() resets the cursor — remember what the user was on so
+        # follow-up keys (x, e, u) don't silently no-op after a rebuild
+        keep_pid = self._pid()
         lst.clear_options()
         rows = self._rows()
         self._details = {f"p-{pid}": detail for pid, _, _, detail in rows}
@@ -121,6 +125,11 @@ class ProvidersScreen(Screen):
                 lst.add_option(Option(f"[b]{group}[/]", id=f"h-{group}", disabled=True))
                 last_group = group
             lst.add_option(Option(line, id=f"p-{pid}"))
+        if keep_pid:
+            for i in range(lst.option_count):
+                if str(lst.get_option_at_index(i).id or "") == f"p-{keep_pid}":
+                    lst.highlighted = i
+                    break
         self._paint_detail()
 
     def on_option_list_option_highlight(self, event: OptionList.OptionHighlighted) -> None:

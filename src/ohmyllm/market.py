@@ -455,9 +455,14 @@ async def download(entry: MarketEntry, state: DownloadState,
                    client_factory=None) -> DownloadState:
     """Stream a market file into the LM Studio folder. HF follows redirects
     to the CDN; we resume from an existing .part when the server agrees."""
-    entry = resolve(entry)
-    dest_dir = download_dest(entry)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        entry = resolve(entry)
+        dest_dir = download_dest(entry)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001 — a bad dest must surface as state.error,
+        state.error = f"{type(exc).__name__}: {exc}"  # never raise past the caller's
+        state.done = True                        # thread that clears market_thread
+        return state
     urls = [(entry.url, entry.file)]
     if entry.companion:
         urls.append((entry.companion_url or "", entry.companion))

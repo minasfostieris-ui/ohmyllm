@@ -385,27 +385,10 @@ class WizardScreen(Screen):
         app.notify("welcome to OhMyLLM — have fun locally 🐣")
         pick = self._picked_stt()
         if pick:
-            self._download_stt(pick)
-
-    _STT_MID = {"sensevoice": "stt-sensevoice", "parakeet": "stt-parakeet",
-                "whisper": "stt-whisper-small", "turbo": "stt-whisper-turbo"}
-
-    @work(exclusive=True, group="wiz-stt")
-    async def _download_stt(self, pick: str) -> None:
-        from ... import market
-        from ...market import DownloadState, resolve
-
-        mid = self._STT_MID.get(pick)
-        entry = next((e for e in market.CATALOG if e.mid == mid), None)
-        if entry is None:
-            return
-        self.app.notify(f"🎤 downloading {entry.title} into ~/.ohmyllm/voice …")
-        state = DownloadState(entry=entry)
-        await market.download(resolve(entry), state)
-        if state.error:
-            self.app.notify(f"STT download failed: {state.error}", severity="error", timeout=10)
-        else:
-            self.app.notify(f"🎤 {entry.title} ready — hold Ctrl+E in chat to talk", timeout=10)
+            # schedule on the APP, not this screen: _finish replaces the screen
+            # and Textual cancels screen-bound workers on unmount — the old
+            # wiring died silently mid-download every time
+            self.app.run_worker(_download_stt_app(self.app, pick), exclusive=True, group="wiz-stt")
 
     def _grab(self, wid: str) -> str:
         try:
@@ -444,3 +427,27 @@ class WizardScreen(Screen):
             await self._show_step()
         elif not result[BackendName.OLLAMA]["running"] and result[BackendName.LMSTUDIO]["running"]:
             self.chosen_backend = "lmstudio"
+
+
+_STT_MID = {"sensevoice": "stt-sensevoice", "parakeet": "stt-parakeet",
+            "whisper": "stt-whisper-small", "turbo": "stt-whisper-turbo"}
+
+
+async def _download_stt_app(app, pick: str) -> None:
+    from ... import market
+    from ...market import DownloadState, resolve
+
+    mid = _STT_MID.get(pick)
+    entry = next((e for e in market.CATALOG if e.mid == mid), None)
+    if entry is None:
+        return
+    app.notify(f"🎤 downloading {entry.title} into ~/.ohmyllm/voice …")
+    state = DownloadState(entry=entry)
+    try:
+        await market.download(resolve(entry), state)
+    except Exception as exc:  # noqa: BLE001 — worker must surface, never vanish
+        state.error = f"{type(exc).__name__}: {exc}"
+    if state.error:
+        app.notify(f"STT download failed: {state.error}", severity="error", timeout=10)
+    else:
+        app.notify(f"🎤 {entry.title} ready — hold Ctrl+E in chat to talk", timeout=10)

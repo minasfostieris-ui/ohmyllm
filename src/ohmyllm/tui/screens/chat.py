@@ -19,6 +19,7 @@ from textual.widgets._option_list import Option
 
 from ... import paths
 from ...agents.runtime import AgentCancelled
+from ...backends.base import BackendError
 from ...sessions import make_title
 from ...verbs import verb
 from ..widgets import ModeBanner, SepBar, StatusBar, ToolPanel
@@ -182,6 +183,9 @@ class ChatScreen(Screen):
         self._push_status()
 
     def on_unmount(self) -> None:
+        # never leave the microphone recording because the user switched
+        # screens or quit mid-take
+        self._stop_talk_hardware()
         try:
             inp = self.query_one("#chat-input", Input)
             if self.app.session and inp.value:
@@ -292,6 +296,25 @@ class ChatScreen(Screen):
         return None
 
     # ------------------------------------------------------- hold-to-talk
+    def _stop_talk_hardware(self) -> None:
+        """Kill the release-ticker and the recorder for good — a pw-record
+        orphaned by a screen switch keeps the microphone hot after we're gone."""
+        timer = getattr(self, "_talk_timer", None)
+        if timer:
+            with contextlib.suppress(Exception):
+                timer.stop()
+            self._talk_timer = None
+        rec = getattr(self, "_rec", None)
+        if rec is not None:
+            self._rec = None
+            with contextlib.suppress(Exception):
+                rec.stop()
+        wav = getattr(self, "_rec_path", None)
+        if wav is not None:
+            self._rec_path = None
+            with contextlib.suppress(OSError):
+                wav.unlink(missing_ok=True)
+
     def action_talk(self) -> None:
         """Ctrl+E: press-and-HOLD. Terminals auto-repeat the key while held;
         the first press starts recording, repeats refresh a heartbeat, and
@@ -321,7 +344,7 @@ class ChatScreen(Screen):
             self.app.notify("no mic recorder — install pipewire (pw-record), alsa-utils or ffmpeg",
                             severity="warning")
             return
-        wav = _v.voice_dir() / f"hold-{int(_t.time())}.wav"
+        wav = _v.voice_dir() / f"hold-{int(_t.time() * 1000)}.wav"
         rec = Recorder(wav)
         err = rec.start()
         if err:
@@ -348,6 +371,7 @@ class ChatScreen(Screen):
             if timer:
                 with contextlib.suppress(Exception):
                     timer.stop()
+            self._talk_timer = None
             self._rec = None
             rec.stop()
             self._transcribe_talk()
@@ -359,6 +383,9 @@ class ChatScreen(Screen):
 
         wav = getattr(self, "_rec_path", None)
         if wav is None or not wav.exists() or wav.stat().st_size < 10_000:
+            if wav is not None:
+                with contextlib.suppress(OSError):
+                    wav.unlink(missing_ok=True)
             self.app.notify("too short — hold Ctrl+E and speak", severity="warning")
             return
         lang = self.app.svc.config.voice.language
@@ -382,6 +409,11 @@ class ChatScreen(Screen):
         ok, err = await _v.speak(text)
         if err:
             self.app.notify(err, severity="warning", timeout=8)
+            if self.app.svc.config.voice.tts_enabled:
+                # don't nag after every turn — disable until the user opts in again
+                self.app.svc.config.voice.tts_enabled = False
+                self.app.svc.save_config()
+                self.app.notify("🔇 TTS switched off — fix the runtime then /tts on", timeout=8)
 
     def action_paste_image(self) -> None:
         self._grab_clip()
@@ -508,6 +540,9 @@ class ChatScreen(Screen):
         except AgentCancelled:
             self._finalize()
             self._sysline("turn cancelled", "system")
+        except BackendError as exc:
+            self._finalize()
+            self._sysline(str(exc), "error")
         except Exception as exc:  # noqa: BLE001 — surface, never crash the UI
             self._finalize()
             self._sysline(f"unexpected error: {type(exc).__name__}: {exc}", "error")
