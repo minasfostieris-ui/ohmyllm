@@ -75,7 +75,7 @@ class ModelsScreen(Screen):
         avail = (t.size.width or 84) - 17
         fixed = 13 + 5 + 8 + 5 + 5 + 6 + 5
         try:
-            t.columns[t.ordered_columns[0].key].width = max(24, avail - fixed)
+            t.columns[t.ordered_columns[0].key].width = max(16, avail - fixed)
         except (KeyError, IndexError):
             pass
 

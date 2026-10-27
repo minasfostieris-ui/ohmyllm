@@ -348,6 +348,32 @@ async def test_paste_grab_runs_off_the_ui_thread(oml_env, svc, tmp_path, monkeyp
         assert len(app.screen.query(ImageBox)) == 1
 
 
+async def test_models_table_never_overflows_horizontally(oml_env, svc):
+    # regression: fixed column widths exceeded narrow terminals, the
+    # horizontal scrollbar appeared and model names scrolled off-screen
+    from textual.widgets import DataTable
+
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.screens.models import ModelsScreen
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(84, 40)) as pilot:
+        await pilot.pause(0.9)
+        app.replace_screen("models")
+        await pilot.pause(0.5)
+        screen = app.screen
+        assert isinstance(screen, ModelsScreen)
+        t = screen.query_one(DataTable)
+        for _ in range(60):
+            if t.row_count:
+                break
+            await pilot.pause(0.25)
+        assert t.row_count >= 2
+        # every column (incl. the last) must fit inside the table body
+        assert t.virtual_size.width <= t.size.width
+        assert t.styles.scrollbar_size_horizontal == 0
+
+
 async def test_paste_text_only_when_model_blind(oml_env, svc, tmp_path, monkeypatch):
     from ohmyllm.tui.app import OhMyLLMApp
 
