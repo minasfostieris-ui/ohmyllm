@@ -418,13 +418,35 @@ class ChatScreen(Screen):
     def action_paste_image(self) -> None:
         self._grab_clip()
 
+    @work(exclusive=True, group="clip")
+    async def _paste_clipboard(self) -> None:
+        """ctrl+V: image when the clipboard carries one, plain text otherwise
+        (the binding must never swallow a text paste)."""
+        import asyncio
+
+        from ..imagepaste import grab_clip_image, grab_clip_text
+
+        loop = asyncio.get_running_loop()
+        path = await loop.run_in_executor(None, grab_clip_image)
+        if path is not None:
+            self._mount_pasted_image(path)
+            return
+        text = await loop.run_in_executor(None, grab_clip_text)
+        if text:
+            inp = self.query_one("#chat-input", Input)
+            start, end = inp.selection
+            sel = inp.value[start:end]
+            inp.value = inp.value[:start] + text + inp.value[end:]
+            inp.cursor_position = start + len(text)
+            del sel
+            inp.focus()
+            self.app.notify(f"pasted {len(text)} chars", timeout=3)
+        else:
+            self.app.notify("clipboard is empty (image or text expected)", timeout=4)
+
     @work(thread=True)
     def _grab_clip(self) -> None:
-        # clipboard tools can block for seconds on slow Wayland offers — keep
-        # the UI thread free no matter what the grab does
-        from ..imagepaste import grab_clip_image
-
-        self.app.call_from_thread(self._mount_pasted_image, grab_clip_image())
+        self._paste_clipboard()
 
     def _mount_pasted_image(self, path) -> None:
         if path is None:
@@ -632,6 +654,12 @@ class ChatScreen(Screen):
             pass  # already shown when queued
         elif t in ("tool_plan", "tool_result", "memory_activity", "retry", "error", "thinking"):
             panel.add_event(ev)
+            if t == "tool_result":
+                # chronological transcript: the file line mounts at the
+                # bottom, so the live thinking block must seal BEFORE it —
+                # otherwise the next thinking burst appends to the block that
+                # now sits above the tool result (newer text rendered higher)
+                self._seal_thinking()
             if t == "tool_result" and ev.get("file") and ev.get("ok"):
                 self._file_line(ev)
             if t == "tool_result":

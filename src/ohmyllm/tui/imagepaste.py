@@ -47,6 +47,40 @@ def png_size(path: Path) -> tuple[int, int]:
     return 0, 0
 
 
+def grab_clip_text(timeout: float = 2.0) -> str | None:
+    """Clipboard text via the platform tool — ctrl+V pastes text when the
+    clipboard holds none image, so the binding never eats a plain paste."""
+    import subprocess
+    import sys as _sys
+
+    cmds: list[list[str]] = []
+    if _sys.platform == "darwin":
+        cmds = [["pbpaste"]]
+    elif _sys.platform == "win32":
+        cmds = [["powershell", "-NoProfile", "-Command", "Get-Clipboard"]]
+    else:
+        import shutil as _sh
+
+        if _sh.which("wl-paste"):
+            cmds.append(["wl-paste", "-n", "-t", "text/plain"])
+        if _sh.which("xclip"):
+            cmds.append(["xclip", "-selection", "clipboard", "-o"])
+        if _sh.which("xsel"):
+            cmds.append(["xsel", "--clipboard", "--output"])
+        if not cmds and _sh.which("wl-paste") is None and _sh.which("xdg-mime"):
+            cmds.append(["wl-paste", "-n"])
+    for cmd in cmds:
+        try:
+            r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+            if r.returncode == 0 and r.stdout:
+                text = r.stdout.decode("utf-8", errors="replace")
+                if text.strip():
+                    return text
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+    return None
+
+
 def grab_clip_image() -> Path | None:
     """Return a temp PNG path if the clipboard holds an image, else None."""
     tmp = Path(tempfile.gettempdir()) / "ohmyllm"

@@ -19,6 +19,40 @@ from ..vram.detect import detect_gpus, human_bytes
 from .widgets import ApprovalModal, ConfirmModal, ModeBanner, PromptModal
 
 
+def _patch_input_paste() -> None:
+    """Textual's built-in ctrl+V paste queries the clipboard over OSC-52,
+    which most terminals ignore — every Input in the app silently swallowed
+    the key. Route the action through the real clipboard tools instead."""
+    from textual.widgets import Input
+
+    if getattr(Input, "_omllm_paste", False):
+        return
+
+    def action_paste(self) -> None:
+        import asyncio
+
+        from .imagepaste import grab_clip_text
+
+        async def worker() -> None:
+            loop = asyncio.get_running_loop()
+            text = await loop.run_in_executor(None, grab_clip_text)
+            if not text:
+                self.app.notify("clipboard has no text", severity="warning", timeout=4)
+                return
+            start, end = self.selection
+            self.value = self.value[:start] + text + self.value[end:]
+            self.cursor_position = start + len(text)
+
+        if self.app is not None:
+            self.app.call_later(worker)
+
+    Input.action_paste = action_paste
+    Input._omllm_paste = True
+
+
+_patch_input_paste()
+
+
 class OhMyLLMApp(App[None]):
     TITLE = "OhMyLLM"
     COMMAND_PALETTE_BINDING = "ctrl+k"
@@ -40,7 +74,8 @@ class OhMyLLMApp(App[None]):
         Binding("ctrl+g", "screen_settings", "Settings", priority=True),
         Binding("ctrl+x", "cancel_turn", "Cancel turn", priority=True),
         Binding("f2", "screen_chats", "Chats", priority=True),
-    ]
+
+]
 
     def __init__(self, workspace: str | None = None, resume_sid: str | None = None) -> None:
         super().__init__()

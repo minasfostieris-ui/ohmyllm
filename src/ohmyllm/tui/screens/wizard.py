@@ -17,7 +17,22 @@ _STEPS = ["Welcome", "Backends detected", "Server", "Models", "Generation", "VRA
 
 
 class WizardScreen(Screen):
-    BINDINGS = [Binding("enter", "next", "Next")]
+    BINDINGS = [Binding("enter", "next", "Next"),
+                Binding("ctrl+v", "paste", "Paste clipboard")]
+
+    def action_paste(self) -> None:
+        from ...tui.imagepaste import grab_clip_text
+
+        inp = self.app.focused
+        if not isinstance(inp, Input):
+            return
+        text = grab_clip_text()
+        if not text:
+            self.app.notify("clipboard has no text", severity="warning", timeout=4)
+            return
+        start, end = inp.selection
+        inp.value = inp.value[:start] + text + inp.value[end:]
+        inp.cursor_position = start + len(text)
 
     def __init__(self) -> None:
         super().__init__()

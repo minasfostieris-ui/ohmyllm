@@ -513,3 +513,67 @@ def test_forget_last_key_reverts_backend(bridge):
     bridge.post("/api/providers/forget", {"pid": "openrouter"})
     r = bridge.get("/api/config")
     assert r["default_backend"] != "cloud"  # back to a local server
+
+
+async def test_transcript_thinking_seals_before_file_line(oml_env, svc):
+    """think → write file → think again must render top-to-bottom in time
+    order: the second thinking block lands BELOW the file line."""
+    from textual.widgets import Collapsible, Static
+
+    from ohmyllm.tui.app import OhMyLLMApp
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        scr = app.screen
+        scr._on_event({"type": "turn_start", "model": "m", "backend": "mock",
+                       "mode": "safe", "protocol": "native"})
+        scr._on_event({"type": "thinking_text", "text": "first thoughts"})
+        await pilot.pause(0.2)
+        scr._on_event({"type": "tool_result", "name": "write_file", "ok": True,
+                       "file": {"path": "a.txt", "created": True, "added": 3},
+                       "output": "ok"})
+        scr._on_event({"type": "thinking_text", "text": "second thoughts"})
+        await pilot.pause(0.2)
+        scr._on_event({"type": "token", "text": "the answer"})
+        scr._on_event({"type": "turn_end", "text": "the answer", "error": None,
+                       "tokens_per_s": 10, "prompt_tokens": 1, "completion_tokens": 1})
+        await pilot.pause(0.4)
+        hist = scr.query_one("#history")
+        kids = list(hist.children)
+        cols = [i for i, k in enumerate(kids) if isinstance(k, Collapsible)]
+        file_idx = next((i for i, k in enumerate(kids)
+                         if isinstance(k, Static) and "a.txt" in str(k.render())), -1)
+        assert file_idx > 0, f"file line missing; kids={[type(k).__name__ for k in kids]}"
+        assert len(cols) >= 2, f"expected 2 thinking blocks, got {len(cols)}"
+        assert cols[1] > file_idx, "second thinking block must render BELOW the file line"
+
+
+async def test_ctrl_v_pastes_into_key_modal(oml_env, svc, monkeypatch):
+    import ohmyllm.tui.imagepaste as ip
+
+    monkeypatch.setattr(ip, "grab_clip_text", lambda timeout=2.0: "sk-pasted-123")
+    from textual.widgets import Input
+
+    from ohmyllm.tui.app import OhMyLLMApp
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        app.replace_screen("providers")
+        await pilot.pause(0.4)
+        from textual.widgets import OptionList
+
+        lst = app.screen.query_one(OptionList)
+        for i in range(lst.option_count):
+            if str(lst.get_option_at_index(i).id or "") == "p-openrouter":
+                lst.highlighted = i
+                break
+        app.screen.action_connect()
+        await pilot.pause(0.6)  # the modal mounts on the next frame
+        modal = app.screen
+        inp = modal.query_one("#key-input", Input)
+        inp.focus()
+        await pilot.press("ctrl+v")
+        await pilot.pause(0.5)
+        assert inp.value == "sk-pasted-123", "ctrl+v paste into Input failed"

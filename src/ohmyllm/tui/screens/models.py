@@ -56,7 +56,10 @@ class ModelsScreen(Screen):
 
     def on_mount(self) -> None:
         t = self.query_one(DataTable)
-        t.add_columns("default", "model", "size", "quant", "params", "ctx", "VRAM min", "comfort", "fit", "tools", "vision", "thinking")
+        for label, w in (("default", 7), ("model", None), ("size", 9), ("quant", 8),
+                         ("params", 6), ("ctx", 6), ("vram", 9), ("comfort", 9),
+                         ("fit", None), ("tools", None), ("vision", None), ("think", None)):
+            t.add_column(label, width=w)
         t.focus()
         self._models: list[ModelInfo] = []
         self._visible: list[str] = []
@@ -128,14 +131,14 @@ class ModelsScreen(Screen):
             elif tested is not None:
                 vis = "[green]👁 yes[/]" if tested else "[dim]no[/]"
             elif m.vision is True:
-                vis = "[green]👁 yes[/] [dim](v to prove)[/]"
+                vis = "[green]👁yes[/] [dim]·v[/]"
             elif m.vision is False:
                 vis = "[dim]no[/]"
             else:
-                vis = "[dim]not tested · v[/]"
+                vis = "[dim]·v[/]"
             th = m.thinking or thinking_support(m.name, m.params_b)
-            th_cell = {"levels": "[green]⚡ levels[/]", "forced": "[cyan]★ forced[/]",
-                       "on-off": "[yellow]◐ on/off[/]", "none": "[dim]✗ none[/]"}.get(th or "", "[dim]?[/]")
+            th_cell = {"levels": "[green]⚡lvls[/]", "forced": "[cyan]★forced[/]",
+                       "on-off": "[yellow]◐switch[/]", "none": "[dim]✗[/]"}.get(th or "", "[dim]?[/]")
             t.add_row(
                 "★" if m.name == cur else "",
                 m.name[:40],
