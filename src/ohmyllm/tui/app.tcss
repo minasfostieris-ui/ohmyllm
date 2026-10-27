@@ -84,7 +84,7 @@ VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
     height: auto; max-height: 38%; padding: 0 1; color: $text-muted;
     overflow-y: auto;
 }
-#models-band { height: 1fr; width: 100%; }
+#models-band { height: 1fr; width: 100%; padding: 1 2 1 1; }
 /* .band = painted ring: solid $ring background through 1-cell padding */
 .band { background: $ring; padding: 1; height: auto; overflow: hidden; }
 DataTable { height: 1fr; width: 1fr; background: $surface; }

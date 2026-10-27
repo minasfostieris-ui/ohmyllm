@@ -95,6 +95,17 @@ class OhMyLLMApp(App[None]):
 
     def __init__(self, workspace: str | None = None, resume_sid: str | None = None) -> None:
         super().__init__()
+        # The user's shell exports NO_COLOR=1; Textual's answer is a Monochrome
+        # line filter that renders EVERY color grey — the real root cause of
+        # "IT'S STILL GREY" (no CSS value survives it). This app's identity is
+        # its cyan chrome: force color back on, whatever the environment says.
+        if self.no_color:
+            from textual.filter import Monochrome, NoColor
+
+            self.no_color = False
+            self._filters = [
+                f for f in self._filters if not isinstance(f, (Monochrome, NoColor))
+            ]
         from .themes import DEFAULT_THEME, THEMES
 
         for theme in THEMES.values():

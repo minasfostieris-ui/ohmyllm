@@ -642,3 +642,15 @@ async def test_models_scrollbar_continuous_ring_thumb(oml_env, svc, monkeypatch)
         ]
         assert thumb, "no ring-colored scrollbar thumb rendered"
         assert all(set(seg.text) <= {" "} for seg in thumb), "thumb uses glyphs, not blank cells"
+
+
+def test_app_forces_color_despite_no_color_env(monkeypatch):
+    """The user's shell exports NO_COLOR=1; Textual's Monochrome filter then
+    renders every theme color grey — the real 'IT'S STILL GREY' root cause.
+    The app must survive that env var."""
+    from textual.filter import Monochrome, NoColor
+
+    monkeypatch.setenv("NO_COLOR", "1")
+    app = OhMyLLMApp()
+    assert app.no_color is False
+    assert not [f for f in app._filters if isinstance(f, (Monochrome, NoColor))]
