@@ -865,8 +865,11 @@ class Handler(BaseHTTPRequestHandler):
                 # but busy must not stay True past the visible end of turn
                 try:
                     self.state.svc.sessions.save(sess)
-                except Exception:  # noqa: BLE001
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    # a lost turn is data loss — make it visible (bridge
+                    # stderr lands in the log) instead of swallowing it
+                    print(f"OMLLM_BRIDGE session save FAILED {sess.id}: {exc!r}",
+                          file=sys.stderr, flush=True)
                 self.state.busy = False
 
         assert self.state.loop is not None

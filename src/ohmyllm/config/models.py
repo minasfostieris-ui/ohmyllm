@@ -215,7 +215,7 @@ class AgentSettings(BaseModel):
 
 
 class UiSettings(BaseModel):
-    theme: str = "dark"
+    theme: str = "electric-cyan"
     timestamps: bool = True
     show_tool_panels: bool = True
     confirm_quit: bool = True

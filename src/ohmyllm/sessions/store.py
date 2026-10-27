@@ -152,10 +152,23 @@ class SessionStore:
     def save(self, sess: Session) -> Path:
         self.dir.mkdir(parents=True, exist_ok=True)
         dest = self.dir / f"{sess.id}.json"
-        tmp = dest.with_suffix(".json.tmp")
+        # unique tmp name: two concurrent saves must never share one temp file
+        tmp = dest.with_name(f"{sess.id}.{secrets.token_hex(4)}.json.tmp")
         tmp.write_text(json.dumps(sess.to_dict(), ensure_ascii=False, indent=1), encoding="utf-8")
-        tmp.replace(dest)
-        return dest
+        # Windows: a concurrent reader (/api/chats) can hold dest open for a
+        # moment and os.replace then raises PermissionError — retry briefly
+        # instead of losing the turn.
+        last: OSError | None = None
+        for attempt in range(5):
+            try:
+                tmp.replace(dest)
+                return dest
+            except OSError as exc:
+                last = exc
+                time.sleep(0.04 * (attempt + 1))
+        assert last is not None
+        tmp.unlink(missing_ok=True)
+        raise last
 
     def get(self, sid: str) -> Session | None:
         f = self.dir / f"{sid}.json"

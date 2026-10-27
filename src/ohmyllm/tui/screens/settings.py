@@ -7,9 +7,11 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import Screen
-from textual.widgets import Button, Input, Label, Static, Switch
+from textual.widgets import Button, Input, Label, OptionList, Static, Switch
+from textual.widgets._option_list import Option
 
 from ...config import Config
+from ..themes import THEME_ORDER, THEMES, resolve_theme
 
 
 def _field(
@@ -207,6 +209,9 @@ class SettingsScreen(Screen):
                                   placeholder=f"(auto: {self.app.svc.workspace})",
                                   hint="blank = auto-detect")
                 yield from _switch("Confirm before quit", "st-confirm_quit", cfg.ui.confirm_quit)
+                yield Label("[b]Theme[/b]  [dim]highlight to preview live · Save keeps it[/dim]",
+                            classes="st-label")
+                yield OptionList(*[Option(n, id=n) for n in THEME_ORDER], id="st-theme-list")
                 yield from _field("Permission mode", "st-mode", cfg.permission_mode.value,
                                   hint="strict | safe | sandboxed | dangerous")
                 yield Static("[dim]full_access must be enabled via Ctrl+P with the confirmation phrase[/dim]",
@@ -218,13 +223,30 @@ class SettingsScreen(Screen):
             yield Static("", id="st-errors")
 
     def on_mount(self) -> None:
-        pass
+        cur = resolve_theme(self.app.svc.config.ui.theme)
+        self.query_one("#st-theme-list", OptionList).index = cur
+
+    @on(OptionList.OptionHighlighted, "#st-theme-list")
+    def _theme_preview(self, event: OptionList.OptionHighlighted) -> None:
+        if event.option_id and event.option_id in THEMES:
+            self.app.theme = event.option_id
+
+    def _selected_theme(self) -> str:
+        tl = self.query_one("#st-theme-list", OptionList)
+        try:
+            opt = tl.get_option_at_index(tl.index) if tl.index is not None else None
+        except Exception:  # noqa: BLE001
+            opt = None
+        return opt.id if opt and opt.id in THEMES else resolve_theme(self.app.svc.config.ui.theme)
 
     @on(Button.Pressed, "#st-cancel")
     def _cancel(self) -> None:
         self.action_close()
 
     def action_close(self) -> None:
+        if not getattr(self, "_committed", False):
+            # esc / discard: undo the live theme preview
+            self.app.theme = resolve_theme(self.app.svc.config.ui.theme)
         self.app.replace_screen("chat")
 
     @on(Button.Pressed, "#st-save")
@@ -316,7 +338,7 @@ class SettingsScreen(Screen):
                 "model": q("st-guard_model").value.strip() or "clef-flash",
                 "danger_threshold": num(q("st-guard_thr"), float),
             },
-            "ui": {"confirm_quit": s("st-confirm_quit")},
+            "ui": {"confirm_quit": s("st-confirm_quit"), "theme": self._selected_theme()},
             "model_settings": self.app.svc.config.model_settings,
         }
         if errors:
@@ -328,6 +350,8 @@ class SettingsScreen(Screen):
             self._show_errors([str(exc)[:1500]])
             return
         self.app.svc.apply_config(new_cfg)
+        self.app.theme = self._selected_theme()
+        self._committed = True
         self.app.refresh_chrome()
         self.app.notify("settings saved")
         self.action_close()

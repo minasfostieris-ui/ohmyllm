@@ -467,7 +467,9 @@ async def test_slash_menu_visible_above_input(oml_env, svc):
             await pilot.pause(0.05)
         menu = app.screen.query_one("#slash-menu", OptionList)
         assert menu.display and menu.option_count >= 1
-        assert menu.region.height >= 3, f"menu rendered with zero height: {menu.region}"
+        # every match must get a row (capped by max-height 10); the old >= 3
+        # only passed because a glyph border padded two phantom rows
+        assert menu.region.height >= min(menu.option_count, 10), f"menu clipped: {menu.region}"
         assert menu.region.y < inp.region.y, "menu must sit above the input, not behind it"
 
 
@@ -564,3 +566,79 @@ async def test_delete_chat_completes(oml_env, svc):
         assert app.is_running
         await pilot.pause(0.8)  # interval + refresh must not crash the app
         assert "ConfirmModal" not in type(app.screen).__name__
+
+
+FRAME_GLYPHS = set("│─┌┐├┤┬┴┼╭╮╰╯═║▁▂▃▄▅▆▇█▏▕▔▖▗▘▙▚▛▜▝▞▟")
+
+
+def _segments(app):
+    for s in app.screen._compositor.render_strips():
+        yield from s._segments
+
+
+def _truecolor(monkeypatch):
+    """The compositor reduces colors to the terminal's color system; pin a
+    truecolor TERM so ring-color assertions are exact."""
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.setenv("TERM", "xterm-256color")
+
+
+@pytest.mark.asyncio()
+async def test_frames_painted_solid_no_glyph_borders(oml_env, svc, monkeypatch):
+    """User P0: dashed glyph frames and grey alpha washes in their terminal.
+
+    The chat screen chrome must paint its ring color as solid background
+    cells and contain ZERO box-drawing/block glyphs anywhere (font breaks
+    them into dashes/tofu)."""
+    _truecolor(monkeypatch)
+    app = OhMyLLMApp()
+    async with app.run_test(size=(106, 34)) as pilot:
+        await pilot.pause(0.8)
+        ring = app.get_css_variables()["ring"].lower()
+        segs = list(_segments(app))
+        # no frame glyphs anywhere on a fresh chat screen
+        assert not [seg for seg in segs if set(seg.text) & FRAME_GLYPHS]
+        # the ask-anything box is ringed: ring-colored cells on all four sides
+        inp = app.screen.query_one("#chat-input")
+        band = app.screen.query_one("#chat-input-band")
+        assert band.region.height == inp.region.height + 2  # 1-cell padding top+bottom
+        top = segs and any(
+            seg.style and seg.style.bgcolor and (seg.style.bgcolor.name or "").lower() == ring
+            for seg in app.screen._compositor.render_strips()[band.region.y]._segments
+        )
+        assert top, "chat input top frame row is not painted in the ring color"
+        # bottom frame row exists (the old dock bug clipped it)
+        bottom_row = band.region.y + band.region.height - 1
+        assert any(
+            seg.style and seg.style.bgcolor and (seg.style.bgcolor.name or "").lower() == ring
+            for seg in app.screen._compositor.render_strips()[bottom_row]._segments
+        ), "chat input bottom frame row missing (clipped)"
+
+
+@pytest.mark.asyncio()
+async def test_models_scrollbar_continuous_ring_thumb(oml_env, svc, monkeypatch):
+    """The restored side bar: thumb cells are blank (no fractional block
+    glyphs) carrying the ring color — straight in every font."""
+    from textual.widgets import DataTable
+
+    _truecolor(monkeypatch)
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(106, 34)) as pilot:
+        await pilot.pause(0.8)
+        app.replace_screen("models")
+        await pilot.pause(1.0)
+        t = app.screen.query_one(DataTable)
+        for i in range(40):
+            t.add_row(f"filler{i}", "", "", "", "", "", "", "")
+        await pilot.pause(0.5)
+        assert t.show_vertical_scrollbar, "models table must keep its side bar"
+        ring = app.get_css_variables()["ring"].lower()
+        thumb = [
+            seg
+            for seg in _segments(app)
+            if seg.style and seg.style.reverse and seg.style.color
+            and (seg.style.color.name or "").lower() == ring
+        ]
+        assert thumb, "no ring-colored scrollbar thumb rendered"
+        assert all(set(seg.text) <= {" "} for seg in thumb), "thumb uses glyphs, not blank cells"

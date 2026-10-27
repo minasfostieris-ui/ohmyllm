@@ -1,9 +1,19 @@
-/* OhMyLLM theme */
+/* OhMyLLM theme.
+   Rules of the house:
+   - Frames are PAINTED (a container's solid $ring background showing
+     through its 1-cell padding). Border styles (solid/tall/round) are
+     GLYPHS — ─│┌▊▁▃▄ — and the user's terminal font renders them with
+     gaps/tofu. Zero glyph borders in this file.
+   - No alpha washes on backgrounds ($primary 60% over a dark surface
+     composites to grey). Every color is a solid theme variable:
+     $ring (bright accent), $ring-text (dark text on $ring), $tint
+     (solid dark accent), plus Textual's $surface/$panel/$boost.
+   - Band children use width: 1fr (100% over-resolves and paints over
+     the band's right padding column — proven in the user's terminal).
+   - Textual 8.2.8 renders scrollbar thumbs from the CONTAINER's
+     scrollbar-* styles, so they live on the container selectors. */
 
-$primary: #00e5ff;
-$secondary: #00b8d4;
-
-Screen { background: $surface; }
+Screen { background: $surface; scrollbar-size: 0 0; }
 
 #mode-banner {
     height: auto;
@@ -12,30 +22,29 @@ Screen { background: $surface; }
 }
 
 #status-bar {
-    dock: bottom;
     height: 1;
     background: $boost;
     color: $text;
     padding: 0 2;
 }
 
-/* ---------- chat ---------- */
-#chat-root { width: 100%; height: 1fr; }
-Screen { scrollbar-size: 0 0; }
-/* Textual 9 paints scrollbars inside the scroll container itself (no
-   ScrollBar child widget), so the scrollbar-* styles must sit on the
-   containers, not a `ScrollBar` selector. */
+/* ---------- scrollbars: solid cyan thumb, dark track, continuous ---------- */
+/* ScrollBarRender's fractional head/tail glyphs are blanked at runtime
+   (app.py _patch_scrollbar_glyphs), so the thumb is pure background
+   cells — straight in every font. */
 VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
-    scrollbar-size: 0 0;
-    scrollbar-color: transparent $surface;
-    scrollbar-color-hover: transparent $surface;
-    scrollbar-color-active: transparent $surface;
+    scrollbar-size: 1 1;
+    scrollbar-color: $ring;
+    scrollbar-color-hover: $ring;
+    scrollbar-color-active: $ring;
     scrollbar-background: $surface;
     scrollbar-background-hover: $surface;
     scrollbar-background-active: $surface;
     scrollbar-corner-color: $surface;
 }
 
+/* ---------- chat ---------- */
+#chat-root { width: 100%; height: 1fr; }
 #chat-left { width: 1fr; height: 100%; overflow: hidden; }
 
 .turn-stats { color: $text-muted; padding: 0 2 1 2; }
@@ -63,23 +72,25 @@ VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
     overflow: hidden;
 }
 
-#chat-input { dock: bottom; }
-#chat-input { border: solid #00e5ff; }
-#chat-input:focus { border: solid #00e5ff; background: $primary 30%; }
+/* the ask-anything box: painted solid-cyan frame, never clipped —
+   flow layout (no dock) so the status bar can never overdraw its
+   bottom edge */
+#chat-input-band { height: auto; }
+#chat-input { width: 1fr; background: $surface; color: $text; }
 
 /* ---------- generic screens ---------- */
 #screen-title { height: 1; padding: 0 2; color: $accent; text-style: bold; }
 .detail-box {
     height: auto; max-height: 38%; padding: 0 1; color: $text-muted;
-    overflow-y: auto; scrollbar-size: 1 2; scrollbar-color: $accent $surface;
+    overflow-y: auto;
 }
-
-/* .band = painted ring: the container's background shows through its
-   1-cell padding — a continuous solid frame with ZERO font dependency
-   (borders/outlines are always glyphs; glyphs break in some terminals). */
-.band { background: $primary 60%; padding: 1; height: auto; overflow: hidden; }
-#models-band { height: 1fr; }
-DataTable { height: 1fr; width: 1fr; background: $surface; scrollbar-size: 0 0; }
+#models-band { height: 1fr; width: 100%; }
+/* .band = painted ring: solid $ring background through 1-cell padding */
+.band { background: $ring; padding: 1; height: auto; overflow: hidden; }
+DataTable { height: 1fr; width: 1fr; background: $surface; }
+DataTable > .datatable--header { background: $tint; color: $text; }
+DataTable > .datatable--cursor { background: $ring; color: $ring-text; }
+DataTable > .datatable--hover { background: $tint; }
 
 .screen-body { height: 1fr; }
 
@@ -89,7 +100,7 @@ DataTable { height: 1fr; width: 1fr; background: $surface; scrollbar-size: 0 0; 
     align: center middle;
 }
 
-.band-warning { background: $warning 60%; max-width: 112; }
+.band-warning { background: $warning; max-width: 112; }
 #approval-box {
     width: 1fr;
     height: auto;
@@ -126,9 +137,9 @@ DataTable { height: 1fr; width: 1fr; background: $surface; scrollbar-size: 0 0; 
 .modal-hint { color: $text-muted; margin-bottom: 1; }
 .modal-buttons { height: auto; align-horizontal: right; padding-top: 1; }
 
-.band-danger { background: $error 60%; }
+.band-danger { background: $error; }
 
-.code-block { height: auto; max-height: 30%; background: $primary 25%; padding: 0 1; }
+.code-block { height: auto; max-height: 30%; background: $tint; padding: 0 1; }
 .preview-block { max-height: 45%; }
 
 /* ---------- model settings modal ---------- */
@@ -148,13 +159,14 @@ DataTable { height: 1fr; width: 1fr; background: $surface; scrollbar-size: 0 0; 
 
 /* ---------- settings ---------- */
 #settings-body { padding: 0 2 1 2; align-horizontal: center; }
-.st-section { height: auto; width: 100%; max-width: 110; background: $primary 25%; padding: 1 2; margin: 0 0 1 0; }
+.st-section { height: auto; width: 100%; max-width: 110; background: $tint; padding: 1 2; margin: 0 0 1 0; }
 .st-title { color: $accent; text-style: bold; }
 .st-desc { color: $text-muted; }
 .st-label { color: $text-muted; padding-top: 1; }
 .st-row { height: auto; }
 .st-field { width: 1fr; height: auto; margin-right: 2; }
 .st-field:last-child { margin-right: 0; }
+#st-theme-list { height: 8; width: 1fr; }
 
 /* ---------- wizard ---------- */
 #wizard-body { height: 1fr; padding: 1 2; }
@@ -167,30 +179,35 @@ HelpMarkdown { padding: 1 3; }
 /* ---------- memory ---------- */
 #soul-area { height: 1fr; width: 1fr; background: $surface; }
 #memory-buttons { height: auto; }
-#recent-memory { height: 8; color: $text-muted; background: $primary 25%; padding: 1 2; }
+#recent-memory { height: 8; color: $text-muted; background: $tint; padding: 1 2; }
 
-/* misc */
-Button { margin: 0 1; }
-OptionList { background: $surface; }
-CommandPalette { padding: 1; background: $primary 60%; }
+/* ---------- inputs & chips: painted, no glyph frames ---------- */
+Input { margin: 0 1; border: none; background: $boost; color: $text; }
+Input:focus { background: $tint; }
+#chat-input, #chat-input:focus { margin: 0; border: none; background: $surface; }
+
+OptionList { border: none; background: $surface; }
+OptionList > .option-list--option-highlighted { background: $tint; }
+OptionList > .option-list--option-hover { background: $tint; }
+
+TextArea { border: none; }
+
+Tooltip { border: none; background: $boost; color: $text; }
+
+CommandPalette { padding: 1; background: $ring; }
 CommandPalette > * { background: $surface; }
-Input { margin: 0 1; border: none; }
-Input:focus { border: none; }
 
 /* ---------- slash command menu ---------- */
 #slash-band { display: none; margin: 0 2; }
 #slash-menu {
     height: auto;
     max-height: 10;
-    background: $panel;
+    background: $surface;
 }
-/* Textual's default blockquote bar is `border-left: outer` (half-block ▕ at
-   50% alpha) — renders as a broken dashed line with gaps in many fonts.
-   Solid cyan: continuous │ (proven continuous in the user's terminal). */
-MarkdownBlockQuote > BlockQuote { border-left: solid #00e5ff; }
-/* The seal line under the thinking block: solid box-drawing chars (they
-   tile seamlessly); the old `hkey` style painted background cells. */
-Collapsible { border-top: solid $primary 40%; }
+
+/* markdown furniture: painted, never glyph bars */
+MarkdownBlockQuote > BlockQuote { border: none; background: $tint; padding: 0 1; }
+Collapsible { border: none; margin-top: 1; }
 .msg-file { padding: 0 0 0 2; }
 .msg-file-live { padding: 0 2 1 2; }
 
@@ -198,14 +215,20 @@ Collapsible { border-top: solid $primary 40%; }
 .backend-card { height: auto; padding: 0 1 1 1; }
 .card-buttons { height: auto; }
 
-/* ---------- switches: always legible on/off ---------- */
-Switch { background: $primary 45%; padding: 0 1; margin-right: 1; border: none; }
+/* ---------- switches: painted track, no glyph frame ---------- */
+Switch { border: none; background: $boost; padding: 0 1; margin-right: 1; }
+Switch > .switch--slider { color: $text-muted; }
+Switch.-on { background: $tint; }
+Switch.-on > .switch--slider { color: $ring; }
+Switch:focus { background: $ring; }
+Switch:focus > .switch--slider { color: $ring-text; }
+
 /* Buttons ship a `border: tall` glyph frame — dashed in the user's
    terminal. Painted chip instead: solid background, no glyphs. */
-Button { border: none; background: $boost; color: $text; text-style: bold; padding: 1 2; }
-Button:hover { background: $primary 45%; }
-Button:focus { border: none; background: $primary 60%; color: $text; text-style: bold; }
-Button.-primary { background: $primary 60%; color: $text; }
-Button.-primary:hover { background: $primary 75%; }
-Button.-error { background: $error 60%; color: $text; }
-Button.-error:hover { background: $error 75%; }
+Button { border: none; background: $boost; color: $text; text-style: bold; padding: 1 2; margin: 0 1; }
+Button:hover { background: $tint; }
+Button:focus { background: $ring; color: $ring-text; }
+Button.-primary { background: $ring; color: $ring-text; }
+Button.-primary:hover { background: $secondary; color: $ring-text; }
+Button.-error { background: $error; color: $text; }
+Button.-error:hover { background: $warning; color: $ring-text; }

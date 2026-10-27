@@ -111,3 +111,48 @@ def test_resolve_by_prefix(oml_env):
     assert store.resolve(s.id).id == s.id          # exact
     assert store.resolve(s.id[:8]).id == s.id      # unique prefix (list view truncates)
     assert store.resolve("deadbeef") is None
+
+
+def test_save_survives_windows_sharing_violation(oml_env, monkeypatch):
+    """Windows: a concurrent /api/chats reader can hold the dest open for a
+    moment, so os.replace raises PermissionError. The save must retry and
+    land the turn — silently losing it was the CI-red cancel-persist bug."""
+    from pathlib import Path
+
+    store = SessionStore(oml_env["home"] / "history" / "sessions")
+    s = store.create(first_message="persist me", backend="mock", model="m")
+    real = Path.replace
+    calls = {"n": 0}
+
+    def flaky(self, target):
+        calls["n"] += 1
+        if calls["n"] <= 2:  # two transient sharing violations, then success
+            raise PermissionError(13, "Permission denied: dest held open")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky)
+    dest = store.save(s)
+    assert calls["n"] == 3
+    assert dest.is_file()
+    assert store.get(s.id).message_count == 1
+    # no orphaned temp files left behind, and concurrent saves use distinct temps
+    assert not list(dest.parent.glob("*.tmp"))
+
+
+def test_save_reraises_after_exhausting_retries(oml_env, monkeypatch):
+    """A permanently locked file must surface as an error, not a silent loss."""
+    from pathlib import Path
+
+    store = SessionStore(oml_env["home"] / "history" / "sessions")
+    s = store.create(first_message="loud failure", backend="mock", model="m")
+
+    def always_locked(self, target):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(Path, "replace", always_locked)
+    import pytest
+
+    dest = store.dir / f"{s.id}.json"
+    with pytest.raises(PermissionError):
+        store.save(s)
+    assert not list(dest.parent.glob("*.tmp"))  # temp cleaned up

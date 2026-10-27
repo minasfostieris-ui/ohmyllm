@@ -52,6 +52,22 @@ def _patch_input_paste() -> None:
 
 _patch_input_paste()
 
+def _patch_scrollbar_glyphs() -> None:
+    """Textual's scrollbar/switch thumbs add fractional head/tail cells using
+    block glyphs (▁▂▃▄▅▆▇ / ▉▊▋▌▍▎▏). Terminals whose font lacks them render
+    tofu of varying widths — the jagged, "not straight" side bar. Blanking the
+    bars leaves pure background cells: a continuous, font-independent thumb."""
+    from textual.scrollbar import ScrollBarRender
+
+    if getattr(ScrollBarRender, "_omllm_noglyph", False):
+        return
+    ScrollBarRender.VERTICAL_BARS = [" "] * 8
+    ScrollBarRender.HORIZONTAL_BARS = [" "] * 8
+    ScrollBarRender._omllm_noglyph = True
+
+
+_patch_scrollbar_glyphs()
+
 
 class OhMyLLMApp(App[None]):
     TITLE = "OhMyLLM"
@@ -79,6 +95,13 @@ class OhMyLLMApp(App[None]):
 
     def __init__(self, workspace: str | None = None, resume_sid: str | None = None) -> None:
         super().__init__()
+        from .themes import DEFAULT_THEME, THEMES
+
+        for theme in THEMES.values():
+            self.register_theme(theme)
+        # parse-time CSS variables: the stylesheet references $ring/$tint, so a
+        # theme that defines them must be active before the first screen registers
+        self.theme = DEFAULT_THEME
         self._workspace = workspace
         self._resume_sid = resume_sid
         self.svc: Services
@@ -96,9 +119,26 @@ class OhMyLLMApp(App[None]):
         self.turn_text = ""
         self.turn_thinking = ""
 
+    def get_theme_variable_defaults(self) -> dict[str, str]:
+        """Fallbacks for the frame variables app.tcss relies on. Every theme
+        registered here defines them, but this guarantees CSS never fails to
+        parse (e.g. before on_mount applies the persisted theme)."""
+        from .themes import blend
+
+        t = self.current_theme
+        bg = t.background or "#0e1116"
+        return {
+            "ring": t.primary,
+            "ring-text": blend(t.primary, "#000000" if t.dark else "#ffffff", 0.12),
+            "tint": blend(t.primary, bg, 0.22),
+        }
+
     # ------------------------------------------------------------------ boot
     def on_mount(self) -> None:
         self.svc = Services.boot(self._workspace)
+        from .themes import resolve_theme
+
+        self.theme = resolve_theme(self.svc.config.ui.theme)
         self._warm_gpus()
         self._health_probe()
         # VRAM free/used and backend health drift the moment a model loads or

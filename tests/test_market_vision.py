@@ -369,9 +369,10 @@ async def test_models_table_never_overflows_horizontally(oml_env, svc):
                 break
             await pilot.pause(0.25)
         assert t.row_count >= 2
-        # every column (incl. the last) must fit inside the table body
+        # every column (incl. the last) must fit inside the table body, so no
+        # horizontal bar ever becomes visible (side bars are painted now, not hidden)
         assert t.virtual_size.width <= t.size.width
-        assert t.styles.scrollbar_size_horizontal == 0
+        assert not t.show_horizontal_scrollbar
 
 
 async def test_paste_text_only_when_model_blind(oml_env, svc, tmp_path, monkeypatch):

@@ -148,7 +148,8 @@ class ChatScreen(Screen):
             yield ToolPanel()
         with Vertical(classes="band", id="slash-band"):
             yield OptionList(id="slash-menu")
-        yield Input(placeholder="ask anything — / for commands (Enter to send)…", id="chat-input")
+        with Vertical(classes="band", id="chat-input-band"):
+            yield Input(placeholder="ask anything — / for commands (Enter to send)…", id="chat-input")
         yield StatusBar()
 
     def on_mount(self) -> None:
