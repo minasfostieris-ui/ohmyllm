@@ -91,6 +91,8 @@ class ModelsScreen(Screen):
         names = ["ollama", "lmstudio"]
         if any_key(cl):
             names.append("cloud")
+        if self.app.svc.config.default_backend.value == "mock":
+            names.append("mock")  # dev fixture: never hide the active backend
         if self._filter != "all":
             return [self._filter] if self._filter in names else names[:1]
         return names
