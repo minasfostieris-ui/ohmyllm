@@ -429,3 +429,6 @@ tr.msection .muted { font-weight: 400; }
 
 #model-sort { background-color: var(--surface); border: 1px solid var(--line-strong);
   border-radius: 6px; padding: 4px 28px 4px 10px; color: var(--fg); }
+
+.msg-imgs { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.msg-img { max-width: 280px; max-height: 200px; border-radius: 8px; border: 1px solid var(--line-strong, #444); }

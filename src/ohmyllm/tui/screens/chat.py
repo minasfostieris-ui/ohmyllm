@@ -207,7 +207,7 @@ class ChatScreen(Screen):
         if not sess:
             return
         for m in sess.messages:
-            role, content = m.get("role"), str(m.get("content", ""))
+            role, content = m.get("role"), _content_text(m.get("content", ""))
             if not content or role == "tool":
                 continue
             if role == "assistant":
@@ -1207,6 +1207,18 @@ class ChatScreen(Screen):
         app.new_chat()
 
 
+
+
+def _content_text(content: object) -> str:
+    """Flatten multimodal content parts for display — never a raw repr."""
+    if isinstance(content, list):
+        txt = " ".join(str(p.get("text", "")) for p in content
+                       if isinstance(p, dict) and p.get("type") == "text").strip()
+        n_img = sum(1 for p in content if isinstance(p, dict) and p.get("type") == "image_url")
+        if n_img:
+            txt += ("  ·  " if txt else "") + f"🖼 {n_img} image{'s' if n_img > 1 else ''} attached"
+        return txt
+    return str(content)
 
 
 def _who(name: str, text: str) -> str:

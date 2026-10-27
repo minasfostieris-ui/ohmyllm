@@ -33,7 +33,14 @@ def to_markdown(sess: Session) -> str:
         role = m.get("role", "note")
         head = {"user": "### You", "assistant": "### OhMyLLM"}.get(role, f"### {role.title()}")
         lines.append(f"{head} · {ts}\n")
-        content = str(m.get("content", "")).strip()
+        raw = m.get("content", "")
+        if isinstance(raw, list):  # multimodal parts → readable text, no base64 dumps
+            txt = " ".join(str(x.get("text", "")) for x in raw
+                           if isinstance(x, dict) and x.get("type") == "text").strip()
+            n_img = sum(1 for x in raw if isinstance(x, dict) and x.get("type") == "image_url")
+            content = (txt + (f" [{n_img} image(s) attached]" if n_img else "")).strip()
+        else:
+            content = str(raw).strip()
         if content:
             lines.append(content)
         for t in m.get("tools", []) or []:

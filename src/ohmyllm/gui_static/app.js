@@ -155,10 +155,22 @@ function addMsg(role, content, extraClass = "") {
   const el = document.createElement("div");
   el.className = `msg ${role} ${extraClass}`;
   el.innerHTML = `<div class="who">${role === "user" ? "you" : role === "assistant" ? "agent" : "note"}</div><div class="content md"></div>`;
-  el.querySelector(".content").innerHTML = role === "user" ? inline(content) : md(content);
+  el.querySelector(".content").innerHTML = role === "user" ? userHtml(content) : md(content);
   $("#stream").appendChild(el);
   scrollBottom();
   return el.querySelector(".content");
+}
+function userHtml(content) {
+  // user messages may be multimodal parts (agent-side images from read_file)
+  if (Array.isArray(content)) {
+    const txt = content.filter((p) => p && p.type === "text").map((p) => inline(p.text || "")).join("<br>");
+    const imgs = content
+      .filter((p) => p && p.type === "image_url" && String((p.image_url || {}).url || "").startsWith("data:"))
+      .map((p) => `<img class="msg-img" src="${p.image_url.url}" alt="attached image" loading="lazy">`)
+      .join("");
+    return (txt || "") + (imgs ? `<div class="msg-imgs">${imgs}</div>` : "");
+  }
+  return inline(content);
 }
 function addEvline(tag, text, cls = "", dur) {
   const el = document.createElement("div");
@@ -368,9 +380,14 @@ function handleEvent(ev, d) {
       if (state.fileNode) { state.fileNode.det.remove(); state.fileNode = null; }
       const cls = d.ok ? "ok" : "err";
       const tag = d.blocked ? "blocked" : d.denied ? "denied" : d.ok ? "ok" : "fail";
-      const summary = d.file && d.ok
-        ? (d.file.created ? `📄 created ${d.file.path}  +${d.file.added || 0}` : `✏️ edited ${d.file.path}  -${d.file.removed || 0} ~${d.file.changed || 0} +${d.file.added || 0}`)
-        : `${d.name}: ${firstLine(d.output)}`;
+      const f = d.file;
+      const isWrite = f && (f.created != null || f.added != null || f.removed != null || f.changed != null);
+      const summary = f && d.ok && isWrite
+        ? (f.created ? `📄 created ${f.path}  +${f.added || 0}` : `✏️ edited ${f.path}  -${f.removed || 0} ~${f.changed || 0} +${f.added || 0}`)
+        : f && d.ok && f.media
+          ? `${({ image: "🖼️", audio: "🔊", video: "🎬" })[f.media] || "📎"} read ${f.media}` +
+            (f.images ? ` · ${f.images} image${f.images > 1 ? "s" : ""} attached to the model` : " · transcribed to text")
+          : `${d.name}: ${firstLine(d.output)}`;
       addEvline(tag, summary, cls, d.duration_ms != null ? `${Math.round(d.duration_ms)} ms` : "");
       pushToolLog(d.name, tag, d.ok ? "ok" : "err");
       break;
