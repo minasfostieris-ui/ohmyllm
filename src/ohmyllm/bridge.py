@@ -475,6 +475,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json(403, {"error": f"full_access requires the exact phrase: {self.state.svc.full_access_phrase()!r}"})
 
     # ------------------------------------------------------------- providers
+    def _revert_cloud_default_if_orphaned(self) -> None:
+        from .config import BackendName
+        from .providers import any_key, best_local_backend
+
+        cfg = self.state.svc.config
+        if cfg.default_backend is BackendName.CLOUD and not any_key(cfg.cloud):
+            cfg.default_backend = best_local_backend(cfg)
+
     def _providers_state(self) -> dict:
         from .providers import PROVIDERS, key_for, mask
 
@@ -520,6 +528,7 @@ class Handler(BaseHTTPRequestHandler):
             cl.keys.pop(pid, None)
             if cl.provider == pid:
                 cl.provider = ""
+            self._revert_cloud_default_if_orphaned()
         self.state.svc.save_config()
         return 200, self._providers_state()
 
@@ -544,6 +553,7 @@ class Handler(BaseHTTPRequestHandler):
         cl.keys.pop(pid, None)
         if cl.provider == pid:
             cl.provider = ""  # a provider without a key is not "active"
+        self._revert_cloud_default_if_orphaned()
         self.state.svc.save_config()
         return 200, self._providers_state()
 

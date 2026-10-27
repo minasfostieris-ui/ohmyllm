@@ -401,7 +401,7 @@ def test_wizard_download_survives_screen_death(oml_env, svc, monkeypatch):
     assert "app.run_worker" in src and "_download_stt(pick)" not in src
 
 
-async def test_unmount_stops_recorder(oml_env, svc, monkeypatch):
+async def test_unmount_stops_recorder(oml_env, svc, monkeypatch, tmp_path):
     from ohmyllm import voice
     from ohmyllm.tui.app import OhMyLLMApp
 
@@ -418,7 +418,7 @@ async def test_unmount_stops_recorder(oml_env, svc, monkeypatch):
             def stop(self):
                 FakeRec.stopped = True
 
-        wav = app.svc.config and __import__("pathlib").Path("/tmp/oml-test-hold.wav")
+        wav = tmp_path / "oml-test-hold.wav"
         wav.write_bytes(b"RIFF")
         chat._rec = FakeRec()
         chat._rec_path = wav
@@ -483,3 +483,33 @@ def test_bridge_tts_coercion_and_key_caps(bridge):
     assert row["has_key"]  # falsy non-string didn't delete it
     r = bridge.post("/api/providers/key", {"pid": "groq", "key": "x" * 5_000_000})
     assert "error" in r
+
+
+def test_boot_reverts_orphaned_cloud_default(oml_env, monkeypatch):
+    """default_backend=cloud with no provider/keys must not brick the models
+    screen — Services.boot() reverts to a local backend (the user's frozen
+    Ctrl+M state after removing their last key)."""
+    from ohmyllm.config import ConfigStore
+    from ohmyllm.core import Services
+
+    st = ConfigStore()
+    cfg = st.load()
+    cfg.default_backend = "cloud"
+    cfg.cloud.provider = ""
+    cfg.cloud.keys = {}
+    st.save(cfg)
+    svc = Services.boot()
+    assert svc.config.default_backend.value != "cloud"
+    assert svc.config.default_backend.value in ("lmstudio", "ollama")
+    # persisted, not just in memory
+    assert ConfigStore().load().default_backend.value != "cloud"
+
+
+def test_forget_last_key_reverts_backend(bridge):
+    bridge.post("/api/providers/key", {"pid": "openrouter", "key": "sk-only-one"})
+    bridge.post("/api/providers/use", {"pid": "openrouter"})
+    r = bridge.get("/api/config")
+    assert r["default_backend"] == "cloud"
+    bridge.post("/api/providers/forget", {"pid": "openrouter"})
+    r = bridge.get("/api/config")
+    assert r["default_backend"] != "cloud"  # back to a local server

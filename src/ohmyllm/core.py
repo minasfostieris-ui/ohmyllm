@@ -13,7 +13,7 @@ from typing import Any
 from . import paths
 from .agents import AgentRuntime
 from .backends import BaseBackend, make_backend
-from .config import Config, ConfigStore, PermissionMode
+from .config import BackendName, Config, ConfigStore, PermissionMode
 from .memory import SoulManager
 from .safety import ApprovalManager, AuditLogger, PolicyEngine
 from .sessions import Session, SessionStore
@@ -38,6 +38,16 @@ class Services:
             cfg.workspace = str(Path(workspace).expanduser().resolve(strict=False))
         if cfg.workspace:
             Path(cfg.workspace).mkdir(parents=True, exist_ok=True)
+        if cfg.default_backend is BackendName.CLOUD:
+            from .providers import any_key
+
+            if not cfg.cloud.provider or not any_key(cfg.cloud):
+                # a cloud default with no connected provider bricks the models
+                # screen ("probing backend…" forever) — fall back at boot
+                from .providers import best_local_backend
+
+                cfg.default_backend = best_local_backend(cfg)
+                store.save(cfg)
         svc = cls(config_store=store, config=cfg)
         svc.soul.ensure()
         return svc

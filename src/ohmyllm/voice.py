@@ -225,11 +225,15 @@ class Recorder:
         if self._proc is None:
             return
         # SIGINT FIRST — pw-record/arecord finalize the WAV on it; waiting on a
-        # live recorder before the signal froze the UI for ~2s every release
+        # live recorder before the signal froze the UI for ~2s every release.
+        # Windows cannot deliver SIGINT via send_signal — terminate() there.
         try:
-            self._proc.send_signal(signal.SIGINT)
+            if sys.platform == "win32":
+                self._proc.terminate()
+            else:
+                self._proc.send_signal(signal.SIGINT)
             self._proc.wait(timeout=1.5)
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, subprocess.SubprocessError, ValueError):
             with contextlib.suppress(Exception):
                 self._proc.kill()
                 self._proc.wait(timeout=1.0)

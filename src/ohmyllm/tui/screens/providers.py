@@ -223,6 +223,7 @@ class ProvidersScreen(Screen):
         if cl.provider == pid:
             cl.provider = ""
             deselected = " — provider deselected (it had no key)"
+        self._revert_backend_if_orphaned()
         self.app.svc.save_config()
         self.refresh_list()
         self.app.notify(f"removed the stored key for {self._label(pid)}{deselected}")
@@ -296,6 +297,15 @@ class ProvidersScreen(Screen):
         self.app.svc.save_config()
         self.refresh_list()
         self.app.notify(f"updated {cl.customs[pid]}")
+
+    def _revert_backend_if_orphaned(self) -> None:
+        from ...config import BackendName
+        from ...providers import any_key, best_local_backend
+
+        cfg = self.app.svc.config
+        if cfg.default_backend is BackendName.CLOUD and not any_key(cfg.cloud):
+            cfg.default_backend = best_local_backend(cfg)
+            self.app.notify(f"no cloud keys left — default backend reverted to {cfg.default_backend.value}")
 
     def _label(self, pid: str) -> str:
         from ...providers import get

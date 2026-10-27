@@ -155,6 +155,23 @@ def key_for(pid: str, keys: dict[str, str]) -> str:
     return keys.get(pid, "")
 
 
+def any_key(cl) -> bool:
+    """True when at least one provider (registry or custom) has a usable key."""
+    pids = {p.pid for p in PROVIDERS} | set(cl.keys) | set(cl.customs)
+    return any(key_for(pid, cl.keys) for pid in pids)
+
+
+def best_local_backend(cfg):
+    """Sane backend to fall back to when cloud is unusable: whichever local
+    server the user actually configured, else ollama."""
+    from .config.models import BackendName
+
+    lm = cfg.lmstudio
+    if lm is not None and (lm.default_model or lm.base_url):
+        return BackendName.LMSTUDIO
+    return BackendName.OLLAMA
+
+
 def mask(key: str) -> str:
     if not key:
         return ""
