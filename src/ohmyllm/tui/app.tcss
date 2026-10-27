@@ -75,7 +75,7 @@ VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
    (borders/outlines are always glyphs; glyphs break in some terminals). */
 .band { background: $primary 60%; padding: 1; height: auto; overflow: hidden; }
 #models-band { height: 1fr; }
-DataTable { height: 1fr; width: 1fr; background: $surface; scrollbar-size: 0 1; }
+DataTable { height: 1fr; width: 1fr; background: $surface; scrollbar-size: 0 0; }
 
 .screen-body { height: 1fr; }
 
