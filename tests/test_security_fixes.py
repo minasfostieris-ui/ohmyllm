@@ -609,3 +609,26 @@ async def test_models_backend_cycle_and_table_fits(oml_env, svc, monkeypatch):
         assert len(t.columns) == 9  # compacted table fits narrow terminals
         title = str(scr.query_one("#screen-title").render())
         assert "backend" in title.lower()
+
+
+def test_registry_provider_static_models_via_bridge(bridge):
+    r = bridge.post("/api/providers/key", {"pid": "alibaba-token-plan", "key": "sk-sp-test",
+                                           "models": "qwen3.8-flash,qwen3-coder-plus"})
+    assert "error" not in r
+    row = next(p for p in r["providers"] if p["pid"] == "alibaba-token-plan")
+    assert row["has_key"] and row["models"] == "qwen3.8-flash,qwen3-coder-plus"
+    # and the cloud backend honors it without touching the network
+    from ohmyllm.backends.registry import make_backend
+    from ohmyllm.config import ConfigStore
+
+    cfg = ConfigStore().load()
+    cfg.cloud.provider = "alibaba-token-plan"
+    cfg.cloud.keys["alibaba-token-plan"] = "sk-sp-test"
+    cfg.cloud.model_lists["alibaba-token-plan"] = "qwen3.8-flash,qwen3-coder-plus"
+
+    def boom(req):
+        raise AssertionError("must not call /models when a static list exists")
+
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(boom))
+    names = [m.name for m in asyncio.run(be.list_models())]
+    assert names == ["qwen3.8-flash", "qwen3-coder-plus"]

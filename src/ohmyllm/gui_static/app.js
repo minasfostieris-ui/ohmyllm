@@ -652,7 +652,14 @@ async function provConnect(pid) {
   const signup = p.signup_url ? ` Get one: <a href="${esc(p.signup_url)}" target="_blank" rel="noopener">${esc(p.signup_url)}</a>` : "";
   const key = await promptModal(`🔑 ${p.name} API key`, cur + (cur ? "\n" : "") + signup, true);
   if (key === null) return;
-  const r = await post("/api/providers/key", { pid, key });
+  let models = p.models || "";
+  if (key) {
+    const m = await promptModal(`${p.name} model ids (optional)`,
+      "comma-separated — needed when the gateway has no /models listing (e.g. Alibaba Token Plan). Leave empty to list live.");
+    if (m === null) return;
+    if (m) models = m;
+  }
+  const r = await post("/api/providers/key", { pid, key, models });
   if (r && r.error) { toast(r.error, "bad"); return; }
   _provData = r; renderProviders();
   toast(key ? `${p.name} key saved` : `${p.name} key removed`);

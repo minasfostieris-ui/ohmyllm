@@ -90,7 +90,9 @@ class ProvidersScreen(Screen):
             state = f"[green]✓ {mask(key)}[/green]" if key else "[dim]no key[/dim]"
             active = "  [b][cyan]← active[/b][/cyan]" if cl.provider == p.pid and key else ""
             star = " [dim](recommended)[/dim]" if p.recommended else ""
-            line = f"{p.name:<16} {state}{active}   [dim]{_esc(p.blurb)}[/dim]{star}"
+            ml = cl.model_lists.get(p.pid, "")
+            line = f"{p.name:<16} {state}{active}   [dim]{_esc(p.blurb)}[/dim]{star}" + (
+                f"   [cyan]{_esc(ml)}[/cyan]" if ml else "")
             detail = (f"[b]{p.name}[/]  [dim]{p.kind} · {p.base_url}[/dim]\n"
                       f"  {_esc(p.blurb)}\n"
                       f"  get a key: {p.signup_url or '(custom endpoint)'}\n"
@@ -269,11 +271,34 @@ class ProvidersScreen(Screen):
             return
         cl = self.app.svc.config.cloud
         if pid not in cl.customs:
-            self.app.notify("only custom providers are editable — registry URLs are fixed", severity="warning")
+            from ...providers import get
+
+            prov = get(pid)
+            if prov is None:
+                self.app.notify("unknown provider", severity="warning")
+                return
+            # registry provider: URL is fixed, but gateways without a /models
+            # listing (Alibaba Token Plan style) still need a model list
+            self.app.push_screen(
+                KeyModal(f"{prov.name} model ids (comma-separated; empty = list from /models)",
+                         cl.model_lists.get(pid, ""), secret=False),
+                lambda val: self._apply_models(pid, val))
             return
         current = f"{cl.customs[pid]}|{cl.bases.get(pid, '')}|{cl.model_lists.get(pid, '')}"
         self.app.push_screen(KeyModal(f"edit {cl.customs[pid]} — Name|URL|models", current, secret=False),
                              lambda val: self._apply_edit(pid, val))
+
+    def _apply_models(self, pid: str, val: str | None) -> None:
+        if val is None:
+            return
+        cl = self.app.svc.config.cloud
+        if val.strip():
+            cl.model_lists[pid] = val.strip()
+        else:
+            cl.model_lists.pop(pid, None)
+        self.app.svc.save_config()
+        self.refresh_list()
+        self.app.notify("model list updated" if val.strip() else "will list from the endpoint")
 
     def _apply_edit(self, pid: str, val: str | None) -> None:
         if not val:

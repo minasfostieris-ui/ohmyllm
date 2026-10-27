@@ -493,7 +493,8 @@ class Handler(BaseHTTPRequestHandler):
             rows.append({"pid": p.pid, "name": p.name, "blurb": p.blurb, "kind": p.kind,
                          "base_url": p.base_url, "popular": p.popular, "recommended": p.recommended,
                          "signup_url": p.signup_url, "has_key": bool(key),
-                         "masked": mask(key), "active": cl.provider == p.pid and bool(key)})
+                         "masked": mask(key), "active": cl.provider == p.pid and bool(key),
+                         "models": cl.model_lists.get(p.pid, "")})
         for pid, name in sorted(cl.customs.items()):
             key = key_for(pid, cl.keys)
             rows.append({"pid": pid, "name": name, "blurb": "custom OpenAI-compatible endpoint",
@@ -522,6 +523,9 @@ class Handler(BaseHTTPRequestHandler):
         if _pg(pid) is None and not (is_custom(pid) and pid in self.state.svc.config.cloud.customs):
             return 400, {"error": f"unknown provider {pid!r} — connect customs first"}
         cl = self.state.svc.config.cloud
+        models = str(body.get("models") or "").strip()
+        if models:
+            cl.model_lists[pid] = models
         if key:
             cl.keys[pid] = key
         else:
