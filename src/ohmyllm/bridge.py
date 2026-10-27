@@ -528,6 +528,8 @@ class Handler(BaseHTTPRequestHandler):
             cl.model_lists[pid] = models
         if key:
             cl.keys[pid] = key
+            if not cl.provider:
+                cl.provider = pid
         else:
             cl.keys.pop(pid, None)
             if cl.provider == pid:

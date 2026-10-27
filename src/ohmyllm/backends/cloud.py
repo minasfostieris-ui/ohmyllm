@@ -46,7 +46,13 @@ class CloudBackend(BaseBackend):
         cl = self.config.cloud
         pid = cl.provider
         if not pid:
-            raise BackendError("no provider connected — open /providers (TUI) or the Providers tab (GUI)")
+            # a key was pasted but the provider never explicitly activated:
+            # with exactly one connected provider there is no ambiguity
+            connected = [k for k, v in cl.keys.items() if v and resolve(k, cl.bases, cl.customs)]
+            if len(connected) == 1:
+                pid = connected[0]
+            else:
+                raise BackendError("no provider connected — open /providers (TUI) or the Providers tab (GUI)")
         r = resolve(pid, cl.bases, cl.customs)
         if r is None:
             raise BackendError(f"unknown provider '{pid}' — connect one in /providers")

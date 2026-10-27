@@ -31,7 +31,7 @@ def pathlib_home():
 
 class ChatScreen(Screen):
     SLASH: tuple[tuple[str, str, str], ...] = (
-        ("/help", "", "this help screen"), ("/model", "[name]", "set or pick the default model"), ("/modelsettings", "", "per-model settings for the current model"),
+        ("/help", "", "this help screen"), ("/model", "[name]", "set or pick the default model"), ("/models", "", "browse models (b switches backend)"), ("/modelsettings", "", "per-model settings for the current model"),
         ("/backend", "[ollama|lmstudio|mock]", "switch backend"), ("/mode", "[name]", "permission mode"),
         ("/think", "[off|low|medium|high|xhigh|max|hide|show]", "reasoning effort"),
         ("/skillimport", "", "open the skills folder (add/remove/move skills)"),
@@ -991,11 +991,11 @@ class ChatScreen(Screen):
         arg = parts[1].strip() if len(parts) > 1 else ""
         app = self.app
         if cmd in ("help", "?"):
-            app.replace_screen("help")
-        elif cmd == "model":
+            app.call_later(app.replace_screen, "help")
+        elif cmd in ("model", "models"):
             if arg and self._set_model(arg):
                 return
-            app.replace_screen("models")
+            app.call_later(app.replace_screen, "models")
         elif cmd == "modelsettings":
             from ...backends.base import BackendName, ModelInfo
             from .modals import ModelSettingsModal
@@ -1015,7 +1015,7 @@ class ChatScreen(Screen):
                 app.svc.save_config()
                 app._health_probe()
                 app.notify(f"backend → {arg}")
-            app.replace_screen("backend")
+            app.call_later(app.replace_screen, "backend")
         elif cmd == "think" and arg.lower() in ("hide", "show"):
             cfg = app.svc.config.agent
             cfg.thinking_visible = arg.lower() == "show"
@@ -1056,11 +1056,11 @@ class ChatScreen(Screen):
                     app.save_state = True
                 self._sysline(f"skill cast · {name} — the agent will follow it from here", "system")
         elif cmd == "market":
-            app.replace_screen("market")
+            app.call_later(app.replace_screen, "market")
         elif cmd == "providers":
-            app.replace_screen("providers")
+            app.call_later(app.replace_screen, "providers")
         elif cmd == "onboarding":
-            app.replace_screen("wizard")
+            app.call_later(app.replace_screen, "wizard")
         elif cmd == "voice":
             from ... import voice as _v
 
@@ -1100,17 +1100,17 @@ class ChatScreen(Screen):
             if arg:
                 self._set_mode(arg)
             else:
-                app.replace_screen("perms")
+                app.call_later(app.replace_screen, "perms")
         elif cmd in ("memory", "soul"):
-            app.replace_screen("memory")
+            app.call_later(app.replace_screen, "memory")
         elif cmd == "doctor":
-            app.replace_screen("doctor")
+            app.call_later(app.replace_screen, "doctor")
         elif cmd == "settings":
-            app.replace_screen("settings")
+            app.call_later(app.replace_screen, "settings")
         elif cmd == "clear" or cmd == "new":
             app.new_chat()
         elif cmd == "chats":
-            app.replace_screen("chats")
+            app.call_later(app.replace_screen, "chats")
         elif cmd == "rename":
             if app.session:
                 title = arg or make_title(" ".join(str(m.get("content", "")) for m in app.session.messages if m.get("role") == "user"))

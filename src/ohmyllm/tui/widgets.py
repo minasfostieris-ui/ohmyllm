@@ -209,7 +209,7 @@ class ToolPanel(Static):
 class PromptModal(ModalScreen[str | None]):
     """Single-line text prompt with optional secret-ish confirm."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
 
     def __init__(self, title: str, placeholder: str = "", initial: str = "") -> None:
         super().__init__(id="prompt-modal")
@@ -244,7 +244,7 @@ class ConfirmModal(ModalScreen[bool]):
     BINDINGS = [
         Binding("y", "yes", "Yes"),
         Binding("n", "no", "No"),
-        Binding("escape", "no", "No"),
+        Binding("escape", "no", "No", priority=True),
     ]
 
     def __init__(self, question: str, extra: str = "", ok_label: str = "Yes", danger: bool = False) -> None:
@@ -286,7 +286,7 @@ class ApprovalModal(ModalScreen[ApprovalOutcome]):
         Binding("n", "deny", "Deny"),
         Binding("a", "allow_session", "Allow session"),
         Binding("p", "always", "Permanent rule"),
-        Binding("escape", "deny", "Deny"),
+        Binding("escape", "deny", "Deny", priority=True),
     ]
 
     def __init__(self, req: ApprovalRequest) -> None:

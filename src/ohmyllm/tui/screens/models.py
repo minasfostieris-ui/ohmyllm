@@ -57,9 +57,8 @@ class ModelsScreen(Screen):
 
     def on_mount(self) -> None:
         t = self.query_one(DataTable)
-        for label, w in (("model", None), ("size · quant", 17), ("params", 6),
-                         ("ctx", 6), ("vram", 9), ("fit", None), ("tools", None),
-                         ("vision", None), ("think", None)):
+        for label, w in (("model", 30), ("size·q", 13), ("par", 5), ("vram", 8),
+                         ("fit", 5), ("tools", 5), ("vision", 6), ("think", 5)):
             t.add_column(label, width=w)
         t.focus()
         self._models: list[ModelInfo] = []
@@ -151,32 +150,34 @@ class ModelsScreen(Screen):
             if q and q not in m.name.lower():
                 continue
             est = m.vram_estimate(gen, gpu_total, gpu_free)
-            cap = {True: "native", False: "text", None: "?"}[m.tool_capable]
             fit = est.status if est else "?"
             style = {"comfortable": "green", "tight": "yellow", "too_large": "red"}.get(fit, "dim")
             key = getattr(self, "_be", "") or self.app.svc.backend_name_str()
             tested = vision_cached(key, m.name)
             if m.name in getattr(self, "_probing", set()):
-                vis = "[yellow]⏳ probing[/]"
+                vis = "[yellow]⏳[/]"
             elif tested is not None:
-                vis = "[green]👁 yes[/]" if tested else "[dim]no[/]"
+                vis = "[green]👁[/]" if tested else "[dim]✗v[/]"
             elif m.vision is True:
-                vis = "[green]👁yes[/] [dim]·v[/]"
+                vis = "[green]👁[/]"
             elif m.vision is False:
-                vis = "[dim]no[/]"
+                vis = "[dim]✗v[/]"
             else:
-                vis = "[dim]·v[/]"
+                vis = "[dim]?v[/]"
             th = m.thinking or thinking_support(m.name, m.params_b)
-            th_cell = {"levels": "[green]⚡lvls[/]", "forced": "[cyan]★forced[/]",
-                       "on-off": "[yellow]◐switch[/]", "none": "[dim]✗[/]"}.get(th or "", "[dim]?[/]")
+            th_cell = {"levels": "[green]⚡[/]", "forced": "[cyan]★[/]",
+                       "on-off": "[yellow]◐[/]", "none": "[dim]✗[/]"}.get(th or "", "[dim]?[/]")
+            fit_cell = {"comfortable": "✓", "tight": "⚠", "too_large": "✗"}.get(fit, "?")
+            cap_cell = {True: "✓", False: "·", None: "?"}[m.tool_capable]
+            sz = f"{human_bytes(m.size_bytes).replace(' ', '')}·{(m.quant or '?')[:4]}" if m.size_bytes else "?"
+            vr = human_bytes(est.min_bytes).replace(" ", "") if est else "?"
             t.add_row(
-                ("★ " if m.name == cur else "") + m.name[:38],
-                f"{human_bytes(m.size_bytes) if m.size_bytes else '?'} · {m.quant or '?'}",
+                ("★" if m.name == cur else "") + m.name[:29],
+                sz,
                 f"{m.params_b:g}B" if m.params_b else "?",
-                str(m.ctx_len or "?"),
-                human_bytes(est.min_bytes) if est else "?",
-                f"[{style}]{fit}[/]",
-                cap,
+                vr,
+                f"[{style}]{fit_cell}[/]",
+                cap_cell,
                 vis,
                 th_cell,
             )
@@ -252,10 +253,15 @@ class ModelsScreen(Screen):
         m = self._selected()
         if m is None:
             return
-        key = self.app.svc.config.default_backend.value
-        section = getattr(self.app.svc.config, key, None)
+        be = self._be_obj()
+        key = be.name.value
+        cfg = self.app.svc.config
+        section = getattr(cfg, key, None)
         if section is not None and hasattr(section, "default_model"):
             section.default_model = m.name
+            # choosing a model from the listed backend means "use it": switch
+            # the default backend too, or a cloud pick would never reach chat
+            cfg.default_backend = be.name
             self.app.svc.save_config()
             self._populate()
             if f"{key}:{m.name}" not in self.app.svc.config.model_settings:

@@ -28,7 +28,7 @@ _FIELDS = [
 
 
 class ModelSettingsModal(ModalScreen[bool]):
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
 
     def __init__(self, model: ModelInfo) -> None:
         super().__init__(id="model-settings-modal")
@@ -37,7 +37,7 @@ class ModelSettingsModal(ModalScreen[bool]):
     def compose(self) -> ComposeResult:
         cur = self.app.svc.config.settings_for(self.model.backend, self.model.name)
         with Vertical(id="model-settings-box"):
-            yield Label(f"[b]⚙ Settings for {self.model.name}[/b]  [dim](stored per model; values are absolute overrides)[/dim]", classes="ms-title")
+            yield Label(f"[b]⚙ Settings for {self.model.name[:60]}[/b]  [dim](per model; absolute overrides)[/dim]", classes="ms-title")
             fields = list(_FIELDS)
             for i in range(0, len(fields), 3):
                 with Horizontal(classes="ms-row"):

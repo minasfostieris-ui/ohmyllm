@@ -21,7 +21,7 @@ from ...providers import PROVIDERS, key_for, mask
 class KeyModal(ModalScreen[str | None]):
     """Paste-your-key dialog; empty + enter removes the stored key."""
 
-    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+    BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
 
     def __init__(self, title: str, current: str, secret: bool = True) -> None:
         super().__init__()
@@ -173,6 +173,8 @@ class ProvidersScreen(Screen):
         cl = self.app.svc.config.cloud
         if val:
             cl.keys[pid] = val
+            if not cl.provider:
+                cl.provider = pid  # first connected key becomes the provider
         else:
             cl.keys.pop(pid, None)
         self.app.svc.save_config()

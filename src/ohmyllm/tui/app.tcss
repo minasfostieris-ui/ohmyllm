@@ -109,6 +109,9 @@ DataTable { height: 1fr; border: round $primary 60%; }
 .preview-block { max-height: 45%; }
 
 /* ---------- model settings modal ---------- */
+#model-settings-modal {
+    align: center middle;
+}
 #model-settings-box {
     width: 100; max-width: 92%; height: auto; max-height: 92%;
     border: thick $primary; background: $surface; padding: 1 2;

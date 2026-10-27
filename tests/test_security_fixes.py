@@ -11,6 +11,7 @@ import threading
 import httpx
 import pytest
 
+from ohmyllm.backends.base import BackendError
 from ohmyllm.backends.registry import make_backend
 from ohmyllm.config import Config, ConfigStore
 
@@ -606,7 +607,7 @@ async def test_models_backend_cycle_and_table_fits(oml_env, svc, monkeypatch):
         assert reached, "b-cycle never reached cloud despite a stored key"
         await pilot.pause(0.5)
         t = scr.query_one(DataTable)
-        assert len(t.columns) == 9  # compacted table fits narrow terminals
+        assert len(t.columns) == 8  # compacted table fits ~110-col terminals
         title = str(scr.query_one("#screen-title").render())
         assert "backend" in title.lower()
 
@@ -632,3 +633,61 @@ def test_registry_provider_static_models_via_bridge(bridge):
     be = make_backend("cloud", cfg, transport=httpx.MockTransport(boom))
     names = [m.name for m in asyncio.run(be.list_models())]
     assert names == ["qwen3.8-flash", "qwen3-coder-plus"]
+
+
+async def test_cloud_pick_switches_backend_and_escape_stops_at_modal(oml_env, svc, monkeypatch):
+    import ohmyllm.voice as _v
+
+    monkeypatch.setattr(_v.shutil, "which", lambda n: None)
+    from textual.widgets import DataTable
+
+    from ohmyllm.backends.base import BackendName, ModelInfo
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.screens.models import ModelsScreen
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(112, 40)) as pilot:
+        await pilot.pause(0.7)
+        app.svc.config.cloud.keys["openrouter"] = "sk-pick-test"
+        app.replace_screen("models")
+        await pilot.pause(0.8)
+        scr = app.screen
+        assert isinstance(scr, ModelsScreen)
+        scr._be = "cloud"
+        scr._models = [ModelInfo(name="gpt-test", backend=BackendName.CLOUD)]
+        scr._visible = ["gpt-test"]
+        t = scr.query_one(DataTable)
+        if not t.row_count:
+            scr._populate()
+        scr.action_choose()
+        await pilot.pause(0.3)
+        cfg = app.svc.config
+        assert cfg.default_backend == BackendName.CLOUD, "cloud pick must switch default backend"
+        assert cfg.cloud.default_model == "gpt-test"
+        # escape closes ONLY the settings modal, models screen survives
+        top = app.screen
+        assert type(top).__name__ == "ModelSettingsModal"
+        await pilot.press("escape")
+        await pilot.pause(0.4)
+        assert isinstance(app.screen, ModelsScreen), "escape leaked through the modal"
+
+
+def test_single_connected_key_implies_provider():
+    """provider='' with exactly one stored key must still serve cloud models."""
+    from ohmyllm.backends.registry import make_backend
+    from ohmyllm.config import ConfigStore
+
+    cfg = ConfigStore().load()
+    cfg.cloud.provider = ""
+    cfg.cloud.keys = {"openrouter": "sk-one-only"}
+    cfg.cloud.model_lists["openrouter"] = "a-model,b-model"
+    be = make_backend("cloud", cfg)
+    got = be._active()
+    assert got[0] == "openrouter"
+    names = [m.name for m in asyncio.run(be.list_models())]
+    assert names == ["a-model", "b-model"]
+    # two keys => ambiguous => honest error, not a coin flip
+    cfg.cloud.keys["deepseek"] = "sk-second"
+    be2 = make_backend("cloud", cfg)
+    with pytest.raises(BackendError):
+        be2._active()
