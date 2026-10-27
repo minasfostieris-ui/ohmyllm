@@ -1,5 +1,8 @@
 /* OhMyLLM theme */
 
+$primary: #00e5ff;
+$secondary: #00b8d4;
+
 Screen { background: $surface; }
 
 #mode-banner {
@@ -61,7 +64,8 @@ VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
 }
 
 #chat-input { dock: bottom; }
-#chat-input:focus { background: $primary 30%; }
+#chat-input { border: solid #00e5ff; }
+#chat-input:focus { border: solid #00e5ff; background: $primary 30%; }
 
 /* ---------- generic screens ---------- */
 #screen-title { height: 1; padding: 0 2; color: $accent; text-style: bold; }
@@ -171,7 +175,7 @@ OptionList { background: $surface; }
 CommandPalette { padding: 1; background: $primary 60%; }
 CommandPalette > * { background: $surface; }
 Input { margin: 0 1; border: none; }
-Input:focus { border: none; background: $primary 30%; }
+Input:focus { border: none; }
 
 /* ---------- slash command menu ---------- */
 #slash-band { display: none; margin: 0 2; }
