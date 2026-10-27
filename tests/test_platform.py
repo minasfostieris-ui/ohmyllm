@@ -72,6 +72,7 @@ def test_app_candidate_darwin(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------- GPU detect
 def test_detect_gpus_windows_prefers_nvidia_smi(monkeypatch):
+    detect.invalidate_gpu_cache()
     monkeypatch.setattr(detect.platform, "system", lambda: "Windows")
     calls = []
 
@@ -90,6 +91,7 @@ def test_detect_gpus_windows_prefers_nvidia_smi(monkeypatch):
 
 
 def test_detect_gpus_windows_falls_back_to_wmi(monkeypatch):
+    detect.invalidate_gpu_cache()
     monkeypatch.setattr(detect.platform, "system", lambda: "Windows")
     monkeypatch.setattr(detect, "_nvidia", lambda: [])
     monkeypatch.setattr(detect, "_windows", lambda: [
@@ -99,6 +101,7 @@ def test_detect_gpus_windows_falls_back_to_wmi(monkeypatch):
 
 
 def test_detect_gpus_darwin_apple_only(monkeypatch):
+    detect.invalidate_gpu_cache()
     monkeypatch.setattr(detect.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(detect, "_apple", lambda: [
         detect.GPUInfo("apple", "M3 Ultra", 32 * 2**30, None, "test")])

@@ -7,6 +7,8 @@ import os
 import platform
 import re
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 
 
@@ -182,7 +184,7 @@ def _windows() -> list[GPUInfo]:
     return gpus
 
 
-def detect_gpus() -> list[GPUInfo]:
+def _detect_gpus_uncached() -> list[GPUInfo]:
     system = platform.system()
     if system == "Darwin":
         return _apple()
@@ -195,6 +197,45 @@ def detect_gpus() -> list[GPUInfo]:
         return gpus
     gpus = _rocm_smi()
     return gpus or _sysfs_amd()
+
+
+# GPU topology barely changes, but the probes are expensive (powershell
+# cold start on Windows can take seconds) and callers poll every few
+# seconds. A short TTL keeps the status bar honest without subprocess
+# churn. Callers that must re-probe now: invalidate_gpu_cache().
+_GPU_TTL = 10.0
+_gpu_cache: tuple[float, list[GPUInfo]] | None = None
+_gpu_lock = threading.Lock()
+
+
+def invalidate_gpu_cache() -> None:
+    global _gpu_cache
+    with _gpu_lock:
+        _gpu_cache = None
+
+
+def detect_gpus() -> list[GPUInfo]:
+    global _gpu_cache
+    with _gpu_lock:
+        if _gpu_cache is not None and time.monotonic() - _gpu_cache[0] < _GPU_TTL:
+            return _gpu_cache[1]
+    gpus = _detect_gpus_uncached()
+    with _gpu_lock:
+        _gpu_cache = (time.monotonic(), gpus)
+    return gpus
+
+
+def detect_gpus_cached() -> list[GPUInfo]:
+    """Snapshot of the last probe — never spawns subprocesses.
+
+    The models screen renders fit estimates from this; freshness comes
+    from the app-start warm and any other detect_gpus() caller (status
+    bar, bridge heartbeat). A cold cache simply means "fit unknown",
+    not a stalled table."""
+    with _gpu_lock:
+        if _gpu_cache is not None and time.monotonic() - _gpu_cache[0] < _GPU_TTL:
+            return _gpu_cache[1]
+    return []
 
 
 def total_vram_bytes() -> int:

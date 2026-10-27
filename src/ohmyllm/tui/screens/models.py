@@ -19,7 +19,7 @@ from textual.widgets import DataTable, Input, ProgressBar, Static
 from ...backends.base import BackendError, BackendName, ModelInfo
 from ...capabilities import family, quant_bits, thinking_support
 from ...vision import cached_verdict as vision_cached
-from ...vram import detect_gpus, human_bytes
+from ...vram import detect_gpus_cached, human_bytes
 
 _THINK_ORDER = {"levels": 0, "forced": 1, "on-off": 2, "none": 3, None: 4}
 _SECTION_ORDER = [BackendName.OLLAMA, BackendName.LMSTUDIO, BackendName.CLOUD]
@@ -176,7 +176,7 @@ class ModelsScreen(Screen):
         q = self.query_one("#model-search", Input).value.strip().lower()
         cfg = self.app.svc.config
         cur, cur_be = self.app.svc.current_model(), cfg.default_backend.value
-        gpus = detect_gpus()
+        gpus = detect_gpus_cached()
         gpu_total = sum(g.total_bytes for g in gpus) or None
         frees = [g.free_bytes for g in gpus if g.free_bytes is not None]
         gpu_free = sum(frees) if frees else None

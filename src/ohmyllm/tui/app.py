@@ -99,7 +99,7 @@ class OhMyLLMApp(App[None]):
     # ------------------------------------------------------------------ boot
     def on_mount(self) -> None:
         self.svc = Services.boot(self._workspace)
-        self._sync_vram_text()
+        self._warm_gpus()
         self._health_probe()
         if not self.svc.config.first_run_completed:
             from .screens.wizard import WizardScreen
@@ -230,6 +230,14 @@ class OhMyLLMApp(App[None]):
         for s in self.screen_stack:
             for b in s.query(ModeBanner):
                 b.set_mode(mode)
+
+    @work(exclusive=True)
+    async def _warm_gpus(self) -> None:
+        # first detect_gpus() can cost seconds on Windows (powershell WMI);
+        # do it off the mount path so the UI paints immediately and the
+        # models screen finds a warm cache
+        await asyncio.to_thread(detect_gpus)
+        self._sync_vram_text()
 
     def _sync_vram_text(self) -> None:
         try:
