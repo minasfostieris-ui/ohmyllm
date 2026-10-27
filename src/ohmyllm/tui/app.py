@@ -53,17 +53,53 @@ def _patch_input_paste() -> None:
 _patch_input_paste()
 
 def _patch_scrollbar_glyphs() -> None:
-    """Textual's scrollbar/switch thumbs add fractional head/tail cells using
-    block glyphs (▁▂▃▄▅▆▇ / ▉▊▋▌▍▎▏). Terminals whose font lacks them render
-    tofu of varying widths — the jagged, "not straight" side bar. Blanking the
-    bars leaves pure background cells: a continuous, font-independent thumb."""
+    """Replace Textual's fractional-glyph scrollbar renderer with a clean one:
+    track/thumb/track as three contiguous segments painted with explicit
+    background colors. The stock renderer composes the thumb from reverse-video
+    cells plus fractional head/tail glyphs (▁▂▅▆ / ▉▊▋), which render as a
+    broken, zig-zag column on terminals whose font lacks those glyphs — the
+    user-visible 'not straight' side bar. Pure background cells are
+    font-independent and always perfectly continuous."""
+    from rich.segment import Segment, Segments
+    from rich.style import Style
     from textual.scrollbar import ScrollBarRender
 
-    if getattr(ScrollBarRender, "_omllm_noglyph", False):
+    if getattr(ScrollBarRender, "_omllm_clean", False):
         return
+
+    @classmethod
+    def clean_render_bar(  # type: ignore[no-redef]
+        cls,
+        size: int = 25,
+        virtual_size: float = 50,
+        window_size: float = 20,
+        position: float = 0,
+        thickness: int = 1,
+        vertical: bool = True,
+        back_color: object = None,
+        bar_color: object = None,
+    ) -> Segments:
+        blank = " " * (thickness if vertical else 1)
+        track = Segment(blank, Style(bgcolor=back_color))  # type: ignore[arg-type]
+        thumb = Segment(blank, Style(bgcolor=bar_color))  # type: ignore[arg-type]
+        n = int(size)
+        if not (window_size and n and virtual_size and n != virtual_size):
+            segments: list[Segment] = [track] * n
+        else:
+            ratio = min(1.0, float(window_size) / float(virtual_size))
+            t = max(1, round(n * ratio))
+            span = max(1, n - t)
+            frac = max(0.0, min(1.0, float(position) / max(1.0, float(virtual_size - window_size))))
+            pos = max(0, min(span, round(span * frac)))
+            segments = [track] * pos + [thumb] * t + [track] * (n - pos - t)
+        if vertical:
+            return Segments(segments, new_lines=True)
+        return Segments((segments + [Segment.line()]) * thickness, new_lines=False)
+
+    ScrollBarRender.render_bar = clean_render_bar  # type: ignore[method-assign]
     ScrollBarRender.VERTICAL_BARS = [" "] * 8
     ScrollBarRender.HORIZONTAL_BARS = [" "] * 8
-    ScrollBarRender._omllm_noglyph = True
+    ScrollBarRender._omllm_clean = True
 
 
 _patch_scrollbar_glyphs()

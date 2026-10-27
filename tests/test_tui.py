@@ -616,8 +616,9 @@ async def test_frames_are_thin_solid_ring_borders(oml_env, svc, monkeypatch):
 
 @pytest.mark.asyncio()
 async def test_models_scrollbar_continuous_ring_thumb(oml_env, svc, monkeypatch):
-    """The restored side bar: thumb cells are blank (no fractional block
-    glyphs) carrying the ring color — straight in every font."""
+    """The user's P0: the side bar must be one continuous, straight column.
+    The patched renderer paints thumb cells with the ring BACKGROUND color
+    (no reverse video, no fractional glyphs) — straight in every font."""
     from textual.widgets import DataTable
 
     _truecolor(monkeypatch)
@@ -633,14 +634,24 @@ async def test_models_scrollbar_continuous_ring_thumb(oml_env, svc, monkeypatch)
         await pilot.pause(0.5)
         assert t.show_vertical_scrollbar, "models table must keep its side bar"
         ring = app.get_css_variables()["ring"].lower()
-        thumb = [
-            seg
-            for seg in _segments(app)
-            if seg.style and seg.style.reverse and seg.style.color
-            and (seg.style.color.name or "").lower() == ring
+        sb = t._vertical_scrollbar
+        from textual.geometry import Region
+        lines = sb.render_lines(Region(0, 0, sb.size.width, sb.size.height))
+        thumb_rows = [
+            i for i, strip in enumerate(lines)
+            if any(
+                s.style and s.style.bgcolor
+                and (s.style.bgcolor.name or "").lower() == ring
+                and set(s.text) <= {" "}
+                for s in strip
+            )
         ]
-        assert thumb, "no ring-colored scrollbar thumb rendered"
-        assert all(set(seg.text) <= {" "} for seg in thumb), "thumb uses glyphs, not blank cells"
+        assert thumb_rows, "no ring-background scrollbar thumb rendered"
+        assert thumb_rows == list(range(thumb_rows[0], thumb_rows[-1] + 1)), \
+            "thumb fragmented — must be one contiguous run"
+        assert not any(
+            s.style.reverse for strip in lines for s in strip
+        ), "thumb must use plain background cells, not reverse video"
 
 
 def test_app_forces_color_despite_no_color_env(monkeypatch):
