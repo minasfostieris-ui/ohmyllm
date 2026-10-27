@@ -218,12 +218,13 @@ class PromptModal(ModalScreen[str | None]):
         self.initial = initial
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="prompt-box"):
-            yield Label(self.title, id="prompt-label")
-            yield Input(placeholder=self.placeholder, value=self.initial, id="prompt-input")
-            with Horizontal(id="prompt-buttons"):
-                yield Button("OK", variant="primary", id="ok")
-                yield Button("Cancel", variant="default", id="cancel")
+        with Vertical(classes="band"):
+            with Vertical(id="prompt-box"):
+                yield Label(self.title, id="prompt-label")
+                yield Input(placeholder=self.placeholder, value=self.initial, id="prompt-input")
+                with Horizontal(id="prompt-buttons"):
+                    yield Button("OK", variant="primary", id="ok")
+                    yield Button("Cancel", variant="default", id="cancel")
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
@@ -255,13 +256,14 @@ class ConfirmModal(ModalScreen[bool]):
         self.danger = danger
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="confirm-box", classes="danger" if self.danger else ""):
-            yield Label(self.question, id="confirm-q")
-            if self.extra:
-                yield Static(self.extra, id="confirm-extra")
-            with Horizontal(id="confirm-buttons"):
-                yield Button(self.ok_label, variant="error" if self.danger else "primary", id="yes")
-                yield Button("Cancel", variant="default", id="no")
+        with Vertical(classes="band band-danger" if self.danger else "band"):
+            with Vertical(id="confirm-box", classes="danger" if self.danger else ""):
+                yield Label(self.question, id="confirm-q")
+                if self.extra:
+                    yield Static(self.extra, id="confirm-extra")
+                with Horizontal(id="confirm-buttons"):
+                    yield Button(self.ok_label, variant="error" if self.danger else "primary", id="yes")
+                    yield Button("Cancel", variant="default", id="no")
 
     @on(Button.Pressed, "#yes")
     def _yes(self) -> None:
@@ -300,21 +302,22 @@ class ApprovalModal(ModalScreen[ApprovalOutcome]):
             ("   risk: ", "bold"), (f"{d.level} ({d.risk})", "bold yellow" if d.risk >= 5 else "green"),
             ("   mode: ", "bold"), (str(d.reasons and d.reasons[0] or "").removeprefix("mode="), "dim"),
         )
-        with Vertical(id="approval-box"):
-            yield Static(head)
-            args = json.dumps(self.req.args, ensure_ascii=False, indent=1, default=str)
-            if len(args) > 1400:
-                args = args[:1400] + "\n…"
-            yield Static(Syntax(args, "json", theme="monokai", word_wrap=True), classes="code-block")
-            if self.req.preview:
-                prev = self.req.preview[:2200]
-                lang = "diff" if ("@@" in prev or prev.startswith(("write", "patch"))) else "text"
-                yield Static(Syntax(prev, lang if lang != "text" else "text", theme="monokai", word_wrap=True), classes="code-block preview-block")
-            with Horizontal(id="approval-buttons"):
-                yield Button("Allow once (y)", variant="success", id="ok")
-                yield Button("Allow session (a)", variant="primary", id="session")
-                yield Button("Permanent rule (p)", variant="warning", id="always")
-                yield Button("Deny (n)", variant="error", id="deny")
+        with Vertical(classes="band band-warning"):
+            with Vertical(id="approval-box"):
+                yield Static(head)
+                args = json.dumps(self.req.args, ensure_ascii=False, indent=1, default=str)
+                if len(args) > 1400:
+                    args = args[:1400] + "\n…"
+                yield Static(Syntax(args, "json", theme="monokai", word_wrap=True), classes="code-block")
+                if self.req.preview:
+                    prev = self.req.preview[:2200]
+                    lang = "diff" if ("@@" in prev or prev.startswith(("write", "patch"))) else "text"
+                    yield Static(Syntax(prev, lang if lang != "text" else "text", theme="monokai", word_wrap=True), classes="code-block preview-block")
+                with Horizontal(id="approval-buttons"):
+                    yield Button("Allow once (y)", variant="success", id="ok")
+                    yield Button("Allow session (a)", variant="primary", id="session")
+                    yield Button("Permanent rule (p)", variant="warning", id="always")
+                    yield Button("Deny (n)", variant="error", id="deny")
 
     @on(Button.Pressed, "#ok")
     def _ok(self) -> None:

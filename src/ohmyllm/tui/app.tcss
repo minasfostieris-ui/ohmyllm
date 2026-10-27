@@ -23,12 +23,12 @@ Screen { background: $surface; }
    a visible bar; these rules only govern where a bar is unavoidable. */
 ScrollBar {
     background: $surface;
-    scrollbar-color: $foreground 25%;
-    scrollbar-color-hover: $foreground 40%;
-    scrollbar-color-active: $primary 60%;
-    scrollbar-background: $surface;
-    scrollbar-background-hover: $surface;
-    scrollbar-background-active: $surface;
+    scrollbar-color: transparent $surface;
+    scrollbar-color-hover: transparent $surface;
+    scrollbar-color-active: transparent $surface;
+    scrollbar-background: $primary 60%;
+    scrollbar-background-hover: $primary 75%;
+    scrollbar-background-active: $primary;
     scrollbar-corner-color: $surface;
 }
 Screen { scrollbar-size: 0 0; }
@@ -67,7 +67,7 @@ VerticalScroll { overflow-x: hidden; }
 }
 
 #chat-input { dock: bottom; }
-#chat-input:focus { border: ascii $primary; }
+#chat-input:focus { background: $primary 30%; }
 
 /* ---------- generic screens ---------- */
 #screen-title { height: 1; padding: 0 2; color: $accent; text-style: bold; }
@@ -76,7 +76,12 @@ VerticalScroll { overflow-x: hidden; }
     overflow-y: auto; scrollbar-size: 1 2; scrollbar-color: $accent $surface;
 }
 
-DataTable { height: 1fr; border: ascii $primary 60%; scrollbar-size: 0 1;  /* (horizontal, vertical) — measured */ }
+/* .band = painted ring: the container's background shows through its
+   1-cell padding — a continuous solid frame with ZERO font dependency
+   (borders/outlines are always glyphs; glyphs break in some terminals). */
+.band { background: $primary 60%; padding: 1; height: auto; }
+#models-band { height: 1fr; }
+DataTable { height: 100%; width: 100%; background: $surface; scrollbar-size: 0 1; }
 
 .screen-body { height: 1fr; }
 
@@ -86,39 +91,33 @@ DataTable { height: 1fr; border: ascii $primary 60%; scrollbar-size: 0 1;  /* (h
     align: center middle;
 }
 
+.band-warning { background: $warning 60%; max-width: 112; }
 #approval-box {
-    width: 90%;
-    max-width: 110;
+    width: 100%;
     height: auto;
-    max-height: 90%;
-    border: ascii $warning;
+    max-height: 88%;
+    overflow-y: auto;
     background: $surface;
     padding: 1 2;
 }
 
 #prompt-box {
-    width: 70%;
-    max-width: 90;
+    width: 100%;
     height: auto;
-    border: ascii $primary;
     background: $surface;
     padding: 1 2;
 }
 
 #confirm-box {
-    width: 60%;
-    max-width: 80;
+    width: 100%;
     height: auto;
-    border: ascii $primary;
     background: $surface;
     padding: 1 2;
 }
 
 #key-modal {
-    width: 80;
-    max-width: 92%;
+    width: 100%;
     height: auto;
-    border: ascii $primary;
     background: $surface;
     padding: 1 2;
 }
@@ -129,9 +128,9 @@ DataTable { height: 1fr; border: ascii $primary 60%; scrollbar-size: 0 1;  /* (h
 .modal-hint { color: $text-muted; margin-bottom: 1; }
 .modal-buttons { height: auto; align-horizontal: right; padding-top: 1; }
 
-#confirm-box.danger { border: ascii $error; }
+.band-danger { background: $error 60%; }
 
-.code-block { height: auto; max-height: 30%; border: ascii $secondary 40%; padding: 0 1; }
+.code-block { height: auto; max-height: 30%; background: $primary 25%; padding: 0 1; }
 .preview-block { max-height: 45%; }
 
 /* ---------- model settings modal ---------- */
@@ -139,8 +138,8 @@ DataTable { height: 1fr; border: ascii $primary 60%; scrollbar-size: 0 1;  /* (h
     align: center middle;
 }
 #model-settings-box {
-    width: 100; max-width: 92%; height: auto; max-height: 92%;
-    border: ascii $primary; background: $surface; padding: 1 2;
+    width: 100%; height: auto;
+    background: $surface; padding: 1 2;
 }
 .ms-title { margin-bottom: 1; }
 .ms-row { height: auto; }
@@ -150,7 +149,7 @@ DataTable { height: 1fr; border: ascii $primary 60%; scrollbar-size: 0 1;  /* (h
 
 /* ---------- settings ---------- */
 #settings-body { padding: 0 2 1 2; align-horizontal: center; }
-.st-section { height: auto; width: 100%; max-width: 110; border: ascii $primary 35%; padding: 1 2; margin: 0 0 1 0; }
+.st-section { height: auto; width: 100%; max-width: 110; background: $primary 25%; padding: 1 2; margin: 0 0 1 0; }
 .st-title { color: $accent; text-style: bold; }
 .st-desc { color: $text-muted; }
 .st-label { color: $text-muted; padding-top: 1; }
@@ -167,22 +166,22 @@ DataTable { height: 1fr; border: ascii $primary 60%; scrollbar-size: 0 1;  /* (h
 HelpMarkdown { padding: 1 3; }
 
 /* ---------- memory ---------- */
-#soul-area { height: 1fr; border: ascii $primary 60%; }
+#soul-area { height: 100%; width: 100%; background: $surface; }
 #memory-buttons { height: auto; }
-#recent-memory { height: 8; color: $text-muted; border: ascii $secondary 40%; padding: 0 1; }
+#recent-memory { height: 8; color: $text-muted; background: $primary 25%; padding: 1 2; }
 
 /* misc */
 Button { margin: 0 1; }
-OptionList { border: ascii $primary 50%; }
+OptionList { background: $surface; }
+CommandPalette { padding: 1; background: $primary 60%; }
+CommandPalette > * { background: $surface; }
 Input { margin: 0 1; }
 
 /* ---------- slash command menu ---------- */
+#slash-band { display: none; margin: 0 2; }
 #slash-menu {
-    display: none;
     height: auto;
-    max-height: 12;
-    margin: 0 2;
-    border: ascii $primary 60%;
+    max-height: 10;
     background: $panel;
 }
 /* Textual's default blockquote bar is `border-left: outer` (half-block ▕ at
@@ -200,4 +199,4 @@ Collapsible { border-top: solid $primary 40%; }
 .card-buttons { height: auto; }
 
 /* ---------- switches: always legible on/off ---------- */
-Switch { border: ascii $primary 45%; padding: 0 1; margin-right: 1; }
+Switch { background: $primary 45%; padding: 0 1; margin-right: 1; border: none; }

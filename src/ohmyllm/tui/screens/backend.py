@@ -134,10 +134,11 @@ class InfoModal(ModalScreen[None]):
         self._lines = lines
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="prompt-box"):
-            yield Label(f"[b]{self._title}[/b]")
-            yield Static("\n".join(f"  {i+1}. {ln}" for i, ln in enumerate(self._lines)))
-            yield Button("close", id="close-info", variant="primary")
+        with Vertical(classes="band"):
+            with Vertical(id="prompt-box"):
+                yield Label(f"[b]{self._title}[/b]")
+                yield Static("\n".join(f"  {i+1}. {ln}" for i, ln in enumerate(self._lines)))
+                yield Button("close", id="close-info", variant="primary")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "close-info":

@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.screen import Screen
 from textual.widgets import Button, Label, Static, Switch, TextArea
 
@@ -18,7 +18,8 @@ class MemoryScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Static("[b]🧠 Memory — soul.md[/] — ctrl+enter save · esc back (agent writes via soul_* tools)", id="screen-title")
-        yield TextArea("", id="soul-area", language="markdown")
+        with Vertical(classes="band", id="soul-band"):
+            yield TextArea("", id="soul-area", language="markdown")
         with Horizontal(id="memory-buttons"):
             yield Button("save (backs up first)", id="mem-save", variant="primary")
             yield Button("revert newest backup", id="mem-revert")

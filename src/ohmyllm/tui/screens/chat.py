@@ -106,11 +106,15 @@ class ChatScreen(Screen):
     def _input_changed(self, event: Input.Changed) -> None:
         self._update_slash_menu(event.value)
 
+    def _set_slash(self, visible: bool) -> None:
+        self.query_one("#slash-band").display = visible
+        self.query_one("#slash-menu", OptionList).display = visible
+
     def _update_slash_menu(self, value: str) -> None:
         menu = self.query_one("#slash-menu", OptionList)
         v = value.strip()
         if not v.startswith("/") or " " in v:
-            menu.display = False
+            self._set_slash(False)
             menu.clear_options()
             return
         prefix = v.lower()
@@ -129,10 +133,10 @@ class ChatScreen(Screen):
                 d = self._think_hint() or d
             menu.add_option(Option(f"[b]{c}[/b] [dim]{a}[/dim]  [dim]{d}[/dim]", id=c))
         if matches:
-            menu.display = True
+            self._set_slash(True)
             menu.index = 0
         else:
-            menu.display = False
+            self._set_slash(False)
 
     def compose(self) -> ComposeResult:
         yield ModeBanner(id="mode-banner")
@@ -142,7 +146,8 @@ class ChatScreen(Screen):
                 yield VerticalScroll(id="history")
             yield SepBar("", id="panel-sep")
             yield ToolPanel()
-        yield OptionList(id="slash-menu")
+        with Vertical(classes="band", id="slash-band"):
+            yield OptionList(id="slash-menu")
         yield Input(placeholder="ask anything — / for commands (Enter to send)…", id="chat-input")
         yield StatusBar()
 

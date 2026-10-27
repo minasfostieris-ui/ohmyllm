@@ -32,13 +32,14 @@ class KeyModal(ModalScreen[str | None]):
     def compose(self) -> ComposeResult:
         hint = f"stored: {mask(self.current)} (enter replaces it, empty removes it)" if self.current \
             else "paste the key and press enter — leave empty to cancel"
-        with Vertical(id="key-modal", classes="modal-card"):
-            yield Static(f"[b]{self.title}[/]", id="key-title")
-            yield Static(hint, classes="modal-hint")
-            yield Input(password=self.secret, placeholder="sk-…", id="key-input")
-            with Horizontal(classes="modal-buttons"):
-                yield Button("Save", variant="primary", id="key-save")
-                yield Button("Cancel", id="key-cancel")
+        with Vertical(classes="band"):
+            with Vertical(id="key-modal", classes="modal-card"):
+                yield Static(f"[b]{self.title}[/]", id="key-title")
+                yield Static(hint, classes="modal-hint")
+                yield Input(password=self.secret, placeholder="sk-…", id="key-input")
+                with Horizontal(classes="modal-buttons"):
+                    yield Button("Save", variant="primary", id="key-save")
+                    yield Button("Cancel", id="key-cancel")
 
     @on(Button.Pressed, "#key-save")
     def _save(self) -> None:

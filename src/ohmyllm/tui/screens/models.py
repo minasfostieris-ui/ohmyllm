@@ -13,6 +13,7 @@ import time
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.containers import Vertical
 from textual.css.query import NoMatches
 from textual.events import Key, Resize
 from textual.screen import Screen
@@ -59,7 +60,8 @@ class ModelsScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Static("[b]🧠 Models[/] — enter choose · s settings · t test · l pull · r refresh · o sort · v verify vision · / filter · esc back", id="screen-title")
         yield Input(placeholder="filter models… (just start typing)", id="model-search")
-        yield DataTable(id="models-table", cursor_type="row")
+        with Vertical(classes="band", id="models-band"):
+            yield DataTable(id="models-table", cursor_type="row")
         yield ProgressBar(total=100, id="pull-progress", show_bar=True)
         yield Static("model server status & pull progress appear here", id="models-detail", classes="detail-box")
 

@@ -48,25 +48,26 @@ class ModelSettingsModal(ModalScreen[bool]):
         self._fields = fields
         hint = ("cloud API — local GPU knobs don't apply" if fields is not _FIELDS
                 and self.model.backend.value == "cloud" else "per model; absolute overrides")
-        with Vertical(id="model-settings-box"):
-            yield Label(f"[b]⚙ Settings for {self.model.name[:60]}[/b]  [dim]({hint})[/dim]", classes="ms-title")
-            for i in range(0, len(fields), 3):
+        with Vertical(classes="band", id="ms-band"):
+            with Vertical(id="model-settings-box"):
+                yield Label(f"[b]⚙ Settings for {self.model.name[:60]}[/b]  [dim]({hint})[/dim]", classes="ms-title")
+                for i in range(0, len(fields), 3):
+                    with Horizontal(classes="ms-row"):
+                        for name, label, typ in fields[i:i + 3]:
+                            with Vertical(classes="ms-field"):
+                                yield Label(f"[b]{label}[/b]")
+                                yield Input(
+                                    value=str(getattr(cur, name)),
+                                    id=f"ms-{name}",
+                                    type="number" if typ in (int, float) else "text",
+                                )
                 with Horizontal(classes="ms-row"):
-                    for name, label, typ in fields[i:i + 3]:
-                        with Vertical(classes="ms-field"):
-                            yield Label(f"[b]{label}[/b]")
-                            yield Input(
-                                value=str(getattr(cur, name)),
-                                id=f"ms-{name}",
-                                type="number" if typ in (int, float) else "text",
-                            )
-            with Horizontal(classes="ms-row"):
-                with Vertical(classes="ms-field"):
-                    yield Label("[b]Streaming[/b]")
-                    yield Switch(id="ms-streaming", value=cur.streaming)
-            with Horizontal(id="ms-buttons"):
-                yield Button("Save", variant="primary", id="ms-save")
-                yield Button("Cancel", variant="default", id="ms-cancel")
+                    with Vertical(classes="ms-field"):
+                        yield Label("[b]Streaming[/b]")
+                        yield Switch(id="ms-streaming", value=cur.streaming)
+                with Horizontal(id="ms-buttons"):
+                    yield Button("Save", variant="primary", id="ms-save")
+                    yield Button("Cancel", variant="default", id="ms-cancel")
 
     @on(Button.Pressed, "#ms-save")
     def _save(self) -> None:
