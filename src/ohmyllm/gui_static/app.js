@@ -34,7 +34,7 @@ const post = (p, body) => api(p, { method: "POST", body: JSON.stringify(body || 
 const patch = (p, body) => api(p, { method: "PATCH", body: JSON.stringify(body || {}) });
 const del = (p) => api(p, { method: "DELETE" });
 
-function promptModal(title, hint, secret) {
+function promptModal(title, hint, secret, def) {
   return new Promise((resolve) => {
     const m = $("#prompt-modal"), inp = $("#pm-input");
     $("#pm-title").textContent = title;
@@ -52,13 +52,28 @@ function promptModal(title, hint, secret) {
       }
     }
     inp.type = secret ? "password" : "text";
-    inp.value = "";
-    m.hidden = false;
+    inp.value = def || "";
+    m.hidden = false; $("#scrim").hidden = false;
     inp.focus();
-    const done = (val) => { m.hidden = true; $("#pm-ok").onclick = null; $("#pm-cancel").onclick = null; inp.onkeydown = null; resolve(val); };
+    const done = (val) => { m.hidden = true; $("#scrim").hidden = true; $("#pm-ok").onclick = null; $("#pm-cancel").onclick = null; inp.onkeydown = null; resolve(val); };
     $("#pm-ok").onclick = () => done(inp.value.trim());
     $("#pm-cancel").onclick = () => done(null);
     inp.onkeydown = (e) => { if (e.key === "Enter") done(inp.value.trim()); if (e.key === "Escape") done(null); };
+  });
+}
+
+function confirmModal(title, body, okLabel = "Confirm") {
+  return new Promise((resolve) => {
+    const m = $("#confirm-modal");
+    $("#cf-title").textContent = title;
+    $("#cf-body").textContent = body;
+    $("#cf-ok").textContent = okLabel;
+    m.hidden = false; $("#scrim").hidden = false;
+    $("#cf-ok").focus();
+    const done = (val) => { m.hidden = true; $("#scrim").hidden = true; $("#cf-ok").onclick = null; $("#cf-cancel").onclick = null; m.onkeydown = null; resolve(val); };
+    $("#cf-ok").onclick = () => done(true);
+    $("#cf-cancel").onclick = () => done(false);
+    m.onkeydown = (e) => { if (e.key === "Escape") done(false); if (e.key === "Enter") done(true); };
   });
 }
 
@@ -540,11 +555,11 @@ async function renderChats() {
       if (btn.classList.contains("pin")) { await patch(`/api/chats/${r.id}`, { pinned: !r.pinned }); renderChats(); }
       if (btn.classList.contains("exp")) { const res = await post(`/api/chats/${r.id}/export`, { format: "markdown" }); toast(`exported → ${res.path}`); }
       if (btn.classList.contains("ren")) {
-        const t = prompt("New title:", r.title);
+        const t = await promptModal("rename chat", "New title:", false, r.title);
         if (t) { await patch(`/api/chats/${r.id}`, { title: t }); renderChats(); }
       }
       if (btn.classList.contains("del")) {
-        if (confirm(`Move "${r.title}" to trash? (exports a backup first)`)) { await del(`/api/chats/${r.id}`); renderChats(); toast("moved to trash"); }
+        if (await confirmModal("move to trash", `Move "${r.title}" to trash? (exports a backup first)`, "Move to trash")) { await del(`/api/chats/${r.id}`); renderChats(); toast("moved to trash"); }
       }
     };
     card.onkeydown = (e) => { if (e.key === "Enter") openChat(r.id); };
@@ -825,7 +840,7 @@ $("#model-sort").onchange = renderModels;
 $("#model-backend").onchange = renderModels;
 $("#model-search").oninput = debounce(renderModels, 200);
 $("#models-pull").onclick = async () => {
-  const name = prompt("Ollama model tag to pull (e.g. qwen2.5:7b-instruct):");
+  const name = await promptModal("pull model", "Ollama model tag to pull (e.g. qwen2.5:7b-instruct):");
   if (!name) return;
   const bar = $("#pull-bar"); bar.hidden = false; bar.value = 0;
   try {
@@ -896,7 +911,7 @@ async function renderSoul() {
 }
 $("#soul-save").onclick = async () => { await post("/api/soul", { action: "write", text: $("#soul-editor").value }); toast("soul.md saved (backup kept)"); renderSoul(); };
 $("#soul-revert").onclick = async () => { await post("/api/soul", { action: "revert" }); toast("reverted to latest backup"); renderSoul(); };
-$("#soul-clear").onclick = async () => { if (confirm("Clear soul.md? (a backup is kept first)")) { await post("/api/soul", { action: "clear" }); renderSoul(); toast("cleared"); } };
+$("#soul-clear").onclick = async () => { if (await confirmModal("clear soul", "Clear soul.md? (a backup is kept first)", "Clear")) { await post("/api/soul", { action: "clear" }); renderSoul(); toast("cleared"); } };
 
 /* -------------------------------------------------------------- doctor */
 async function renderDoctor() {
@@ -1197,7 +1212,7 @@ async function setModeUi(preset) {
     o.onclick = async () => {
       const mode = o.dataset.m;
       if (mode === "full_access") {
-        const ph = prompt('Type the exact phrase shown in the sidebar ("I ACCEPT FULL ACCESS") to enable full access:');
+        const ph = await promptModal("full access", 'Type the exact phrase shown in the sidebar ("I ACCEPT FULL ACCESS") to enable full access:');
         try { await post("/api/mode", { mode, phrase: ph || "" }); toast("full access enabled"); }
         catch (e) { toast(e.message, "err"); return; }
       } else {
@@ -1376,10 +1391,10 @@ $("#wz-back").onclick = () => { if (wzIdx) { wzIdx--; wzShow(); } };
 
 /* --------------------------------------------------------------- global keys */
 const KEYMAP = { m: "models", b: "backend", p: () => setModeUi(), s: "memory", d: "doctor", g: "settings", o: "chats", h: "help", n: () => newChat(), k: openPalette };
-document.addEventListener("keydown", (e) => {
+document.addEventListener("keydown", async (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.altKey) {
     const k = e.key.toLowerCase();
-    if (k === "q") { e.preventDefault(); if (confirm("Quit the OhMyLLM window?")) window.close(); return; }
+    if (k === "q") { e.preventDefault(); if (await confirmModal("quit", "Quit the OhMyLLM window?", "Quit")) window.close(); return; }
     const fn = KEYMAP[k];
     if (fn) { e.preventDefault(); typeof fn === "function" ? fn() : switchView(fn); }
     if (k === "enter" && $("#view-memory")?.hidden === false) { e.preventDefault(); $("#soul-save").click(); }

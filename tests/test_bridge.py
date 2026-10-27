@@ -119,6 +119,28 @@ def test_static_console_served_with_injected_token(bridge):
             assert r.status == 200 and len(r.read()) > 500
 
 
+def test_gui_uses_styled_modals_not_native_dialogs():
+    """Native prompt()/confirm() pop browser-chrome dialogs: they break the
+    design system and block automation. The app must use its own modals."""
+    import re
+    from pathlib import Path
+    js = (Path(__file__).parent.parent / "src/ohmyllm/gui_static/app.js").read_text()
+    offenders = re.findall(r"(?<!\w)(?:window\.)?(?<!Modal)(prompt|confirm)\s*\(", js)
+    assert not offenders, f"native dialogs in app.js: {offenders}"
+    assert "function promptModal" in js and "function confirmModal" in js
+    html = (Path(__file__).parent.parent / "src/ohmyllm/gui_static/index.html").read_text()
+    assert 'id="confirm-modal"' in html
+
+
+def test_gui_scrollbars_are_themed():
+    """The white native scrollbar clashes with the dark console; CSS must
+    theme both Firefox and WebKit scrollbar rendering."""
+    from pathlib import Path
+    css = (Path(__file__).parent.parent / "src/ohmyllm/gui_static/styles.css").read_text()
+    assert "scrollbar-color" in css and "scrollbar-width" in css
+    assert "::-webkit-scrollbar" in css
+
+
 def test_mode_endpoints_and_phrase_gate(bridge):
     assert bridge.post("/api/mode", {"mode": "strict"})["ok"] is True
     st = bridge.get("/api/status")

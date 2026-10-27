@@ -231,6 +231,13 @@ class SettingsScreen(Screen):
         if event.option_id and event.option_id in THEMES:
             self.app.theme = event.option_id
 
+    @on(OptionList.OptionSelected, "#st-theme-list")
+    def _theme_pick(self, event: OptionList.OptionSelected) -> None:
+        # click / Enter — OptionHighlighted only fires on mouse hover, so
+        # without this the picker looked dead for keyboard and mouse users
+        if event.option_id and event.option_id in THEMES:
+            self.app.theme = event.option_id
+
     def _selected_theme(self) -> str:
         tl = self.query_one("#st-theme-list", OptionList)
         try:

@@ -40,7 +40,7 @@ class ChatsScreen(Screen):
     ]
 
     def compose(self) -> ComposeResult:
-        yield Static("[b]💬 Chats[/] — enter open · n new · r rename · p pin · x delete · e export md · j export json · t pinned-filter · esc back", id="screen-title")
+        yield Static("[b]💬 Chats[/] — enter open · n new · r rename · p pin · x delete · e/j export · t pinned", id="screen-title")
         with Horizontal(id="chats-filters"):
             yield Input(placeholder="search chats…", id="chat-search")
             yield Label(" pinned only:")
@@ -51,11 +51,32 @@ class ChatsScreen(Screen):
 
     def on_mount(self) -> None:
         table = self.query_one("#chats-table", DataTable)
-        table.add_columns("pin", "title", "updated", "backend", "model", "msgs", "workspace", "id")
+        # fixed widths that FIT the viewport: a horizontal overflow would
+        # paint a fat scrollbar bar and clip the id column (user P0)
+        table.add_column("pin", key="pin", width=3)
+        table.add_column("title", key="title")
+        table.add_column("updated", key="updated", width=16)
+        table.add_column("backend", key="backend", width=8)
+        table.add_column("model", key="model", width=12)
+        table.add_column("msgs", key="msgs", width=4)
+        table.add_column("id", key="id", width=12)
+        self._fit_title()
         table.focus()
         self._rows: dict[tuple, str] = {}
         self.refresh_chats()
         self.set_interval(0.5, self._update_preview)
+
+    def on_resize(self, event) -> None:  # noqa: ANN001
+        self._fit_title()
+
+    def _fit_title(self) -> None:
+        try:
+            table = self.query_one("#chats-table", DataTable)
+        except NoMatches:
+            return
+        # 6 fixed cols (3+16+8+12+4+12=55) + 2 padding each (12) + vertical bar (1)
+        # + own border (2) — the table has a solid frame now, not a band
+        table.columns["title"].width = max(16, (table.size.width or 106) - 70)
 
     @work(exclusive=True)
     async def refresh_chats(self) -> None:
@@ -91,7 +112,7 @@ class ChatsScreen(Screen):
             when = datetime.fromtimestamp(s.updated_at).strftime("%Y-%m-%d %H:%M")
             table.add_row(
                 "📌" if s.pinned else "", s.title[:46], when, s.backend or "—",
-                (s.model or "—")[:22], str(s.message_count), _ws_short(s.workspace), s.id,
+                (s.model or "—")[:12], str(s.message_count), s.id[:12],
             )
             self._row_order.append(s.id)
         if self._row_order:
@@ -124,6 +145,7 @@ class ChatsScreen(Screen):
             msg = "no chats stored yet — press n" if not getattr(self, "_row_order", []) else "↑↓ select · enter or double-click opens"
             opts.add_option(Option(f"[dim]{msg}[/dim]", id="np"))
             return
+        opts.add_option(Option(f"[dim]ws:[/] {_ws_short(sess.workspace)}", id="ws"))
         for i, m in enumerate(sess.messages[-3:]):
             role = {"user": "you", "assistant": "model", "tool": "tool"}.get(str(m.get("role")), "?")
             opts.add_option(Option(f"[dim]{role}:[/] {str(m.get('content', ''))[:110]}", id=f"p{i}"))

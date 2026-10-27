@@ -584,35 +584,34 @@ def _truecolor(monkeypatch):
 
 
 @pytest.mark.asyncio()
-async def test_frames_painted_solid_no_glyph_borders(oml_env, svc, monkeypatch):
-    """User P0: dashed glyph frames and grey alpha washes in their terminal.
-
-    The chat screen chrome must paint its ring color as solid background
-    cells and contain ZERO box-drawing/block glyphs anywhere (font breaks
-    them into dashes/tofu)."""
+async def test_frames_are_thin_solid_ring_borders(oml_env, svc, monkeypatch):
+    """User mandate: frames are ─ │  ┐ └  lines in the ring color — the
+    painted padding blocks are banned. The ask-anything box must show a
+    complete four-sided border and its bottom row must never be clipped."""
     _truecolor(monkeypatch)
     app = OhMyLLMApp()
     async with app.run_test(size=(106, 34)) as pilot:
         await pilot.pause(0.8)
         ring = app.get_css_variables()["ring"].lower()
-        segs = list(_segments(app))
-        # no frame glyphs anywhere on a fresh chat screen
-        assert not [seg for seg in segs if set(seg.text) & FRAME_GLYPHS]
-        # the ask-anything box is ringed: ring-colored cells on all four sides
         inp = app.screen.query_one("#chat-input")
-        band = app.screen.query_one("#chat-input-band")
-        assert band.region.height == inp.region.height + 2  # 1-cell padding top+bottom
-        top = segs and any(
-            seg.style and seg.style.bgcolor and (seg.style.bgcolor.name or "").lower() == ring
-            for seg in app.screen._compositor.render_strips()[band.region.y]._segments
-        )
-        assert top, "chat input top frame row is not painted in the ring color"
-        # bottom frame row exists (the old dock bug clipped it)
-        bottom_row = band.region.y + band.region.height - 1
+        strips = app.screen._compositor.render_strips()
+
+        def row(y):
+            return strips[y]._segments
+
+        top = "".join(s.text for s in row(inp.region.y))
+        bot = "".join(s.text for s in row(inp.region.y + inp.region.height - 1))
+        assert "┌" in top and "┐" in top and "─" in top, top
+        assert "└" in bot and "┘" in bot, bot
+        side = "".join(s.text for s in row(inp.region.y + 1))
+        assert "│" in side
         assert any(
-            seg.style and seg.style.bgcolor and (seg.style.bgcolor.name or "").lower() == ring
-            for seg in app.screen._compositor.render_strips()[bottom_row]._segments
-        ), "chat input bottom frame row missing (clipped)"
+            s.style and s.style.color and (s.style.color.name or "").lower() == ring
+            and set(s.text) & set("┌┐└┘─│")
+            for s in row(inp.region.y)
+        ), "border not drawn in the ring color"
+        # the whole box fits on screen (the old dock bug clipped the bottom)
+        assert inp.region.y + inp.region.height <= app.screen.size.height
 
 
 @pytest.mark.asyncio()

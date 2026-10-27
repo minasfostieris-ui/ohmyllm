@@ -73,8 +73,9 @@ class ModelsScreen(Screen):
         except NoMatches:
             return
         # measured: Textual pads every column 2 cells (8 cols = 16) plus the
-        # vertical scrollbar; anything more and the last column clips
-        avail = (t.size.width or 84) - 17
+        # vertical scrollbar (1), the band border (2) and the table's right
+        # margin (1) — anything more and the last column clips
+        avail = (t.size.width or 84) - 20
         fixed = 13 + 5 + 8 + 5 + 5 + 6 + 5
         try:
             t.columns[t.ordered_columns[0].key].width = max(16, avail - fixed)

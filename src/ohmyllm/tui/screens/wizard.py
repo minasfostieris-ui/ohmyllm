@@ -307,7 +307,8 @@ class WizardScreen(Screen):
         self._wizard_modes = [m for m in PermissionMode if m is not PermissionMode.FULL_ACCESS]
         for m in self._wizard_modes:
             color = {PermissionMode.STRICT: "cyan", PermissionMode.SAFE: "blue", PermissionMode.SANDBOXED: "white", PermissionMode.DANGEROUS: "yellow"}[m]
-            ol.add_option(Option(f"[{color}]{m.label}[/]  [dim]{m.description[:80]}[/dim]", id=m.value))
+            desc = " ".join(m.description[:80].split(" ")[:-1])  # word-boundary cut
+            ol.add_option(Option(f"[{color}]{m.label}[/]  [dim]{desc}[/dim]", id=m.value))
         cur = self.app.svc.config.permission_mode
         ol.index = min(self._wizard_modes.index(cur) if cur in self._wizard_modes else len(self._wizard_modes) - 1, len(self._wizard_modes) - 1)
         body.mount(ol)

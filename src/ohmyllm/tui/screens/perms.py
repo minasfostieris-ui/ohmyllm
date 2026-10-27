@@ -5,7 +5,7 @@ from __future__ import annotations
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Horizontal
 from textual.screen import Screen
 from textual.widgets import Label, OptionList, Static, Switch
 from textual.widgets._option_list import Option
@@ -28,10 +28,11 @@ class PermsScreen(Screen):
         yield Static("[b]🔐 Permission modes[/] — enforced by the platform; the model can never change them", id="screen-title")
         yield OptionList(id="mode-list")
         yield Static("", id="mode-desc", classes="detail-box")
-        with Vertical(id="perm-extras"):
-            yield Label("Agent may write memories (soul.md):")
+        with Horizontal(classes="perm-row"):
+            yield Label("Agent may write memories (soul.md): ")
             yield Switch(id="agent-memory-writes", value=True)
-            yield Label("Require explicit user request before saving in strict mode:")
+        with Horizontal(classes="perm-row"):
+            yield Label("Require explicit user request before saving in strict mode: ")
             yield Switch(id="require-explicit", value=False)
 
     def on_mount(self) -> None:

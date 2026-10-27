@@ -4,6 +4,13 @@
 /* dark native widgets: selects, checkboxes, scrollbars, date pickers */
 :root { color-scheme: dark; }
 
+/* themed scrollbars everywhere (Firefox + Chromium) — never the white native bar */
+* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent-deep); }
+
 select {
   appearance: none; -webkit-appearance: none; -moz-appearance: none;
   background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6'><path d='M1 1l4 4 4-4' fill='none' stroke='%239aa' stroke-width='1.5'/></svg>");
@@ -346,6 +353,9 @@ table.grid tr.active td { background: rgba(122,199,159,.07); }
   .msg { grid-template-columns: 1fr; padding: 0 16px; }
   .msg .who { padding-bottom: 2px; }
   .composer { padding: 8px 14px 14px; }
+  .new-chat kbd { display: none; }
+  .new-chat { justify-content: center; font-size: 12px; padding: 6px 4px; white-space: nowrap; }
+  #input { min-height: 66px; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }

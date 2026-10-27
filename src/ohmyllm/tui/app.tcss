@@ -1,15 +1,14 @@
 /* OhMyLLM theme.
-   Rules of the house:
-   - Frames are PAINTED (a container's solid $ring background showing
-     through its 1-cell padding). Border styles (solid/tall/round) are
-     GLYPHS — ─│┌▊▁▃▄ — and the user's terminal font renders them with
-     gaps/tofu. Zero glyph borders in this file.
-   - No alpha washes on backgrounds ($primary 60% over a dark surface
-     composites to grey). Every color is a solid theme variable:
-     $ring (bright accent), $ring-text (dark text on $ring), $tint
-     (solid dark accent), plus Textual's $surface/$panel/$boost.
+   Rules of the house (user mandate, final form):
+   - Frames are THIN box-drawing glyph borders: ─ │ ┌ ┐ └ ┘ (Textual's
+     "solid" style). The painted padding rings read as chunky blocks and
+     the user ordered every one replaced with lines.
+   - No alpha washes on colors; solid theme variables only:
+     $ring (frame/accent), $ring-text (dark text on $ring), $tint
+     (solid dark accent fill), plus Textual's $surface/$panel/$boost.
+     (NO_COLOR used to grey everything — app.py overrides that.)
    - Band children use width: 1fr (100% over-resolves and paints over
-     the band's right padding column — proven in the user's terminal).
+     the band's right border — proven in the user's terminal).
    - Textual 8.2.8 renders scrollbar thumbs from the CONTAINER's
      scrollbar-* styles, so they live on the container selectors. */
 
@@ -72,22 +71,24 @@ VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
     overflow: hidden;
 }
 
-/* the ask-anything box: painted solid-cyan frame, never clipped —
-   flow layout (no dock) so the status bar can never overdraw its
-   bottom edge */
-#chat-input-band { height: auto; }
-#chat-input { width: 1fr; background: $surface; color: $text; }
+/* the ask-anything box: thin solid-cyan ┌─┐ frame with a 1-cell margin so
+   it never touches the screen edge; flow layout (no dock) so the status
+   bar can never overdraw its bottom border */
+#chat-input-band { height: auto; background: transparent; border: none; padding: 0; }
+#chat-input { border: solid $ring; margin: 0 1; background: $surface; color: $text; }
 
 /* ---------- generic screens ---------- */
+#chat-title { height: 1; padding: 0 2; color: $accent; }
 #screen-title { height: 1; padding: 0 2; color: $accent; text-style: bold; }
 .detail-box {
     height: auto; max-height: 38%; padding: 0 1; color: $text-muted;
-    overflow-y: auto;
+    overflow-y: auto; border: solid $ring;
 }
-#models-band { height: 1fr; width: 100%; padding: 1 2 1 1; }
-/* .band = painted ring: solid $ring background through 1-cell padding */
-.band { background: $ring; padding: 1; height: auto; overflow: hidden; }
-DataTable { height: 1fr; width: 1fr; background: $surface; }
+#models-band { height: 1fr; width: 100%; }
+/* .band = thin solid-cyan box frame: ┌ ─ ┐ │ └ ┘ */
+.band { border: solid $ring; background: transparent; padding: 0; height: auto; overflow: hidden; }
+DataTable { height: 1fr; width: 1fr; background: $surface; margin-right: 1; }
+#chats-table { margin: 0 1; border: solid $ring; }
 DataTable > .datatable--header { background: $tint; color: $text; }
 DataTable > .datatable--cursor { background: $ring; color: $ring-text; }
 DataTable > .datatable--hover { background: $tint; }
@@ -100,7 +101,7 @@ DataTable > .datatable--hover { background: $tint; }
     align: center middle;
 }
 
-.band-warning { background: $warning; max-width: 112; }
+.band-warning { border: solid $warning; background: transparent; max-width: 112; }
 #approval-box {
     width: 1fr;
     height: auto;
@@ -137,20 +138,21 @@ DataTable > .datatable--hover { background: $tint; }
 .modal-hint { color: $text-muted; margin-bottom: 1; }
 .modal-buttons { height: auto; align-horizontal: right; padding-top: 1; }
 
-.band-danger { background: $error; }
+.band-danger { border: solid $error; background: transparent; }
 
-.code-block { height: auto; max-height: 30%; background: $tint; padding: 0 1; }
+.code-block { height: auto; max-height: 30%; background: $surface; padding: 0 1; }
 .preview-block { max-height: 45%; }
 
 /* ---------- model settings modal ---------- */
 #model-settings-modal {
     align: center middle;
 }
-#ms-band { width: 100; max-width: 92%; }
+#ms-band { width: 100; max-width: 92%; height: 92%; }
 #model-settings-box {
-    width: 1fr; height: auto;
+    width: 1fr; height: 100%;
     background: $surface; padding: 1 2;
 }
+#ms-scroll { height: 1fr; }
 .ms-title { margin-bottom: 1; }
 .ms-row { height: auto; }
 .ms-field { width: 1fr; height: auto; margin-right: 2; }
@@ -159,7 +161,7 @@ DataTable > .datatable--hover { background: $tint; }
 
 /* ---------- settings ---------- */
 #settings-body { padding: 0 2 1 2; align-horizontal: center; }
-.st-section { height: auto; width: 100%; max-width: 110; background: $tint; padding: 1 2; margin: 0 0 1 0; }
+.st-section { height: auto; width: 100%; max-width: 110; border: solid $ring; background: $surface; padding: 1 2; margin: 0 0 1 0; }
 .st-title { color: $accent; text-style: bold; }
 .st-desc { color: $text-muted; }
 .st-label { color: $text-muted; padding-top: 1; }
@@ -179,12 +181,12 @@ HelpMarkdown { padding: 1 3; }
 /* ---------- memory ---------- */
 #soul-area { height: 1fr; width: 1fr; background: $surface; }
 #memory-buttons { height: auto; }
-#recent-memory { height: 8; color: $text-muted; background: $tint; padding: 1 2; }
+#recent-memory { height: 8; color: $text-muted; background: $surface; padding: 1 2; }
 
 /* ---------- inputs & chips: painted, no glyph frames ---------- */
-Input { margin: 0 1; border: none; background: $boost; color: $text; }
-Input:focus { background: $tint; }
-#chat-input, #chat-input:focus { margin: 0; border: none; background: $surface; }
+Input { margin: 0 1; border: none; background: $surface; color: $text; }
+Input:focus { background: $boost; }
+#chat-input:focus { border: solid $ring; background: $surface; }
 
 OptionList { border: none; background: $surface; }
 OptionList > .option-list--option-highlighted { background: $tint; }
@@ -194,8 +196,13 @@ TextArea { border: none; }
 
 Tooltip { border: none; background: $boost; color: $text; }
 
-CommandPalette { padding: 1; background: $ring; }
+CommandPalette { width: 70%; min-width: 50; height: 60%; min-height: 10; border: solid $ring; background: $surface; padding: 1; }
 CommandPalette > * { background: $surface; }
+
+/* perms: whole screen scrolls so the detail box never clips at 34 rows */
+PermsScreen { overflow-y: auto; }
+#mode-list { height: auto; max-height: 10; }
+.perm-row { height: 1; margin-top: 1; }
 
 /* ---------- slash command menu ---------- */
 #slash-band { display: none; margin: 0 2; }
@@ -206,8 +213,8 @@ CommandPalette > * { background: $surface; }
 }
 
 /* markdown furniture: painted, never glyph bars */
-MarkdownBlockQuote > BlockQuote { border: none; background: $tint; padding: 0 1; }
-Collapsible { border: none; margin-top: 1; }
+MarkdownBlockQuote > BlockQuote { border-left: solid $ring; background: transparent; padding: 0 1; }
+Collapsible { border-top: solid $ring; margin-top: 1; }
 .msg-file { padding: 0 0 0 2; }
 .msg-file-live { padding: 0 2 1 2; }
 
@@ -216,8 +223,8 @@ Collapsible { border: none; margin-top: 1; }
 .card-buttons { height: auto; }
 
 /* ---------- switches: painted track, no glyph frame ---------- */
-Switch { border: none; background: $boost; padding: 0 1; margin-right: 1; }
-Switch > .switch--slider { color: $text-muted; }
+Switch { border: none; background: $panel; padding: 0 1; margin-right: 1; }
+Switch > .switch--slider { color: $text; }
 Switch.-on { background: $tint; }
 Switch.-on > .switch--slider { color: $ring; }
 Switch:focus { background: $ring; }
@@ -232,3 +239,9 @@ Button.-primary { background: $ring; color: $ring-text; }
 Button.-primary:hover { background: $secondary; color: $ring-text; }
 Button.-error { background: $error; color: $text; }
 Button.-error:hover { background: $warning; color: $ring-text; }
+/* success/warning variants (approval modal) — app CSS outranks the widget
+   defaults, so they must be styled here or they render as plain chips */
+Button.-success { background: $success; color: #04240f; }
+Button.-success:hover { text-style: bold underline; }
+Button.-warning { background: $warning; color: #2b1d02; }
+Button.-warning:hover { text-style: bold underline; }

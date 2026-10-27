@@ -235,11 +235,14 @@ class ChatScreen(Screen):
             title = self.query_one("#chat-title", Static)
         except NoMatches:  # screen replaced mid-turn — children are gone
             return
+        hints = "  ·  ctrl+K · F2 chats" if self.size.width >= 100 else ""
         title.update(
             f"[bold]💬 {sess.title[:70]}[/]  [dim]·  {cfg.default_backend.value}:{sess.model or '—'}"
-            f"  ·  mode {cfg.permission_mode.value}  ·  {sess.message_count} msgs  ·  {saved}"
-            f"  ·  ctrl+K palette · F2 chats[/dim]"
+            f"  ·  mode {cfg.permission_mode.value}  ·  {sess.message_count} msgs  ·  {saved}{hints}[/dim]"
         )
+
+    def on_resize(self, event) -> None:
+        self._refresh_title()
 
     def _push_status(self) -> None:
         bar = self.query(StatusBar)
