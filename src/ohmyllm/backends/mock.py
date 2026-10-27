@@ -28,6 +28,7 @@ _PROJECT_RX = re.compile(r"(?:working on|building|creating)\s+(?:a|an)?\s*(.+?)(
 _REMEMBER_RX = re.compile(r"\bremember[:\s]+(?:that\s+)?(.+)", re.IGNORECASE)
 _FORGET_RX = re.compile(r"\bforget (?:that |about )?(.+)", re.IGNORECASE)
 _FILE_RX = re.compile(r"""create (?:a |the )?file (?P<path>[\w./-]+)(?: with(?: the)? content (?P<content>"[^"]*"|'[^']*'))?""", re.IGNORECASE)
+_READ_RX = re.compile(r"""read (?:the file )?['"`]?([\w./-]+\.\w+)['"`]?""", re.IGNORECASE)
 
 
 class MockBackend(BaseBackend):
@@ -154,6 +155,12 @@ class MockBackend(BaseBackend):
                 "id": "call_file", "type": "function",
                 "function": {"name": "write_file", "arguments": {"path": m.group("path"),
                                                                   "content": content or "hello from the mock"}},
+            })
+        m = _READ_RX.search(user_text)
+        if m:
+            calls.append({
+                "id": "call_read", "type": "function",
+                "function": {"name": "read_file", "arguments": {"path": m.group(1)}},
             })
         m = _PET_RX.search(user_text)
         if m:

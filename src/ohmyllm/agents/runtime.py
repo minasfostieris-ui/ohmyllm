@@ -473,11 +473,46 @@ class AgentRuntime:
             emit({"type": "memory_activity", "tool": name, "ok": tool_result.ok})
         if cache is not None:
             cache[cache_key] = out_text[:2500]
+        # media tool results: images ride the conversation as a follow-up
+        # USER message (no backend carries images on tool messages). Attach
+        # only when the active model can actually see; otherwise the model
+        # gets an honest text note instead of a broken turn.
+        media_imgs: list[str] = list(tool_result.meta.get("images") or []) if tool_result.ok else []
+        if media_imgs:
+            from ..vision import cached_verdict, probe_vision, save_verdict
+
+            can = cached_verdict(self.backend.name.value, model)
+            if can is None:
+                try:  # one-shot verify — the same probe the Models screen
+                    # (v key) runs; persist the verdict so the cost is once
+                    # per model, not once per media file
+                    can = await probe_vision(self.backend, model, timeout=120.0)
+                    save_verdict(f"{self.backend.name.value}:{model}", can)
+                except Exception:  # noqa: BLE001 - unverifiable → don't risk a broken turn
+                    can = False
+            if not can:
+                out_text += (
+                    f"\n⚠ image/frame content NOT shown: model '{model}' cannot see images "
+                    "(vision unsupported or unverified). Tell the user to switch to a vision "
+                    "model (Models screen) if they need this media described."
+                )
+                media_imgs = []
         session.add_message("tool", _clip_headtail(out_text, 3000), name=name, tool_call_id=call.id)
+        if media_imgs:
+            parts: Any = [{
+                "type": "text",
+                "text": f"📷 visual content from the {name} tool call "
+                        f"({tool_result.meta.get('media', 'image')}): {out_text[:200]}",
+            }]
+            parts += [{"type": "image_url", "image_url": {"url": u}} for u in media_imgs[:8]]
+            session.add_message("user", parts)
         session.record_tool(name, args, "ok" if tool_result.ok else "error", outcome.value, duration, tool_result.error)
         result.calls.append({"name": name, "status": "ok" if tool_result.ok else "error", "approval": outcome.value, "args": args, "risk": decision.risk, "duration_ms": duration})
         self._audit(name, args, outcome.value, tool_result.ok, started, mode, model, error=tool_result.error)
-        emit({"type": "tool_result", "name": name, "ok": tool_result.ok, "approval": outcome.value, "output": out_text[:4000], "duration_ms": duration, "call_id": call.id, "file": tool_result.meta or None})
+        meta_public = {k: v for k, v in (tool_result.meta or {}).items() if k != "images"}
+        if tool_result.meta.get("images"):
+            meta_public["images"] = len(tool_result.meta["images"])  # never ship base64 into UI events
+        emit({"type": "tool_result", "name": name, "ok": tool_result.ok, "approval": outcome.value, "output": out_text[:4000], "duration_ms": duration, "call_id": call.id, "file": meta_public or None})
 
     # ------------------------------------------------------------- plumbing
 

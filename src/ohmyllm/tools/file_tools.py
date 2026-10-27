@@ -8,7 +8,7 @@ import fnmatch
 import os
 from pathlib import Path
 
-from .. import paths
+from .. import media, paths
 from .spec import ToolContext, ToolResult
 
 READ_CAP = 64_000
@@ -29,10 +29,13 @@ def rel(ctx: ToolContext, p: Path) -> str:
         return str(p)
 
 
-def read_file(ctx: ToolContext, args: dict) -> ToolResult:
+async def read_file(ctx: ToolContext, args: dict) -> ToolResult:
     p = resolve(ctx, args.get("path", ""))
     if not p.is_file():
         return ToolResult(False, "", f"not a file: {rel(ctx, p)}")
+    kind = media.classify(p)
+    if kind != "text":
+        return await _read_media(ctx, p, kind)
     offset = int(args.get("offset") or 1)
     limit = int(args.get("max_lines") or 400)
     try:
@@ -47,6 +50,91 @@ def read_file(ctx: ToolContext, args: dict) -> ToolResult:
     if len(out) > READ_CAP:
         out = out[:READ_CAP] + "\n…[truncated]"
     return ToolResult(True, out)
+
+
+async def _read_media(ctx: ToolContext, p: Path, kind: str) -> ToolResult:
+    """Images/audio/video for the model. Frames & images land in
+    ToolResult.meta["images"] — the runtime attaches them ONLY if the
+    active model is vision-capable and converts them into a follow-up
+    user message (tool messages cannot carry images on any backend)."""
+    import shutil
+    import tempfile
+
+    if kind == "binary":
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = -1
+        return ToolResult(False, "", f"{rel(ctx, p)} is a binary file ({size} bytes) — no text, image, audio or video decoder applies")
+    try:
+        size = p.stat().st_size
+    except OSError as exc:
+        return ToolResult(False, "", f"stat failed: {exc}")
+    if size > media.MAX_MEDIA_BYTES:
+        return ToolResult(False, "", f"{rel(ctx, p)} is {size / 2**30:.1f} GiB — too large to read")
+
+    if kind == "image":
+        if size > media.MAX_IMAGE_BYTES:
+            return ToolResult(False, "", f"{rel(ctx, p)} is {size / 2**20:.0f} MB — over the {media.MAX_IMAGE_BYTES // 2**20} MB image cap")
+        url = media.image_data_url(p)
+        if not url:
+            return ToolResult(False, "", f"could not encode {rel(ctx, p)} as an image")
+        return ToolResult(
+            True, f"image {rel(ctx, p)} ({size // 1024} KB) loaded",
+            meta={"media": "image", "path": str(p), "images": [url]},
+        )
+
+    if kind == "audio":
+        text, err = await media.transcribe_file(p)
+        if err:
+            return ToolResult(False, "", f"audio {rel(ctx, p)}: {err}")
+        if not text:
+            return ToolResult(True, f"audio {rel(ctx, p)}: transcription succeeded but nothing was heard")
+        out = f"transcript of audio {rel(ctx, p)} (speech-to-text):\n{text}"
+        if len(out) > READ_CAP:
+            out = out[:READ_CAP] + "\n…[truncated]"
+        return ToolResult(True, out, meta={"media": "audio", "path": str(p)})
+
+    # video: sampled frames (+ audio-track transcript)
+    workdir = Path(tempfile.mkdtemp(prefix="oml-video-"))
+    try:
+        frames, ferr = await media.video_frames(p)
+        dur = await media.probe_duration(p)
+        transcript = ""
+        terr = None
+        audio_wav, _ = await media.extract_audio_stream(p, workdir)
+        has_audio = audio_wav is not None
+        if audio_wav is not None:
+            from .. import voice
+
+            engine, _why = voice.pick_engine()
+            if engine:
+                text, terr = await voice.transcribe(audio_wav)
+                transcript = (text or "").strip()
+            else:
+                terr = "no STT engine — video audio not transcribed"
+        note = media.human_media_summary(p, "video", dur, len(frames), has_audio)
+        if ferr:
+            return ToolResult(False, "", f"video {rel(ctx, p)}: {ferr}")
+        urls: list[str] = []
+        for f in frames:
+            try:
+                if f.stat().st_size <= media.MAX_IMAGE_BYTES:
+                    u = media.image_data_url(f)
+            except OSError:
+                u = None
+            if u:
+                urls.append(u)
+        out = f"{note}."
+        if transcript:
+            out += f"\nvideo transcript (speech-to-text):\n{transcript}"
+        elif terr:
+            out += f"\n[audio: {terr}]"
+        if not urls:
+            out += "\n⚠ no frames could be attached"
+        return ToolResult(True, out[:READ_CAP], meta={"media": "video", "path": str(p), "images": urls})
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
 
 
 def list_dir(ctx: ToolContext, args: dict) -> ToolResult:

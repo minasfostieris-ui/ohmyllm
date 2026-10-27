@@ -77,7 +77,7 @@ SPECS: list[ToolSpec] = [
         soul_forget, examples='{"query": "rabbit"}',
     ),
     ToolSpec(
-        "read_file", "Read a text file (line-numbered, capped).",
+        "read_file", "Read a file: text (line-numbered), images, audio (transcribed) and video (sampled frames + audio transcript) — media is shown when the model supports it.",
         [arg("path", "string", "file path"),
          arg("offset", "integer", "1-based start line", required=False),
          arg("max_lines", "integer", "lines to return (default 400)", required=False)],
