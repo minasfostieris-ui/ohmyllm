@@ -167,15 +167,21 @@ DataTable > .datatable--hover { background: $tint; }
 #ms-buttons { height: auto; align-horizontal: right; padding-top: 1; }
 
 /* ---------- settings ---------- */
-#settings-body { padding: 0 2 1 2; align-horizontal: center; }
-.st-section { height: auto; width: 100%; max-width: 110; border: solid $ring; background: $surface; padding: 1 2; margin: 0 0 1 0; }
-.st-title { color: $accent; text-style: bold; }
-.st-desc { color: $text-muted; }
-.st-label { color: $text-muted; padding-top: 1; }
-.st-row { height: auto; }
-.st-field { width: 1fr; height: auto; margin-right: 2; }
-.st-field:last-child { margin-right: 0; }
-#st-theme-list { height: 8; width: 1fr; }
+/* ---------- settings: OMP-style tab bar + flat key/value rows ---------- */
+#settings-body { padding: 0 2 1 2; }
+#settings-tabs { height: 2; width: 100%; margin-bottom: 1; }
+#settings-actions { height: auto; margin-top: 1; }
+.st-tab { height: 2; min-width: 0; padding: 0 1; margin: 0 1 0 0; background: transparent; color: $text-muted; border: none; text-style: bold; }
+.st-tab:hover { color: $text; }
+.st-tab.-active { background: $ring; color: $ring-text; }
+.st-page { display: none; width: 100%; height: auto; }
+.st-page.-show { display: block; }
+.st-row2 { height: 1; width: 100%; margin-bottom: 1; }
+.st-k { width: 36; color: $text; }
+.st-inline-hint { color: $text-muted; }
+.st-desc { color: $text-muted; margin-bottom: 1; }
+#st-desc-focused { height: 1; color: $text-muted; margin-top: 1; }
+#st-theme-list { height: 8; width: 1fr; margin-bottom: 1; }
 
 /* ---------- wizard ---------- */
 #wizard-body { height: 1fr; padding: 1 2; }

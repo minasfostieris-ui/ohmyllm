@@ -1,4 +1,6 @@
-"""Settings screen: every config surface, grouped into labeled sections."""
+"""Settings screen: OMP-style tabs across the top, one flat key/value column,
+a description line for the focused field. All field ids are mounted at all
+times (inactive tabs are display:none) so validation and tests keep working."""
 
 from __future__ import annotations
 
@@ -6,12 +8,33 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.events import Focus
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, OptionList, Static, Switch
 from textual.widgets._option_list import Option
 
 from ...config import Config
 from ..themes import THEME_ORDER, THEMES, resolve_theme
+
+# (key, tab label) — order is the tab bar order
+_TABS = [
+    ("model", "Model"),
+    ("ollama", "Ollama"),
+    ("lmstudio", "LM Studio"),
+    ("generation", "Generation"),
+    ("agent", "Agent"),
+    ("memory", "Memory"),
+    ("safety", "Safety"),
+    ("guard", "Guard"),
+    ("ui", "UI"),
+]
+
+# id -> description shown in the footer line when the field takes focus
+_DESCS: dict[str, str] = {}
+
+
+def _desc(fid: str, text: str) -> None:
+    _DESCS[fid] = text
 
 
 def _field(
@@ -22,165 +45,170 @@ def _field(
     hint: str = "",
     placeholder: str = "",
     number: bool = False,
-) -> list[Label | Input]:
-    """One labeled input: a caption above the box so fields are identifiable
-    without focusing each one."""
-    text = f"[b]{label}[/b]" + (f"  [dim]{hint}[/dim]" if hint else "")
+) -> list[Horizontal]:
+    """One flat row: bold label column + input column (OMP key/value style)."""
+    _desc(fid, hint or label)
     return [
-        Label(text, classes="st-label"),
-        Input(value=value, id=fid, placeholder=placeholder, type="number" if number else "text"),
+        Horizontal(
+            Label(f"[b]{label}[/b]", classes="st-k"),
+            Input(value=value, id=fid, placeholder=placeholder,
+                  type="number" if number else "text"),
+            classes="st-row2",
+        )
     ]
 
 
-def _switch(label: str, sid: str, value: bool, hint: str = "") -> list[Label | Switch]:
-    text = f"[b]{label}[/b]" + (f"  [dim]{hint}[/dim]" if hint else "")
-    return [Label(text, classes="st-label"), Switch(id=sid, value=value)]
+def _switch(label: str, sid: str, value: bool, hint: str = "") -> list[Horizontal]:
+    _desc(sid, hint or label)
+    return [Horizontal(Label(f"[b]{label}[/b]", classes="st-k"),
+                       Switch(id=sid, value=value), classes="st-row2")]
 
 
 class SettingsScreen(Screen):
-    BINDINGS = [Binding("escape", "close", "Back")]
+    BINDINGS = [
+        Binding("escape", "close", "Back"),
+        Binding("left", "prev_tab", "Prev tab", priority=False),
+        Binding("right", "next_tab", "Next tab", priority=False),
+        Binding("ctrl+s", "save", "Save", priority=True),
+    ]
 
     def compose(self) -> ComposeResult:
         cfg = self.app.svc.config
         with VerticalScroll(id="settings-body", classes="screen-body"):
             yield Static(
-                "[b]⚙ Settings[/]  [dim]esc leaves without saving · Save validates everything[/dim]",
+                "[b]⚙ Settings[/]  [dim]←/→ switch tabs · ↑/↓ move · "
+                "esc leaves without saving · Save validates everything[/dim]",
                 id="screen-title",
             )
+            with Horizontal(id="settings-tabs"):
+                for key, label in _TABS:
+                    yield Button(label, id=f"st-tab-{key}", classes="st-tab")
 
-            # ------------------------------------------------ backend & model
-            with Vertical(classes="st-section"):
-                yield Static("Backend & model", classes="st-title")
+            # ------------------------------------------------------ Model tab
+            with Vertical(id="st-page-model", classes="st-page -show"):
                 yield Static("Which server answers, and which model is the default. "
-                             "Ctrl+B switches backend, Ctrl+M manages models.", classes="st-desc")
+                             "Ctrl+B switches backend, Ctrl+M manages models.",
+                             classes="st-desc")
                 yield from _field("Backend", "st-default_backend", cfg.default_backend.value,
-                                  hint="ollama | lmstudio | cloud")
+                                  hint="ollama | lmstudio | mock")
                 yield from _field("Ollama default model", "st-ollama_default",
                                   cfg.ollama.default_model or "",
-                                  placeholder="e.g. qwen2.5:7b-instruct")
+                                  placeholder="e.g. qwen2.5:7b-instruct",
+                                  hint="model ollama uses for new chats")
                 yield from _field("LM Studio default model", "st-lms_default",
                                   cfg.lmstudio.default_model or "",
-                                  placeholder="e.g. gpt-oss-20b…")
+                                  placeholder="e.g. gpt-oss-20b…",
+                                  hint="model LM Studio uses for new chats")
 
-            # ------------------------------------------------------ ollama
-            with Vertical(classes="st-section"):
-                yield Static("Ollama server", classes="st-title")
+            # ----------------------------------------------------- Ollama tab
+            with Vertical(id="st-page-ollama", classes="st-page"):
                 yield from _field("Host", "st-ollama_host", cfg.ollama.host,
-                                  hint="where the API listens")
+                                  hint="where the ollama API listens")
                 yield from _field("Binary", "st-ollama_binary", cfg.ollama.binary,
                                   hint="path to the ollama executable")
-                with Horizontal(classes="st-row"):
-                    with Vertical(classes="st-field"):
-                        yield from _switch("Auto-start server", "st-ollama_autostart",
-                                           cfg.ollama.auto_start)
-                    with Vertical(classes="st-field"):
-                        yield from _field("Startup timeout (s)", "st-ollama_timeout",
-                                          str(cfg.ollama.startup_timeout), number=True)
+                yield from _switch("Auto-start server", "st-ollama_autostart",
+                                   cfg.ollama.auto_start,
+                                   hint="start ollama serve when it is not running")
+                yield from _field("Startup timeout (s)", "st-ollama_timeout",
+                                  str(cfg.ollama.startup_timeout), number=True,
+                                  hint="seconds to wait for the server")
 
-            # ------------------------------------------------------ lm studio
-            with Vertical(classes="st-section"):
-                yield Static("LM Studio server", classes="st-title")
+            # --------------------------------------------------- LM Studio tab
+            with Vertical(id="st-page-lmstudio", classes="st-page"):
                 yield from _field("Base URL", "st-lms_url", cfg.lmstudio.base_url,
                                   hint="http://…:1234")
-                yield from _field("App path", "st-lms_binary", cfg.lmstudio.binary_path or "",
+                yield from _field("App path", "st-lms_binary",
+                                  cfg.lmstudio.binary_path or "",
                                   hint="(optional) path to LM Studio, enables lms CLI")
                 yield from _switch("Auto-start server", "st-lms_autostart",
-                                   cfg.lmstudio.auto_start)
+                                   cfg.lmstudio.auto_start,
+                                   hint="launch LM Studio when it is not running")
 
-            # ----------------------------------------------------- generation
-            with Vertical(classes="st-section"):
-                yield Static("Generation defaults", classes="st-title")
+            # ------------------------------------------------- Generation tab
+            with Vertical(id="st-page-generation", classes="st-page"):
                 yield Static("Applied to every model unless overridden per model "
                              "(Ctrl+M → s).", classes="st-desc")
-                with Horizontal(classes="st-row"):
-                    with Vertical(classes="st-field"):
-                        yield from _field("Temperature", "st-temperature",
-                                          str(cfg.generation.temperature), number=True)
-                    with Vertical(classes="st-field"):
-                        yield from _field("Top-p", "st-top_p", str(cfg.generation.top_p), number=True)
-                    with Vertical(classes="st-field"):
-                        yield from _field("Top-k", "st-top_k", str(cfg.generation.top_k), number=True)
-                    with Vertical(classes="st-field"):
-                        yield from _field("Repeat penalty", "st-repeat_penalty",
-                                          str(cfg.generation.repeat_penalty), number=True)
-                with Horizontal(classes="st-row"):
-                    with Vertical(classes="st-field"):
-                        yield from _field("Context (tokens)", "st-num_ctx",
-                                          str(cfg.generation.num_ctx), number=True)
-                    with Vertical(classes="st-field"):
-                        yield from _field("GPU layers", "st-num_gpu",
-                                          str(cfg.generation.num_gpu), number=True,
-                                          hint="-1 = all")
-                    with Vertical(classes="st-field"):
-                        yield from _field("Max reply tokens", "st-max_tokens",
-                                          str(cfg.generation.max_tokens), number=True)
-                    with Vertical(classes="st-field"):
-                        yield from _field("Seed", "st-seed", str(cfg.generation.seed),
-                                          number=True, hint="0 = random")
-                with Horizontal(classes="st-row"):
-                    with Vertical(classes="st-field"):
-                        yield from _field("Threads", "st-threads", str(cfg.generation.threads),
-                                          number=True, hint="0 = auto")
-                    with Vertical(classes="st-field"):
-                        yield from _field("Request timeout (s)", "st-gen_timeout",
-                                          str(cfg.generation.timeout), number=True)
-                    with Vertical(classes="st-field"):
-                        yield from _switch("Stream tokens", "st-streaming", cfg.generation.streaming)
-                    with Vertical(classes="st-field"):
-                        yield from _field("Reasoning effort", "st-effort", cfg.generation.effort,
-                                           hint="off|low|medium|high|xhigh|max")
-                    with Vertical(classes="st-field"):
-                        yield from _field("K/V cache quant", "st-kv", cfg.generation.kv_cache,
-                                          hint="f16|q8_0|q4_1|fp8 — smaller = less VRAM")
+                yield from _field("Temperature", "st-temperature",
+                                  str(cfg.generation.temperature), number=True,
+                                  hint="0-2; lower = more deterministic")
+                yield from _field("Top-p", "st-top_p", str(cfg.generation.top_p),
+                                  number=True, hint="nucleus sampling 0-1")
+                yield from _field("Top-k", "st-top_k", str(cfg.generation.top_k),
+                                  number=True, hint="sample from the k best tokens")
+                yield from _field("Repeat penalty", "st-repeat_penalty",
+                                  str(cfg.generation.repeat_penalty), number=True,
+                                  hint="discourage repeating tokens")
+                yield from _field("Context (tokens)", "st-num_ctx",
+                                  str(cfg.generation.num_ctx), number=True,
+                                  hint="prompt + reply window")
+                yield from _field("GPU layers", "st-num_gpu",
+                                  str(cfg.generation.num_gpu), number=True,
+                                  hint="-1 = offload every layer to GPU")
+                yield from _field("Max reply tokens", "st-max_tokens",
+                                  str(cfg.generation.max_tokens), number=True,
+                                  hint="cap on one assistant reply")
+                yield from _field("Seed", "st-seed", str(cfg.generation.seed),
+                                  number=True, hint="0 = random each run")
+                yield from _field("Threads", "st-threads", str(cfg.generation.threads),
+                                  number=True, hint="0 = auto")
+                yield from _field("Request timeout (s)", "st-gen_timeout",
+                                  str(cfg.generation.timeout), number=True,
+                                  hint="seconds before a request fails")
+                yield from _switch("Stream tokens", "st-streaming",
+                                   cfg.generation.streaming,
+                                   hint="show tokens as they are generated")
+                yield from _field("Reasoning effort", "st-effort", cfg.generation.effort,
+                                  hint="off|low|medium|high|xhigh|max")
+                yield from _field("K/V cache quant", "st-kv", cfg.generation.kv_cache,
+                                  hint="f16|q8_0|q4_1|fp8 — smaller = less VRAM")
 
-            # ---------------------------------------------------------- agent
-            with Vertical(classes="st-section"):
-                yield Static("Agent runtime", classes="st-title")
-                with Horizontal(classes="st-row"):
-                    with Vertical(classes="st-field"):
-                        yield from _field("Max tool steps per turn", "st-max_steps",
-                                          str(cfg.agent.max_steps), number=True)
-                    with Vertical(classes="st-field"):
-                        yield from _field("Tool timeout (s)", "st-tool_timeout",
-                                          str(cfg.agent.tool_timeout), number=True)
-                    with Vertical(classes="st-field"):
-                        yield from _field("Native tool calling", "st-native_tools",
-                                          cfg.agent.native_tools, hint="auto | force | off")
-                    yield from _switch("Stream live thinking", "st-thinking_visible",
-                                       cfg.agent.thinking_visible, hint="Ctrl+T in chat")
+            # ----------------------------------------------------- Agent tab
+            with Vertical(id="st-page-agent", classes="st-page"):
+                yield from _field("Max tool steps per turn", "st-max_steps",
+                                  str(cfg.agent.max_steps), number=True,
+                                  hint="how many tool calls one turn may take")
+                yield from _field("Tool timeout (s)", "st-tool_timeout",
+                                  str(cfg.agent.tool_timeout), number=True,
+                                  hint="seconds per tool call")
+                yield from _field("Native tool calling", "st-native_tools",
+                                  cfg.agent.native_tools, hint="auto | force | off")
+                yield from _switch("Stream live thinking", "st-thinking_visible",
+                                   cfg.agent.thinking_visible,
+                                   hint="show the thinking panel in chat (Ctrl+T)")
 
-            # --------------------------------------------------------- memory
-            with Vertical(classes="st-section"):
-                yield Static("Memory (soul.md)", classes="st-title")
-                with Horizontal(classes="st-row"):
-                    with Vertical(classes="st-field"):
-                        yield from _switch("Enabled", "st-mem_enabled", cfg.memory.enabled)
-                    with Vertical(classes="st-field"):
-                        yield from _switch("Agent may write", "st-mem_writes", cfg.memory.agent_writes)
-                    with Vertical(classes="st-field"):
-                        yield from _switch("Explicit /remember only", "st-mem_explicit",
-                                           cfg.memory.require_explicit_save)
-                with Horizontal(classes="st-row"):
-                    with Vertical(classes="st-field"):
-                        yield from _field("Max injected chars", "st-mem_inject",
-                                          str(cfg.memory.max_inject_chars), number=True)
-                    with Vertical(classes="st-field"):
-                        yield from _field("Keep N backups", "st-mem_backups",
-                                          str(cfg.memory.backups_keep), number=True)
+            # ---------------------------------------------------- Memory tab
+            with Vertical(id="st-page-memory", classes="st-page"):
+                yield from _switch("Enabled", "st-mem_enabled", cfg.memory.enabled,
+                                   hint="inject soul.md memory into prompts")
+                yield from _switch("Agent may write", "st-mem_writes",
+                                   cfg.memory.agent_writes,
+                                   hint="let the agent save memories to soul.md")
+                yield from _switch("Explicit /remember only", "st-mem_explicit",
+                                   cfg.memory.require_explicit_save,
+                                   hint="require an explicit user request to save")
+                yield from _field("Max injected chars", "st-mem_inject",
+                                  str(cfg.memory.max_inject_chars), number=True,
+                                  hint="budget for memory text in the prompt")
+                yield from _field("Keep N backups", "st-mem_backups",
+                                  str(cfg.memory.backups_keep), number=True,
+                                  hint="soul.md backups kept on disk")
 
-            # --------------------------------------------------------- safety
-            with Vertical(classes="st-section"):
-                yield Static("Safety", classes="st-title")
-                yield from _switch("Workspace writes need confirmation", "st-safety_confirm",
-                                   cfg.safety.workspace_write_requires_confirmation)
+            # ---------------------------------------------------- Safety tab
+            with Vertical(id="st-page-safety", classes="st-page"):
+                yield from _switch("Workspace writes need confirmation",
+                                   "st-safety_confirm",
+                                   cfg.safety.workspace_write_requires_confirmation,
+                                   hint="ask before writing outside the plan")
                 yield from _switch("Allow http_fetch tool", "st-safety_http",
-                                   cfg.safety.http_fetch_enabled)
-                yield from _switch("Catastrophic override (full_access)", "st-safety_cato",
-                                   cfg.safety.catastrophic_override,
+                                   cfg.safety.http_fetch_enabled,
+                                   hint="let the agent fetch URLs")
+                yield from _switch("Catastrophic override (full_access)",
+                                   "st-safety_cato", cfg.safety.catastrophic_override,
                                    hint="lets full_access bypass the worst-case block")
                 yield from _field("Extra allowed commands", "st-safety_allow",
                                   ", ".join(cfg.safety.command_allowlist_extra),
-                                  hint="comma separated", placeholder="e.g. rg, fd")
+                                  hint="comma separated; e.g. rg, fd",
+                                  placeholder="e.g. rg, fd")
                 yield from _field("Always-denied commands", "st-safety_deny",
                                   ", ".join(cfg.safety.command_denylist),
                                   hint="comma separated")
@@ -188,35 +216,41 @@ class SettingsScreen(Screen):
                                   ", ".join(cfg.safety.allow_sensitive_paths),
                                   hint="comma separated path prefixes")
 
-            # -------------------------------------------------------- guard
-            with Vertical(classes="st-section"):
-                yield Static("Danger guard (Clef-Flash)", classes="st-title")
+            # ----------------------------------------------------- Guard tab
+            with Vertical(id="st-page-guard", classes="st-page"):
                 yield Static("A local decision model flags dangerous tool calls even in "
                              "dangerous/full-access modes. Run it CPU+RAM only: "
                              "llama-server -hf ggml-org/Clef-Flash-GGUF -ngl 0 --port 9931",
                              classes="st-desc")
-                yield from _switch("Guard enabled", "st-guard_on", cfg.guard.enabled)
-                yield from _field("Server URL", "st-guard_url", cfg.guard.base_url)
-                yield from _field("Model", "st-guard_model", cfg.guard.model)
+                yield from _switch("Guard enabled", "st-guard_on", cfg.guard.enabled,
+                                   hint="consult the local danger model")
+                yield from _field("Server URL", "st-guard_url", cfg.guard.base_url,
+                                  hint="where llama-server listens")
+                yield from _field("Model", "st-guard_model", cfg.guard.model,
+                                  hint="guard model name")
                 yield from _field("Danger threshold", "st-guard_thr",
                                   str(cfg.guard.danger_threshold), number=True,
                                   hint="0-1; lower = stricter")
 
-            # ------------------------------------------------- workspace & UI
-            with Vertical(classes="st-section"):
-                yield Static("Workspace & UI", classes="st-title")
+            # -------------------------------------------------------- UI tab
+            with Vertical(id="st-page-ui", classes="st-page"):
                 yield from _field("Workspace root", "st-workspace", cfg.workspace or "",
                                   placeholder=f"(auto: {self.app.svc.workspace})",
                                   hint="blank = auto-detect")
-                yield from _switch("Confirm before quit", "st-confirm_quit", cfg.ui.confirm_quit)
-                yield Label("[b]Theme[/b]  [dim]highlight to preview live · Save keeps it[/dim]",
-                            classes="st-label")
-                yield OptionList(*[Option(n, id=n) for n in THEME_ORDER], id="st-theme-list")
+                yield from _switch("Confirm before quit", "st-confirm_quit",
+                                   cfg.ui.confirm_quit,
+                                   hint="ask before Ctrl+Q leaves")
+                yield Horizontal(Label("[b]Theme[/b]", classes="st-k"),
+                                 Static("[dim]highlight to preview live · Save keeps it[/dim]",
+                                        classes="st-inline-hint"), classes="st-row2")
+                yield OptionList(*[Option(n, id=n) for n in THEME_ORDER],
+                                 id="st-theme-list")
                 yield from _field("Permission mode", "st-mode", cfg.permission_mode.value,
                                   hint="strict | safe | sandboxed | dangerous")
-                yield Static("[dim]full_access must be enabled via Ctrl+P with the confirmation phrase[/dim]",
-                             classes="st-desc")
+                yield Static("[dim]full_access must be enabled via Ctrl+P with the "
+                             "confirmation phrase[/dim]", classes="st-desc")
 
+            yield Static("", id="st-desc-focused")
             with Horizontal(id="settings-actions"):
                 yield Button("Save settings", id="st-save", variant="primary")
                 yield Button("Discard & back", id="st-cancel")
@@ -225,7 +259,45 @@ class SettingsScreen(Screen):
     def on_mount(self) -> None:
         cur = resolve_theme(self.app.svc.config.ui.theme)
         self.query_one("#st-theme-list", OptionList).index = cur
+        self._activate_tab(0)
 
+    # ------------------------------------------------------------- tab logic
+    def _tab_keys(self) -> list[str]:
+        return [k for k, _ in _TABS]
+
+    def _activate_tab(self, idx: int) -> None:
+        keys = self._tab_keys()
+        idx = max(0, min(idx, len(keys) - 1))
+        self._tab_idx = idx
+        for i, (key, _label) in enumerate(_TABS):
+            btn = self.query_one(f"#st-tab-{key}", Button)
+            page = self.query_one(f"#st-page-{key}")
+            btn.set_class(i == idx, "-active")
+            page.set_class(i == idx, "-show")
+
+    @on(Button.Pressed, ".st-tab")
+    def _tab_pressed(self, event: Button.Pressed) -> None:
+        key = event.button.id.removeprefix("st-tab-")
+        self._activate_tab(self._tab_keys().index(key))
+
+    def action_next_tab(self) -> None:
+        self._activate_tab(getattr(self, "_tab_idx", 0) + 1)
+
+    def action_prev_tab(self) -> None:
+        self._activate_tab(getattr(self, "_tab_idx", 0) - 1)
+
+    # --------------------------------------------------------- focus helper
+    @on(Focus)
+    def _focus_gained(self, event: Focus) -> None:
+        wid = getattr(event.sender, "id", None)
+        if isinstance(event.sender, (Input, Switch)) and wid:
+            self._show_desc(wid)
+
+    def _show_desc(self, fid: str | None) -> None:
+        text = _DESCS.get(fid or "", "")
+        self.query_one("#st-desc-focused", Static).update(f"[dim]{text}[/dim]")
+
+    # ---------------------------------------------------------- theme picker
     @on(OptionList.OptionHighlighted, "#st-theme-list")
     def _theme_preview(self, event: OptionList.OptionHighlighted) -> None:
         if event.option_id and event.option_id in THEMES:
@@ -255,6 +327,9 @@ class SettingsScreen(Screen):
             # esc / discard: undo the live theme preview
             self.app.theme = resolve_theme(self.app.svc.config.ui.theme)
         self.app.replace_screen("chat")
+
+    def action_save(self) -> None:
+        self._save()
 
     @on(Button.Pressed, "#st-save")
     def _save(self) -> None:
@@ -364,7 +439,8 @@ class SettingsScreen(Screen):
         self.action_close()
 
     def _show_errors(self, errors: list[str]) -> None:
-        self.query_one("#st-errors", Static).update("[red]" + "\n".join(f"✖ {e}" for e in errors) + "[/red]")
+        self.query_one("#st-errors", Static).update(
+            "[red]" + "\n".join(f"✖ {e}" for e in errors) + "[/red]")
 
 
 def _csv(text: str) -> list[str]:
