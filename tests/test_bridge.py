@@ -201,7 +201,13 @@ def test_cancel_persists_turn_and_unlocks_stream(bridge):
     assert events, "stream must yield events"
     assert events[-1][0] == "done", "cancel must terminate the stream with done"
     assert events[-1][1].get("error") == "cancelled"
+    # busy clears in work()'s finally — a beat after the done event lands
     status = bridge.get("/api/status")
+    for _ in range(50):
+        if status["busy"] is False:
+            break
+        time.sleep(0.1)
+        status = bridge.get("/api/status")
     assert status["busy"] is False, "composer must unlock after cancel"
     chats = bridge.get("/api/chats")["chats"]
     active = [c for c in chats if c["id"] == status["session"]]
