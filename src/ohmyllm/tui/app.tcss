@@ -200,3 +200,12 @@ Collapsible { border-top: solid $primary 40%; }
 
 /* ---------- switches: always legible on/off ---------- */
 Switch { background: $primary 45%; padding: 0 1; margin-right: 1; border: none; }
+/* Buttons ship a `border: tall` glyph frame — dashed in the user's
+   terminal. Painted chip instead: solid background, no glyphs. */
+Button { border: none; background: $boost; color: $text; text-style: bold; padding: 1 2; }
+Button:hover { background: $primary 45%; }
+Button:focus { border: none; background: $primary 60%; color: $text; text-style: bold; }
+Button.-primary { background: $primary 60%; color: $text; }
+Button.-primary:hover { background: $primary 75%; }
+Button.-error { background: $error 60%; color: $text; }
+Button.-error:hover { background: $error 75%; }
