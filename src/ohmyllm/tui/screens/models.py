@@ -45,6 +45,7 @@ class ModelsScreen(Screen):
         Binding("l", "pull", "Pull (Ollama)"),
         Binding("o", "sort_cycle", "Sort"),
         Binding("v", "verify_vision", "Verify vision"),
+        Binding("b", "backend", "Switch backend"),
     ]
 
     def compose(self) -> ComposeResult:
@@ -56,9 +57,9 @@ class ModelsScreen(Screen):
 
     def on_mount(self) -> None:
         t = self.query_one(DataTable)
-        for label, w in (("default", 7), ("model", None), ("size", 9), ("quant", 8),
-                         ("params", 6), ("ctx", 6), ("vram", 9), ("comfort", 9),
-                         ("fit", None), ("tools", None), ("vision", None), ("think", None)):
+        for label, w in (("model", None), ("size · quant", 17), ("params", 6),
+                         ("ctx", 6), ("vram", 9), ("fit", None), ("tools", None),
+                         ("vision", None), ("think", None)):
             t.add_column(label, width=w)
         t.focus()
         self._models: list[ModelInfo] = []
@@ -73,9 +74,38 @@ class ModelsScreen(Screen):
         except NoMatches:
             pass
 
+    def _backend_names(self) -> list[str]:
+        from ...providers import any_key
+
+        cl = self.app.svc.config.cloud
+        names = ["ollama", "lmstudio"]
+        if any_key(cl):
+            names.append("cloud")
+        return names
+
+    def _be_obj(self):
+        return self.app.svc.backend(getattr(self, "_be", "") or None)
+
+    def action_backend(self) -> None:
+        names = self._backend_names()
+        cur = getattr(self, "_be", "") or self.app.svc.config.default_backend.value
+        try:
+            nxt = names[(names.index(cur) + 1) % len(names)]
+        except ValueError:
+            nxt = names[0]
+        self._be = nxt
+        self.app.notify(f"listing [b]{nxt}[/] models")
+        self.refresh_models()
+
     @work(exclusive=True)
     async def refresh_models(self) -> None:
-        be = self.app.svc.backend()
+        be = self._be_obj()
+        try:
+            self.query_one("#screen-title", Static).update(
+                f"[b]🧠 Models[/] · [cyan]{be.display_name}[/] — enter choose · b backend · s settings · "
+                "t test · l pull · r refresh · o sort · v verify vision · / filter · esc back")
+        except NoMatches:
+            pass
         ok, info = await be.health()
         if not ok:
             res = await be.ensure_running()
@@ -124,7 +154,7 @@ class ModelsScreen(Screen):
             cap = {True: "native", False: "text", None: "?"}[m.tool_capable]
             fit = est.status if est else "?"
             style = {"comfortable": "green", "tight": "yellow", "too_large": "red"}.get(fit, "dim")
-            key = self.app.svc.backend_name_str()
+            key = getattr(self, "_be", "") or self.app.svc.backend_name_str()
             tested = vision_cached(key, m.name)
             if m.name in getattr(self, "_probing", set()):
                 vis = "[yellow]⏳ probing[/]"
@@ -140,14 +170,11 @@ class ModelsScreen(Screen):
             th_cell = {"levels": "[green]⚡lvls[/]", "forced": "[cyan]★forced[/]",
                        "on-off": "[yellow]◐switch[/]", "none": "[dim]✗[/]"}.get(th or "", "[dim]?[/]")
             t.add_row(
-                "★" if m.name == cur else "",
-                m.name[:40],
-                human_bytes(m.size_bytes) if m.size_bytes else "?",
-                m.quant or "?",
+                ("★ " if m.name == cur else "") + m.name[:38],
+                f"{human_bytes(m.size_bytes) if m.size_bytes else '?'} · {m.quant or '?'}",
                 f"{m.params_b:g}B" if m.params_b else "?",
                 str(m.ctx_len or "?"),
                 human_bytes(est.min_bytes) if est else "?",
-                human_bytes(est.comfortable_bytes) if est else "?",
                 f"[{style}]{fit}[/]",
                 cap,
                 vis,
@@ -200,7 +227,7 @@ class ModelsScreen(Screen):
     async def _verify(self, name: str) -> None:
         from ...vision import probe_vision, save_verdict
 
-        be = self.app.svc.backend()
+        be = self._be_obj()
         self._status(f"👁 probing [b]{name}[/] — loading it and reading two random numbers "
                      f"(up to a minute on cold models)…")
         try:
@@ -262,7 +289,7 @@ class ModelsScreen(Screen):
 
     @work(exclusive=True)
     async def _test_model(self, m: ModelInfo) -> None:
-        be = self.app.svc.backend()
+        be = self._be_obj()
         gen = self.app.svc.config.settings_for(be.name, m.name)
         t0 = time.perf_counter()
         self._status(f"testing {m.name}…")
@@ -277,7 +304,7 @@ class ModelsScreen(Screen):
 
     def action_pull(self) -> None:
         async def _go() -> None:
-            be = self.app.svc.backend()
+            be = self._be_obj()
             name = await self.app.prompt(f"Pull a model via {be.display_name}", "e.g. qwen2.5:7b-instruct")
             if name:
                 self._pull(name)
@@ -286,7 +313,7 @@ class ModelsScreen(Screen):
 
     @work(exclusive=True)
     async def _pull(self, name: str) -> None:
-        be = self.app.svc.backend()
+        be = self._be_obj()
         bar = self.query_one("#pull-progress", ProgressBar)
         bar.display = True
         self._status(f"pulling {name}…")

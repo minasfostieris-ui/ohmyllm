@@ -577,3 +577,35 @@ async def test_ctrl_v_pastes_into_key_modal(oml_env, svc, monkeypatch):
         await pilot.press("ctrl+v")
         await pilot.pause(0.5)
         assert inp.value == "sk-pasted-123", "ctrl+v paste into Input failed"
+
+
+async def test_models_backend_cycle_and_table_fits(oml_env, svc, monkeypatch):
+    import ohmyllm.voice as _v
+
+    monkeypatch.setattr(_v.shutil, "which", lambda n: None)
+    from textual.widgets import DataTable
+
+    from ohmyllm.tui.app import OhMyLLMApp
+    from ohmyllm.tui.screens.models import ModelsScreen
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause(0.7)
+        app.svc.config.cloud.keys["openrouter"] = "sk-cycle-test"
+        app.replace_screen("models")
+        await pilot.pause(0.8)
+        scr = app.screen
+        assert isinstance(scr, ModelsScreen)
+        assert "cloud" in scr._backend_names()
+        reached = False
+        for _ in range(4):
+            scr.action_backend()
+            if scr._be_obj().name.value == "cloud":
+                reached = True
+                break
+        assert reached, "b-cycle never reached cloud despite a stored key"
+        await pilot.pause(0.5)
+        t = scr.query_one(DataTable)
+        assert len(t.columns) == 9  # compacted table fits narrow terminals
+        title = str(scr.query_one("#screen-title").render())
+        assert "backend" in title.lower()
