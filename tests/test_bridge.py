@@ -209,8 +209,15 @@ def test_cancel_persists_turn_and_unlocks_stream(bridge):
         time.sleep(0.1)
         status = bridge.get("/api/status")
     assert status["busy"] is False, "composer must unlock after cancel"
-    chats = bridge.get("/api/chats")["chats"]
-    active = [c for c in chats if c["id"] == status["session"]]
+    # the session save lands in work()'s finally, just after busy clears —
+    # poll the disk view instead of racing it (Windows runners lost this)
+    active: list = []
+    for _ in range(50):
+        chats = bridge.get("/api/chats")["chats"]
+        active = [c for c in chats if c["id"] == status["session"]]
+        if active and active[0]["messages"] >= 1:
+            break
+        time.sleep(0.1)
     assert active and active[0]["messages"] >= 1, "cancelled turn must be on disk"
 
 
