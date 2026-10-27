@@ -22,7 +22,7 @@ _MODE_ORDER = [
 
 
 class PermsScreen(Screen):
-    BINDINGS = [Binding("escape", "close", "Back"), Binding("enter", "apply", "Apply")]
+    BINDINGS = [Binding("escape", "close", "Back"), Binding("enter", "apply", "Apply", priority=True)]
 
     def compose(self) -> ComposeResult:
         yield Static("[b]🔐 Permission modes[/] — enforced by the platform; the model can never change them", id="screen-title")

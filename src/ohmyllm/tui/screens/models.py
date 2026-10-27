@@ -14,7 +14,7 @@ from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
-from textual.events import Resize
+from textual.events import Key, Resize
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, ProgressBar, Static
 
@@ -46,13 +46,13 @@ def sort_models(models: list[ModelInfo], key: str) -> list[ModelInfo]:
 class ModelsScreen(Screen):
     BINDINGS = [
         Binding("escape", "close", "Back"),
-        Binding("enter", "choose", "Set default"),
+        Binding("enter", "choose", "Set default", priority=True),
         Binding("r", "refresh", "Refresh"),
         Binding("s", "settings", "Model settings"),
         Binding("t", "test", "Test model"),
         Binding("l", "pull", "Pull (Ollama)"),
         Binding("o", "sort_cycle", "Sort"),
-        Binding("v", "verify vision", "Verify vision"),
+        Binding("v", "verify_vision", "Verify vision"),
         Binding("b", "backend", "Filter backend"),
     ]
 
@@ -81,6 +81,27 @@ class ModelsScreen(Screen):
 
     def on_resize(self, event: Resize) -> None:  # noqa: ARG002
         self._fit_columns()
+
+    # keys that belong to commands, not to the filter text
+    _PASS_KEYS = {"enter", "escape", "r", "s", "t", "l", "o", "v", "b"}
+
+    def on_key(self, event: Key) -> None:
+        """'just start typing' made real: the table holds focus, so printable
+        keys are routed into the filter input here; command keys pass
+        through to their bindings untouched."""
+        ch = event.character
+        if ch and ch.isprintable() and event.key not in self._PASS_KEYS:
+            inp = self.query_one("#model-search", Input)
+            inp.value += ch
+            event.stop()
+            return
+        if event.key == "backspace":
+            inp = self.query_one("#model-search", Input)
+            if inp.value:
+                inp.value = inp.value[:-1]
+                event.stop()
+        # everything else (enter, esc, r, s, t, l, o, v, b, cursors…) falls
+        # through untouched to the default handler, which runs the bindings
 
     def on_mount(self) -> None:
         t = self.query_one(DataTable)

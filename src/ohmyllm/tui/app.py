@@ -136,6 +136,9 @@ class OhMyLLMApp(App[None]):
         self.switch_screen(ChatScreen())
         return True
 
+    def action_new_chat(self) -> None:
+        self.new_chat()
+
     def new_chat(self, first_message: str = "") -> None:
         self._stash_draft()
         self.session = self.svc.new_session(first_message)

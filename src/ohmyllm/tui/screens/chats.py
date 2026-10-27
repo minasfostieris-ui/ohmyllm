@@ -29,7 +29,7 @@ def _ws_short(ws: str | None) -> str:
 class ChatsScreen(Screen):
     BINDINGS = [
         Binding("escape", "close", "Back"),
-        Binding("enter", "open", "Open"),
+        Binding("enter", "open", "Open", priority=True),
         Binding("n", "new", "New chat"),
         Binding("r", "rename", "Rename"),
         Binding("p", "pin", "Pin"),

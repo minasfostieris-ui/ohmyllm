@@ -17,7 +17,7 @@ _STEPS = ["Welcome", "Backends detected", "Server", "Models", "Generation", "VRA
 
 
 class WizardScreen(Screen):
-    BINDINGS = [Binding("enter", "next", "Next"),
+    BINDINGS = [Binding("enter", "next", "Next", priority=True),
                 Binding("ctrl+v", "paste", "Paste clipboard"),
                 Binding("escape", "skip", "Skip")]
 
