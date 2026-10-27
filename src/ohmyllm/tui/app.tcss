@@ -18,11 +18,12 @@ Screen { background: $surface; }
 
 /* ---------- chat ---------- */
 #chat-root { width: 100%; height: 1fr; }
-/* Scrollbars: neutral gray thumbs, never the ANSI-blue default (user terminal
-   themes render ansi_blue as a bright cyan bar). Screens scroll fine without
-   a visible bar; these rules only govern where a bar is unavoidable. */
-ScrollBar {
-    background: $surface;
+Screen { scrollbar-size: 0 0; }
+/* Textual 9 paints scrollbars inside the scroll container itself (no
+   ScrollBar child widget), so the scrollbar-* styles must sit on the
+   containers, not a `ScrollBar` selector. */
+VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
+    scrollbar-size: 0 0;
     scrollbar-color: transparent $surface;
     scrollbar-color-hover: transparent $surface;
     scrollbar-color-active: transparent $surface;
@@ -31,13 +32,6 @@ ScrollBar {
     scrollbar-background-active: $primary;
     scrollbar-corner-color: $surface;
 }
-Screen { scrollbar-size: 0 0; }
-/* No scrollbar is ever *rendered* anywhere: the ANSI-blue default thumb and
-   the black corner/track were the artifacts. Scrolling itself is unaffected
-   (cursor keys, j/k, mouse wheel, Home/End all work). */
-VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log { scrollbar-size: 0 0; }
-#history { height: 1fr; padding: 0 2; scrollbar-size: 0 0; overflow-x: hidden; }
-VerticalScroll { overflow-x: hidden; }
 
 #chat-left { width: 1fr; height: 100%; overflow: hidden; }
 
@@ -79,9 +73,9 @@ VerticalScroll { overflow-x: hidden; }
 /* .band = painted ring: the container's background shows through its
    1-cell padding — a continuous solid frame with ZERO font dependency
    (borders/outlines are always glyphs; glyphs break in some terminals). */
-.band { background: $primary 60%; padding: 1; height: auto; }
+.band { background: $primary 60%; padding: 1; height: auto; overflow: hidden; }
 #models-band { height: 1fr; }
-DataTable { height: 100%; width: 100%; background: $surface; scrollbar-size: 0 1; }
+DataTable { height: 1fr; width: 1fr; background: $surface; scrollbar-size: 0 1; }
 
 .screen-body { height: 1fr; }
 
@@ -93,7 +87,7 @@ DataTable { height: 100%; width: 100%; background: $surface; scrollbar-size: 0 1
 
 .band-warning { background: $warning 60%; max-width: 112; }
 #approval-box {
-    width: 100%;
+    width: 1fr;
     height: auto;
     max-height: 88%;
     overflow-y: auto;
@@ -102,21 +96,21 @@ DataTable { height: 100%; width: 100%; background: $surface; scrollbar-size: 0 1
 }
 
 #prompt-box {
-    width: 100%;
+    width: 1fr;
     height: auto;
     background: $surface;
     padding: 1 2;
 }
 
 #confirm-box {
-    width: 100%;
+    width: 1fr;
     height: auto;
     background: $surface;
     padding: 1 2;
 }
 
 #key-modal {
-    width: 100%;
+    width: 1fr;
     height: auto;
     background: $surface;
     padding: 1 2;
@@ -137,8 +131,9 @@ DataTable { height: 100%; width: 100%; background: $surface; scrollbar-size: 0 1
 #model-settings-modal {
     align: center middle;
 }
+#ms-band { width: 100; max-width: 92%; }
 #model-settings-box {
-    width: 100%; height: auto;
+    width: 1fr; height: auto;
     background: $surface; padding: 1 2;
 }
 .ms-title { margin-bottom: 1; }
@@ -166,7 +161,7 @@ DataTable { height: 100%; width: 100%; background: $surface; scrollbar-size: 0 1
 HelpMarkdown { padding: 1 3; }
 
 /* ---------- memory ---------- */
-#soul-area { height: 100%; width: 100%; background: $surface; }
+#soul-area { height: 1fr; width: 1fr; background: $surface; }
 #memory-buttons { height: auto; }
 #recent-memory { height: 8; color: $text-muted; background: $primary 25%; padding: 1 2; }
 
