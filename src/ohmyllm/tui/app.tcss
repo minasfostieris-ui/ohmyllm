@@ -27,9 +27,9 @@ VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
     scrollbar-color: transparent $surface;
     scrollbar-color-hover: transparent $surface;
     scrollbar-color-active: transparent $surface;
-    scrollbar-background: $primary 60%;
-    scrollbar-background-hover: $primary 75%;
-    scrollbar-background-active: $primary;
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
     scrollbar-corner-color: $surface;
 }
 
@@ -170,7 +170,8 @@ Button { margin: 0 1; }
 OptionList { background: $surface; }
 CommandPalette { padding: 1; background: $primary 60%; }
 CommandPalette > * { background: $surface; }
-Input { margin: 0 1; }
+Input { margin: 0 1; border: none; }
+Input:focus { border: none; background: $primary 30%; }
 
 /* ---------- slash command menu ---------- */
 #slash-band { display: none; margin: 0 2; }
