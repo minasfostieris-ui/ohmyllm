@@ -843,19 +843,26 @@ class Handler(BaseHTTPRequestHandler):
                     self.state.svc.sessions.rename(sess.id, new_title)
                     sess.title = new_title
                 self.state.tok_s = res.tokens_per_s or self.state.tok_s
+                self.state.busy = False
                 q.put(done_payload(res))
             except AgentCancelled:
                 # Stop pressed or the turn unwound: partial work is REAL —
                 # persist it, and always emit done so the SSE writer exits
                 # and the GUI composer unlocks (was: infinite pings, lost
                 # turn, frozen UI — the P0 the audit called out)
+                self.state.busy = False
                 q.put(done_payload(TurnResult(text="", error=None, cancelled=True),
                                    cancelled=True))
             except Exception as exc:  # noqa: BLE001
                 tb = traceback.extract_tb(exc.__traceback__)
                 where = f" (at {tb[-1].filename.rsplit('/', 1)[-1]}:{tb[-1].lineno})" if tb else ""
+                self.state.busy = False
                 q.put(("error", {"message": f"{type(exc).__name__}: {exc}{where}"}))
             finally:
+                # save AFTER the done/error event may already be in flight:
+                # it is synchronous on the loop, so a next turn (same loop)
+                # still cannot read the disk before this write lands —
+                # but busy must not stay True past the visible end of turn
                 try:
                     self.state.svc.sessions.save(sess)
                 except Exception:  # noqa: BLE001
