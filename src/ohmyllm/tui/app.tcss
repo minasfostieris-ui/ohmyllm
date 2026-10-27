@@ -71,16 +71,25 @@ VerticalScroll { overflow-x: hidden; }
 
 /* ---------- generic screens ---------- */
 #screen-title { height: 1; padding: 0 2; color: $accent; text-style: bold; }
-.detail-box { height: auto; max-height: 30%; padding: 0 1; color: $text-muted; }
+.detail-box {
+    height: auto; max-height: 38%; padding: 0 1; color: $text-muted;
+    overflow-y: auto; scrollbar-size: 1 2; scrollbar-color: $accent $surface;
+}
 
 DataTable { height: 1fr; border: round $primary 60%; }
 
 .screen-body { height: 1fr; }
 
 /* ---------- modals ---------- */
+/* every modal screen centers its card; every card hugs its content */
+#prompt-modal, #confirm-modal, #approval-modal, #info-modal, #key-modal-screen {
+    align: center middle;
+}
+
 #approval-box {
     width: 90%;
     max-width: 110;
+    height: auto;
     max-height: 90%;
     border: thick $warning;
     background: $surface;
@@ -90,6 +99,7 @@ DataTable { height: 1fr; border: round $primary 60%; }
 #prompt-box {
     width: 70%;
     max-width: 90;
+    height: auto;
     border: thick $primary;
     background: $surface;
     padding: 1 2;
@@ -98,10 +108,26 @@ DataTable { height: 1fr; border: round $primary 60%; }
 #confirm-box {
     width: 60%;
     max-width: 80;
+    height: auto;
     border: thick $primary;
     background: $surface;
     padding: 1 2;
 }
+
+#key-modal {
+    width: 80;
+    max-width: 92%;
+    height: auto;
+    border: thick $primary;
+    background: $surface;
+    padding: 1 2;
+}
+#prompt-buttons, #confirm-buttons, #approval-buttons, #key-buttons {
+    height: auto; align-horizontal: right; padding-top: 1;
+}
+#prompt-label, #confirm-q { width: 100%; }
+.modal-hint { color: $text-muted; margin-bottom: 1; }
+.modal-buttons { height: auto; align-horizontal: right; padding-top: 1; }
 
 #confirm-box.danger { border: thick $error; }
 
@@ -168,3 +194,10 @@ MarkdownBlockQuote > BlockQuote { border-left: solid #00e5ff; }
 Collapsible { border-top: solid $primary 40%; }
 .msg-file { padding: 0 0 0 2; }
 .msg-file-live { padding: 0 2 1 2; }
+
+/* ---------- backend screen cards ---------- */
+.backend-card { height: auto; padding: 0 1 1 1; }
+.card-buttons { height: auto; }
+
+/* ---------- switches: always legible on/off ---------- */
+Switch { border: round $primary 45%; padding: 0 1; margin-right: 1; }

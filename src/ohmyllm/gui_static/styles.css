@@ -422,3 +422,10 @@ table.grid tr.active td { background: rgba(122,199,159,.07); }
 #market-bar-fill { height: 100%; width: 0%; background: var(--accent, #7aa2f7); transition: width .4s; }
 .btn.ghost { background: transparent; border: 1px solid var(--border, #444); color: var(--fg, #ccc); }
 @media (prefers-reduced-motion: reduce) { .market-card, #market-bar-fill { transition: none; } }
+
+tr.msection td { color: var(--accent, #7aa2f7); font-weight: 700; letter-spacing: .04em;
+  background: color-mix(in srgb, currentColor 6%, transparent); padding-top: 10px; }
+tr.msection .muted { font-weight: 400; }
+
+#model-sort { background-color: var(--surface); border: 1px solid var(--line-strong);
+  border-radius: 6px; padding: 4px 28px 4px 10px; color: var(--fg); }

@@ -14,6 +14,18 @@ from textual.widgets import Button, DataTable, Input, Label, OptionList, Static,
 from textual.widgets._option_list import Option
 
 
+def _ws_short(ws: str | None) -> str:
+    """Home-relative, basename-preserving workspace label (no mid-path clipping)."""
+    from pathlib import Path
+
+    if not ws:
+        return "—"
+    home = str(Path.home())
+    if ws.startswith(home):
+        ws = "~" + ws[len(home):]
+    return ws[-24:] if len(ws) <= 24 else "…" + ws[-23:]
+
+
 class ChatsScreen(Screen):
     BINDINGS = [
         Binding("escape", "close", "Back"),
@@ -79,7 +91,7 @@ class ChatsScreen(Screen):
             when = datetime.fromtimestamp(s.updated_at).strftime("%Y-%m-%d %H:%M")
             table.add_row(
                 "📌" if s.pinned else "", s.title[:46], when, s.backend or "—",
-                (s.model or "—")[:22], str(s.message_count), (s.workspace or "")[-24:], s.id,
+                (s.model or "—")[:22], str(s.message_count), _ws_short(s.workspace), s.id,
             )
             self._row_order.append(s.id)
         if self._row_order:

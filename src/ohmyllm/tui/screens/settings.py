@@ -52,7 +52,7 @@ class SettingsScreen(Screen):
                 yield Static("Which server answers, and which model is the default. "
                              "Ctrl+B switches backend, Ctrl+M manages models.", classes="st-desc")
                 yield from _field("Backend", "st-default_backend", cfg.default_backend.value,
-                                  hint="ollama | lmstudio | mock")
+                                  hint="ollama | lmstudio | cloud")
                 yield from _field("Ollama default model", "st-ollama_default",
                                   cfg.ollama.default_model or "",
                                   placeholder="e.g. qwen2.5:7b-instruct")

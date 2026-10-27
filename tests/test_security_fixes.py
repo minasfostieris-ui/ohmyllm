@@ -586,9 +586,18 @@ async def test_models_backend_cycle_and_table_fits(oml_env, svc, monkeypatch):
     monkeypatch.setattr(_v.shutil, "which", lambda n: None)
     from textual.widgets import DataTable
 
+    from ohmyllm.backends.cloud import CloudBackend
     from ohmyllm.tui.app import OhMyLLMApp
     from ohmyllm.tui.screens.models import ModelsScreen
 
+    async def _fake_health(self):
+        return True, {"models": 0}
+
+    async def _fake_list(self):
+        return []
+
+    monkeypatch.setattr(CloudBackend, "health", _fake_health)
+    monkeypatch.setattr(CloudBackend, "list_models", _fake_list)
     app = OhMyLLMApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(0.7)
@@ -597,11 +606,11 @@ async def test_models_backend_cycle_and_table_fits(oml_env, svc, monkeypatch):
         await pilot.pause(0.8)
         scr = app.screen
         assert isinstance(scr, ModelsScreen)
-        assert "cloud" in scr._backend_names()
+        assert "cloud" in scr._backend_names_available()
         reached = False
         for _ in range(4):
             scr.action_backend()
-            if scr._be_obj().name.value == "cloud":
+            if scr._filter == "cloud":
                 reached = True
                 break
         assert reached, "b-cycle never reached cloud despite a stored key"
@@ -609,7 +618,7 @@ async def test_models_backend_cycle_and_table_fits(oml_env, svc, monkeypatch):
         t = scr.query_one(DataTable)
         assert len(t.columns) == 8  # compacted table fits ~110-col terminals
         title = str(scr.query_one("#screen-title").render())
-        assert "backend" in title.lower()
+        assert "filter" in title.lower()
 
 
 def test_registry_provider_static_models_via_bridge(bridge):
@@ -653,9 +662,9 @@ async def test_cloud_pick_switches_backend_and_escape_stops_at_modal(oml_env, sv
         await pilot.pause(0.8)
         scr = app.screen
         assert isinstance(scr, ModelsScreen)
-        scr._be = "cloud"
+        scr._filter = "cloud"
         scr._models = [ModelInfo(name="gpt-test", backend=BackendName.CLOUD)]
-        scr._visible = ["gpt-test"]
+        scr._rows = [scr._models[0]]
         t = scr.query_one(DataTable)
         if not t.row_count:
             scr._populate()

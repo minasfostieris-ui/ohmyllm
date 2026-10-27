@@ -32,7 +32,7 @@ def pathlib_home():
 class ChatScreen(Screen):
     SLASH: tuple[tuple[str, str, str], ...] = (
         ("/help", "", "this help screen"), ("/model", "[name]", "set or pick the default model"), ("/models", "", "browse models (b switches backend)"), ("/modelsettings", "", "per-model settings for the current model"),
-        ("/backend", "[ollama|lmstudio|mock]", "switch backend"), ("/mode", "[name]", "permission mode"),
+        ("/backend", "[ollama|lmstudio|cloud]", "switch backend"), ("/mode", "[name]", "permission mode"), ("/perms", "", "permission modes"),
         ("/think", "[off|low|medium|high|xhigh|max|hide|show]", "reasoning effort"),
         ("/skillimport", "", "open the skills folder (add/remove/move skills)"),
         ("/market", "", "recommended models — VRAM fit + one-key download"),
@@ -92,6 +92,12 @@ class ChatScreen(Screen):
         typed = inp.value.strip()
         if not cmd.startswith(typed) or typed.endswith(" ") or typed == cmd:
             return False
+        if menu.option_count == 1:
+            # unambiguous prefix: Enter runs the command outright — no
+            # complete-then-Enter-again trap (/perm → /perms)
+            inp.value = ""
+            self._slash(cmd)
+            return True
         inp.value = cmd + " "
         inp.focus()
         return True
@@ -1096,7 +1102,7 @@ class ChatScreen(Screen):
             with contextlib.suppress(OSError):
                 subprocess.Popen([opener, str(d)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             app.notify(f"skills folder → {d}")
-        elif cmd == "mode":
+        elif cmd in ("mode", "perms"):
             if arg:
                 self._set_mode(arg)
             else:

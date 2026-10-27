@@ -548,61 +548,87 @@ function fmtDate(ts) { const d = new Date(typeof ts === "number" ? ts * 1000 : t
 /* --------------------------------------------------------------- models */
 async function renderModels() {
   const sel = $("#model-backend");
-  const be = sel.value || state.status?.backend || "mock";
   if (!sel.options.length) {
-    sel.innerHTML = ["ollama", "lmstudio", "mock"].map((b) => `<option ${b === be ? "selected" : ""}>${b}</option>`).join("");
+    const opts = ["all", "ollama", "lmstudio"];
+    try {
+      const pv = await get("/api/providers");
+      if ((pv.providers || []).some((x) => x.has_key)) opts.push("cloud");
+    } catch { /* providers unavailable: local-only listing */ }
+    sel.innerHTML = opts.map((b) => `<option value="${b}"${b === "all" ? " selected" : ""}>${b === "all" ? "all backends" : b}</option>`).join("");
   }
-  const data = await get(`/api/models?backend=${sel.value || be}`);
+  const want = sel.value || "all";
+  const beList = want === "all"
+    ? ["ollama", "lmstudio"].concat(sel.querySelector('option[value="cloud"]') ? ["cloud"] : [])
+    : [want];
+  const results = await Promise.all(beList.map(async (b) => {
+    try { return [b, await get(`/api/models?backend=${b}`)]; }
+    catch (e) { return [b, { error: String(e.message || e), models: [] }]; }
+  }));
   const tb = $("#models-table tbody");
   tb.innerHTML = "";
   const q = ($("#model-search").value || "").toLowerCase();
-  let rows = (data.models || []).filter((m) => m.name.toLowerCase().includes(q));
   const sort = ($("#model-sort") || {}).value || "name";
   const QBITS = (qt) => { qt = (qt || "").toUpperCase(); if (qt.includes("IQ1")) return 1.2; if (qt.includes("IQ2")) return 2.2; if (qt.includes("IQ3")) return 3.3; if (qt.includes("IQ4") || qt.includes("MXFP4")) return 4.3; const m = qt.match(/Q(\d)/); const b = m ? +m[1] : (qt.includes("F16") || qt.includes("BF16") ? 16 : 8); return b + (qt.includes("XL") || qt.includes("_L") ? 0.4 : qt.includes("_S") ? -0.3 : 0); };
   const TH = { levels: 0, forced: 1, "on-off": 2, none: 3 };
   const FAM = (n) => (n.toLowerCase().split(/[/_ .-]+/)[0] || n);
-  if (sort === "size") rows.sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
-  else if (sort === "params") rows.sort((a, b) => (b.params_b || 0) - (a.params_b || 0));
-  else if (sort === "quant") rows.sort((a, b) => QBITS(a.quant) - QBITS(b.quant));
-  else if (sort === "family") rows.sort((a, b) => FAM(a.name).localeCompare(FAM(b.name)) || a.name.localeCompare(b.name));
-  else if (sort === "thinking") rows.sort((a, b) => (TH[a.thinking] ?? 4) - (TH[b.thinking] ?? 4));
-  else if (sort === "vision") rows.sort((a, b) => (b.vision === true) - (a.vision === true) || (a.vision === null) - (b.vision === null));
-  if (data.error) { $("#model-detail").textContent = `backend unreachable: ${data.error}`; }
-  else $("#model-detail").textContent = `${rows.length} model(s) · default: ${data.default || "none"}`;
-  for (const m of rows) {
-    const tr = document.createElement("tr");
-    if (m.name === data.default) tr.className = "active";
-    const tools = m.tool_capable ? '<span class="fit-ok">yes</span>' : `<span class="fit-tight" title="${esc(m.why_weak || "")}">weak</span>`;
-    tr.innerHTML = `
-      <td>${m.loaded ? '<span class="pulse on"></span>' : ""}</td>
-      <td style="white-space:normal"><b>${esc(m.name)}</b>${m.warnings?.length ? `<br><small class="muted">${m.warnings.map(esc).join("; ")}</small>` : ""}</td>
-      <td>${m.size || "—"}</td><td>${esc(m.quant || "")}</td><td>${m.params_b ? m.params_b + "B" : "—"}</td>
-      <td>${m.ctx_len || "—"}</td>
-      <td>${m.vram_min ? gib(m.vram_min) : "—"}</td>
-      <td>${m.vram_comfortable ? gib(m.vram_comfortable) : "—"}</td>
-      <td class="fit-${m.fit === "ok" ? "ok" : m.fit === "tight" ? "tight" : m.fit === "over" ? "over" : ""}">${m.fit}</td>
-      <td>${tools}</td>
-      <td>${m.vision === true ? '<span class="fit-ok">👁 yes</span>' : m.vision === false ? '<span class="muted">no</span>' : `<button class="btn small ghost vision-test" title="Send two random numbers as images and check the model reads them (loads the model — up to a minute)">test vision</button>`}</td>
-      <td>${{ levels: '<span class="fit-ok">⚡ levels</span>', forced: '<span class="fit-ok">★ forced</span>', "on-off": '<span class="fit-tight">◐ on/off</span>', none: '<span class="muted">✗ none</span>' }[m.thinking] || '<span class="muted">?</span>'}</td>
-      <td><button class="btn small use">use</button></td>`;
-    const vt = tr.querySelector(".vision-test");
-    if (vt) vt.onclick = async (ev) => {
-      ev.stopPropagation();
-      vt.disabled = true; vt.textContent = "probing…";
-      try {
-        const r = await post("/api/vision/probe", { backend: sel.value || be, model: m.name });
-        toast(`${m.name}: ${r.vision ? "CAN see images" : "cannot see images"} — cached`, r.vision ? "" : "bad");
-      } catch (e) { toast(`vision probe failed: ${e.message}`, "bad"); }
-      renderModels();
-    };
-    tr.querySelector(".use").onclick = async () => {
-      await post("/api/model", { backend: sel.value || be, model: m.name });
-      toast(`${m.name} → default`); renderModels(); refreshStatus();
-    };
-    tr.ondblclick = () => tr.querySelector(".use").click();
-    tb.appendChild(tr);
+  const sortRows = (rows) => {
+    if (sort === "size") rows.sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
+    else if (sort === "params") rows.sort((a, b) => (b.params_b || 0) - (a.params_b || 0));
+    else if (sort === "quant") rows.sort((a, b) => QBITS(a.quant) - QBITS(b.quant));
+    else if (sort === "family") rows.sort((a, b) => FAM(a.name).localeCompare(FAM(b.name)) || a.name.localeCompare(b.name));
+    else if (sort === "thinking") rows.sort((a, b) => (TH[a.thinking] ?? 4) - (TH[b.thinking] ?? 4));
+    else if (sort === "vision") rows.sort((a, b) => (b.vision === true) - (a.vision === true) || (a.vision === null) - (b.vision === null));
+    else rows.sort((a, b) => a.name.localeCompare(b.name));
+    return rows;
+  };
+  let total = 0; const errs = [];
+  for (const [b, data] of results) {
+    const rows = sortRows((data.models || []).filter((m) => m.name.toLowerCase().includes(q)));
+    if (data.error) errs.push(`${b}: ${data.error}`);
+    if (!rows.length) continue;
+    const sec = document.createElement("tr");
+    sec.className = "msection";
+    sec.innerHTML = `<td colspan="10">── ${b} ── <span class="muted">${data.error ? esc(data.error).slice(0, 80) : rows.length + " model(s)"}</span></td>`;
+    tb.appendChild(sec);
+    for (const m of rows) {
+      total++;
+      const tr = document.createElement("tr");
+      if (m.name === data.default) tr.className = "active";
+      const tools = m.tool_capable ? '<span class="fit-ok">yes</span>' : `<span class="fit-tight" title="${esc(m.why_weak || "")}">weak</span>`;
+      tr.innerHTML = `
+        <td style="white-space:normal">${m.loaded ? '<span class="pulse on"></span> ' : ""}<b>${esc(m.name)}</b>${m.warnings?.length ? `<br><small class="muted">${m.warnings.map(esc).join("; ")}</small>` : ""}</td>
+        <td>${m.size || "—"}${m.quant ? ` <span class="muted">· ${esc(m.quant)}</span>` : ""}</td>
+        <td>${m.params_b ? m.params_b + "B" : "—"}</td>
+        <td>${m.ctx_len || "—"}</td>
+        <td>${m.vram_min ? gib(m.vram_min) : "—"}</td>
+        <td class="fit-${{ comfortable: "ok", tight: "tight", too_large: "over" }[m.fit] || ""}">${{ comfortable: "comfortable", tight: "tight", too_large: "too large" }[m.fit] || "—"}</td>
+        <td>${tools}</td>
+        <td>${m.vision === true ? '<span class="fit-ok">👁 yes</span>' : m.vision === false ? '<span class="muted">no</span>' : `<button class="btn small ghost vision-test" title="Send two random numbers as images and check the model reads them (loads the model — up to a minute)">test vision</button>`}</td>
+        <td>${{ levels: '<span class="fit-ok">⚡ levels</span>', forced: '<span class="fit-ok">★ forced</span>', "on-off": '<span class="fit-tight">◐ on/off</span>', none: '<span class="muted">✗ none</span>' }[m.thinking] || '<span class="muted">?</span>'}</td>
+        <td><button class="btn small use">use</button></td>`;
+      const vt = tr.querySelector(".vision-test");
+      if (vt) vt.onclick = async (ev) => {
+        ev.stopPropagation();
+        vt.disabled = true; vt.textContent = "probing…";
+        try {
+          const r = await post("/api/vision/probe", { backend: b, model: m.name });
+          toast(`${m.name}: ${r.vision ? "CAN see images" : "cannot see images"} — cached`, r.vision ? "" : "bad");
+        } catch (e) { toast(`vision probe failed: ${e.message}`, "bad"); }
+        renderModels();
+      };
+      tr.querySelector(".use").onclick = async () => {
+        await post("/api/model", { backend: b, model: m.name });
+        toast(`${m.name} → default`); renderModels(); refreshStatus();
+      };
+      tr.ondblclick = () => tr.querySelector(".use").click();
+      tb.appendChild(tr);
+    }
   }
+  $("#model-detail").textContent = errs.length
+    ? `${total} model(s) · ${errs.join(" · ")}`
+    : `${total} model(s)`;
 }
+
 const gib = (b) => (b / 2 ** 30).toFixed(1) + " GiB";
 
 // -------------------------------------------------------------- providers
@@ -812,9 +838,11 @@ async function renderBackends() {
   const meta = {
     ollama: { t: "Ollama", d: "Local llama.cpp server with first-class tool calling.", url: state.config?.ollama?.host },
     lmstudio: { t: "LM Studio", d: "Desktop app exposing an OpenAI-compatible API.", url: state.config?.lmstudio?.base_url },
+    cloud: { t: "☁ Cloud", d: "Hosted OpenAI-compatible providers (Alibaba, DeepSeek, OpenRouter, …) via a connected API key.", url: null },
     mock: { t: "Mock backend", d: "Scripted agent for demos and tests — no model required.", url: null },
   };
-  for (const k of Object.keys(meta)) {
+  const keys = Object.keys(meta).filter((k) => k !== "mock" || cur === "mock");
+  for (const k of keys) {
     const r = rows[k] || {};
     const el = document.createElement("div");
     el.className = `be-card-ui${k === cur ? " sel" : ""}`;
@@ -824,7 +852,7 @@ async function renderBackends() {
       <p class="be-row mono small">${r.running ? (r.health ? "running · " + esc(r.health) : "running") : r.installed ? "installed · not running" : "not detected"}${meta[k].url ? ` · ${esc(meta[k].url)}` : ""}</p>
       <div class="be-acts">
         <button class="btn small use">default</button>
-        ${k !== "mock" ? '<button class="btn small start">start</button>' : ""}
+        ${["mock", "cloud"].includes(k) ? "" : '<button class="btn small start">start</button>'}
       </div>`;
     el.querySelector(".use").onclick = async () => { await post("/api/backend", { name: k }); toast(`${meta[k].t} is now the default`); refreshStatus(); renderBackends(); };
     const st = el.querySelector(".start");
@@ -872,7 +900,7 @@ $("#doctor-run").onclick = renderDoctor;
 /* ------------------------------------------------------------ settings */
 const SCHEMA = [
   ["§", "general"],
-  ["default_backend", "backend", "select", ["ollama", "lmstudio", "mock"]],
+  ["default_backend", "backend", "select", ["ollama", "lmstudio", "cloud", "mock"]],
   ["§", "ollama"],
   ["ollama.host", "host", "text"], ["ollama.binary", "binary name", "text"],
   ["ollama.auto_start", "auto-start server", "bool"], ["ollama.startup_timeout", "startup timeout s", "num"],
@@ -1278,7 +1306,7 @@ async function wzBe() {
   const el = $("#wz-be"); if (!el) return;
   const rows = await get("/api/backends");
   el.innerHTML = "";
-  [["ollama", "Ollama — tool-calling llama.cpp server"], ["lmstudio", "LM Studio — desktop app API"], ["mock", "Mock — scripted agent, no install needed"]]
+  [["ollama", "Ollama — tool-calling llama.cpp server"], ["lmstudio", "LM Studio — desktop app API"], ["cloud", "☁ Cloud — hosted providers via API key"]]
     .forEach(([k, t]) => {
       const o = document.createElement("div");
       o.className = "opt" + (state.config?.default_backend === k ? " sel" : "");

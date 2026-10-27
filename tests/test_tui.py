@@ -356,8 +356,20 @@ async def test_slash_menu_pops_and_completes(oml_env, svc):
         assert menu.display and menu.option_count == 1
         await pilot.press("enter")
         await pilot.pause(0.3)
-        assert app.screen.query_one("#chat-input").value.startswith("/rename")
-        assert app.busy is False, "completing must not send the message"
+        # unambiguous prefix: Enter RUNS the command — input cleared, and
+        # crucially nothing reaches the model as a chat message
+        assert app.screen.query_one("#chat-input").value == ""
+        assert app.busy is False
+        assert app.session is None or app.session.message_count == 0
+        # ambiguous prefix: Enter only completes (several /mo* commands)
+        inp.value = "/mo"
+        inp.action_end()
+        await pilot.pause(0.3)
+        assert menu.option_count > 1
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert app.screen.query_one("#chat-input").value.startswith("/")
+        assert app.busy is False
 
 
 @pytest.mark.asyncio()

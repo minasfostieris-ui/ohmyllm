@@ -18,7 +18,8 @@ _STEPS = ["Welcome", "Backends detected", "Server", "Models", "Generation", "VRA
 
 class WizardScreen(Screen):
     BINDINGS = [Binding("enter", "next", "Next"),
-                Binding("ctrl+v", "paste", "Paste clipboard")]
+                Binding("ctrl+v", "paste", "Paste clipboard"),
+                Binding("escape", "skip", "Skip")]
 
     def action_paste(self) -> None:
         from ...tui.imagepaste import grab_clip_text
@@ -48,6 +49,7 @@ class WizardScreen(Screen):
         yield Vertical(id="wizard-body")
         with Horizontal(id="wizard-buttons"):
             yield Button("← Back", id="wiz-back", variant="default")
+            yield Button("Skip onboarding", id="wiz-skip", variant="default")
             yield Button("Next →", id="wiz-next", variant="primary")
 
     async def on_mount(self) -> None:
@@ -82,6 +84,18 @@ class WizardScreen(Screen):
             return
         self.step = min(self.step + 1, len(_STEPS) - 1)
         await self._show_step()
+
+    def action_skip(self) -> None:
+        """Leave the tutorial without applying half-chosen wizard values."""
+        cfg = self.app.svc.config
+        cfg.first_run_completed = True
+        self.app.svc.save_config()
+        self.app.notify("onboarding skipped — /onboarding reopens it any time")
+        self.app.open_resume_or_new()
+
+    @on(Button.Pressed, "#wiz-skip")
+    def _skip_btn(self) -> None:
+        self.action_skip()
 
     @on(Button.Pressed, "#wiz-back")
     async def _back(self) -> None:

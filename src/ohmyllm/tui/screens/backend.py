@@ -24,14 +24,19 @@ class BackendScreen(Screen):
 
     def compose(self) -> ComposeResult:
         yield Static("[b]🖥 Backends & servers[/] — esc back · r refresh", id="screen-title")
+        cur = self.app.svc.config.default_backend.value
         with Vertical(id="backend-body", classes="screen-body"):
             for _, key in _CARDS:
+                if key == "mock" and cur != "mock":
+                    continue  # dev artifact: hidden unless actively in use
                 with Vertical(id=f"card-{key}", classes="backend-card"):
                     yield Static("", id=f"text-{key}")
                     with Horizontal(classes="card-buttons"):
-                        yield Button("start server", id=f"start-{key}", variant="primary")
+                        if key not in ("mock", "cloud"):
+                            yield Button("start server", id=f"start-{key}", variant="primary")
                         yield Button("make default", id=f"default-{key}")
-                        yield Button("how to set up", id=f"info-{key}", variant="default")
+                        yield Button("how to connect" if key == "cloud" else "how to set up",
+                                     id=f"info-{key}", variant="default")
 
     def on_mount(self) -> None:
         self.probe()
@@ -58,13 +63,17 @@ class BackendScreen(Screen):
             dot = "[green]● live[/green]" if ok else "[red]○ down[/red]"
             is_default = app.svc.config.default_backend.value == key
             star = "  ← [b]default[/b]" if is_default else ""
+            msg = info.get("error") or info.get("message") or info.get("version") or ""
+            if not msg and not ok:
+                msg = str(info.get("base_url", ""))
             try:
+                tail = f" · {str(msg)[:120]}" if msg else ""
                 self.query_one(f"#text-{key}", Static).update(
                     f"{'▣' if is_default else '▢'} [b]{be.display_name}[/b]{star}   {dot}\n"
-                    f"   installed: {'yes' if installed else 'no'} · models: {models} · {info}"
+                    f"   installed: {'yes' if installed else 'no'} · models: {models}{tail}"
                 )
-            except Exception:  # noqa: BLE001 — screen closed mid-probe
-                return
+            except Exception:  # noqa: BLE001 — card hidden (mock) or screen closed mid-probe
+                continue
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = str(event.button.id or "")

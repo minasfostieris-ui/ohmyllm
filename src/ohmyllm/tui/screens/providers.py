@@ -24,7 +24,7 @@ class KeyModal(ModalScreen[str | None]):
     BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
 
     def __init__(self, title: str, current: str, secret: bool = True) -> None:
-        super().__init__()
+        super().__init__(id="key-modal-screen")
         self.title = title
         self.current = current
         self.secret = secret
@@ -84,14 +84,23 @@ class ProvidersScreen(Screen):
     def _rows(self) -> list[tuple[str, str, str, str]]:
         """(pid, line, group, detail) — grouped Popular → Other → Custom."""
         cl = self.app.svc.config.cloud
+        # mirror the backend's implicit selection: one connected key with no
+        # explicit provider IS the active provider
+        connected = [k for k, v in cl.keys.items() if v]
+        auto_pid = connected[0] if (not cl.provider and len(connected) == 1) else ""
         rows: dict[str, list[tuple[str, str, str, str]]] = {"Popular": [], "Other": [], "Custom": []}
         for p in PROVIDERS:
             key = key_for(p.pid, cl.keys)
             state = f"[green]✓ {mask(key)}[/green]" if key else "[dim]no key[/dim]"
-            active = "  [b][cyan]← active[/b][/cyan]" if cl.provider == p.pid and key else ""
+            if cl.provider == p.pid and key:
+                active = "  [b][cyan]← active[/b][/cyan]"
+            elif auto_pid == p.pid:
+                active = "  [b][cyan]← active (auto)[/b][/cyan]"
+            else:
+                active = ""
             star = " [dim](recommended)[/dim]" if p.recommended else ""
             ml = cl.model_lists.get(p.pid, "")
-            line = f"{p.name:<16} {state}{active}   [dim]{_esc(p.blurb)}[/dim]{star}" + (
+            line = f"{p.name:<24} {state}{active}   [dim]{_esc(p.blurb)}[/dim]{star}" + (
                 f"   [cyan]{_esc(ml)}[/cyan]" if ml else "")
             detail = (f"[b]{p.name}[/]  [dim]{p.kind} · {p.base_url}[/dim]\n"
                       f"  {_esc(p.blurb)}\n"
@@ -104,7 +113,7 @@ class ProvidersScreen(Screen):
             active = "  [b][cyan]← active[/b][/cyan]" if cl.provider == pid and key else ""
             base = cl.bases.get(pid, "")
             ml = cl.model_lists.get(pid, "")
-            line = f"{_esc(name):<16} {state}{active}   [dim]custom · {_esc(base)}{' · ' + _esc(ml) if ml else ''}[/dim]"
+            line = f"{_esc(name):<24} {state}{active}   [dim]custom · {_esc(base)}{' · ' + _esc(ml) if ml else ''}[/dim]"
             detail = (f"[b]{_esc(name)}[/]  [dim]openai · {_esc(base)}[/dim]\n"
                       f"  models: {_esc(ml) or '(listed from the endpoint via /models)'}\n"
                       "  your own OpenAI-compatible endpoint (vLLM, Ollama-cloud, LAN box…)\n"

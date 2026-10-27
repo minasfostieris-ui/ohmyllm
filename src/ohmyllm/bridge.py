@@ -396,14 +396,15 @@ class Handler(BaseHTTPRequestHandler):
     # ------------------------------------------------------------ routes
     async def _backends(self) -> dict:
         out: dict[str, dict[str, Any]] = {}
-        for name in ("ollama", "lmstudio", "mock"):
+        for name in ("ollama", "lmstudio", "mock", "cloud"):
             be = self.state.svc.backend(name)
             try:
                 ok, info = await be.health()
             except Exception as exc:  # noqa: BLE001
                 ok, info = False, {"error": str(exc)}
             out[name] = {"installed": be.is_installed(), "running": ok,
-                         "health": str(info.get("version") or info.get("message") or "")}
+                         "health": str(info.get("version") or info.get("models")
+                                     or info.get("message") or info.get("base_url") or "")}
         return out
 
     async def _models(self, backend: str | None) -> dict:

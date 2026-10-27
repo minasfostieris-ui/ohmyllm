@@ -193,9 +193,9 @@ async def test_choose_opens_settings_for_the_cursor_row(oml_env, svc):
         assert isinstance(screen, ModelsScreen)
         t = screen.query_one(DataTable)
         assert t.row_count >= 2
-        names = [screen._visible[i] for i in range(t.row_count)]
+        names = [r.name for r in screen._rows if r is not None]
         target = names[-1]  # last row — never row 0
-        t.move_cursor(row=len(names) - 1)
+        t.move_cursor(row=len(screen._rows) - 1)
         await pilot.pause(0.2)
         assert screen._selected() is not None and screen._selected().name == target
         # any re-populate (refresh, background metadata) must NOT drop the
