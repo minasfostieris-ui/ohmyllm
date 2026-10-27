@@ -67,7 +67,7 @@ VerticalScroll { overflow-x: hidden; }
 }
 
 #chat-input { dock: bottom; }
-#chat-input:focus { border: round $primary; }
+#chat-input:focus { border: block $primary; }
 
 /* ---------- generic screens ---------- */
 #screen-title { height: 1; padding: 0 2; color: $accent; text-style: bold; }
@@ -76,7 +76,7 @@ VerticalScroll { overflow-x: hidden; }
     overflow-y: auto; scrollbar-size: 1 2; scrollbar-color: $accent $surface;
 }
 
-DataTable { height: 1fr; border: round $primary 60%; }
+DataTable { height: 1fr; border: block $primary 60%; scrollbar-size: 0 1;  /* (horizontal, vertical) — measured */ }
 
 .screen-body { height: 1fr; }
 
@@ -150,7 +150,7 @@ DataTable { height: 1fr; border: round $primary 60%; }
 
 /* ---------- settings ---------- */
 #settings-body { padding: 0 2 1 2; align-horizontal: center; }
-.st-section { height: auto; width: 100%; max-width: 110; border: round $primary 35%; padding: 1 2; margin: 0 0 1 0; }
+.st-section { height: auto; width: 100%; max-width: 110; border: block $primary 35%; padding: 1 2; margin: 0 0 1 0; }
 .st-title { color: $accent; text-style: bold; }
 .st-desc { color: $text-muted; }
 .st-label { color: $text-muted; padding-top: 1; }
@@ -167,13 +167,13 @@ DataTable { height: 1fr; border: round $primary 60%; }
 HelpMarkdown { padding: 1 3; }
 
 /* ---------- memory ---------- */
-#soul-area { height: 1fr; border: round $primary 60%; }
+#soul-area { height: 1fr; border: block $primary 60%; }
 #memory-buttons { height: auto; }
-#recent-memory { height: 8; color: $text-muted; border: round $secondary 40%; padding: 0 1; }
+#recent-memory { height: 8; color: $text-muted; border: block $secondary 40%; padding: 0 1; }
 
 /* misc */
 Button { margin: 0 1; }
-OptionList { border: round $primary 50%; }
+OptionList { border: block $primary 50%; }
 Input { margin: 0 1; }
 
 /* ---------- slash command menu ---------- */
@@ -182,7 +182,7 @@ Input { margin: 0 1; }
     height: auto;
     max-height: 12;
     margin: 0 2;
-    border: round $primary 60%;
+    border: block $primary 60%;
     background: $panel;
 }
 /* Textual's default blockquote bar is `border-left: outer` (half-block ▕ at
@@ -200,4 +200,4 @@ Collapsible { border-top: solid $primary 40%; }
 .card-buttons { height: auto; }
 
 /* ---------- switches: always legible on/off ---------- */
-Switch { border: round $primary 45%; padding: 0 1; margin-right: 1; }
+Switch { border: block $primary 45%; padding: 0 1; margin-right: 1; }

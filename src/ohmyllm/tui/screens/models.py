@@ -7,19 +7,21 @@ backend, so choose/test/verify/settings always act on the right server.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.css.query import NoMatches
+from textual.events import Resize
 from textual.screen import Screen
 from textual.widgets import DataTable, Input, ProgressBar, Static
 
 from ...backends.base import BackendError, BackendName, ModelInfo
 from ...capabilities import family, quant_bits, thinking_support
 from ...vision import cached_verdict as vision_cached
-from ...vram import detect_gpus_cached, human_bytes
+from ...vram import detect_gpus, detect_gpus_cached, human_bytes
 
 _THINK_ORDER = {"levels": 0, "forced": 1, "on-off": 2, "none": 3, None: 4}
 _SECTION_ORDER = [BackendName.OLLAMA, BackendName.LMSTUDIO, BackendName.CLOUD]
@@ -61,6 +63,25 @@ class ModelsScreen(Screen):
         yield ProgressBar(total=100, id="pull-progress", show_bar=True)
         yield Static("model server status & pull progress appear here", id="models-detail", classes="detail-box")
 
+    def _fit_columns(self) -> None:
+        """Name column = available width minus the fixed columns; the table
+        can never overflow horizontally, so nothing is ever scrolled off."""
+        try:
+            t = self.query_one(DataTable)
+        except NoMatches:
+            return
+        # measured: Textual pads every column 2 cells (8 cols = 16) plus the
+        # vertical scrollbar; anything more and the last column clips
+        avail = (t.size.width or 84) - 17
+        fixed = 13 + 5 + 8 + 5 + 5 + 6 + 5
+        try:
+            t.columns[t.ordered_columns[0].key].width = max(24, avail - fixed)
+        except (KeyError, IndexError):
+            pass
+
+    def on_resize(self, event: Resize) -> None:  # noqa: ARG002
+        self._fit_columns()
+
     def on_mount(self) -> None:
         t = self.query_one(DataTable)
         for label, w in (("model", 30), ("size·q", 13), ("par", 5), ("vram", 8),
@@ -68,6 +89,7 @@ class ModelsScreen(Screen):
             t.add_column(label, width=w)
         t.focus()
         self._models: list[ModelInfo] = []
+        self._gpus: list = []
         self._rows: list[ModelInfo | None] = []  # None = section separator row
         self._visible: list[str] = []  # kept for cursor-restore compat
         self._sort = "name"
@@ -136,6 +158,7 @@ class ModelsScreen(Screen):
             pass
         models: list[ModelInfo] = []
         notes: list[str] = []
+        self._gpus = await asyncio.to_thread(detect_gpus)
         for name in self._sources():
             be = self.app.svc.backend(name)
             try:
@@ -174,17 +197,25 @@ class ModelsScreen(Screen):
 
     # -------------------------------------------------------------- populate
     def _populate(self) -> None:
+        """Render rows. self._gpus is the probe result from the worker —
+        detect_gpus_cached() alone would freeze fit/vram at '?' once the
+        10 s TTL expired, and the probe must never run on the UI thread."""
         try:
             t = self.query_one(DataTable)
         except NoMatches:
             return
+        self._fit_columns()
+        try:
+            name_w = t.ordered_columns[0].width
+        except IndexError:
+            name_w = 30
         prev = self._selected_name()  # before clear(): clear() resets the cursor
         t.clear()
         self._rows = []
         q = self.query_one("#model-search", Input).value.strip().lower()
         cfg = self.app.svc.config
         cur, cur_be = self.app.svc.current_model(), cfg.default_backend.value
-        gpus = detect_gpus_cached()
+        gpus = self._gpus or detect_gpus_cached()
         gpu_total = sum(g.total_bytes for g in gpus) or None
         frees = [g.free_bytes for g in gpus if g.free_bytes is not None]
         gpu_free = sum(frees) if frees else None
@@ -222,7 +253,7 @@ class ModelsScreen(Screen):
             vr = human_bytes(est.min_bytes).replace(" ", "") if est else "?"
             star = "★" if (m.name == cur and m.backend.value == cur_be) else ""
             t.add_row(
-                star + m.name[:29],
+                (star + m.name)[:name_w - 1],
                 sz,
                 f"{m.params_b:g}B" if m.params_b else "?",
                 vr,

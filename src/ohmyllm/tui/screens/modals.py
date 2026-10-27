@@ -26,6 +26,9 @@ _FIELDS = [
     ("kv_cache", "K/V cache quant", str),
 ]
 
+# knobs that only mean something for a local inference server
+_LOCAL_ONLY = {"num_gpu", "num_batch", "threads", "kv_cache"}
+
 
 class ModelSettingsModal(ModalScreen[bool]):
     BINDINGS = [Binding("escape", "cancel", "Cancel", priority=True)]
@@ -34,11 +37,19 @@ class ModelSettingsModal(ModalScreen[bool]):
         super().__init__(id="model-settings-modal")
         self.model = model
 
+    def _visible_fields(self) -> list[tuple[str, str, type]]:
+        if self.model.backend.value == "cloud":
+            return [f for f in _FIELDS if f[0] not in _LOCAL_ONLY]
+        return list(_FIELDS)
+
     def compose(self) -> ComposeResult:
         cur = self.app.svc.config.settings_for(self.model.backend, self.model.name)
+        fields = self._visible_fields()
+        self._fields = fields
+        hint = ("cloud API — local GPU knobs don't apply" if fields is not _FIELDS
+                and self.model.backend.value == "cloud" else "per model; absolute overrides")
         with Vertical(id="model-settings-box"):
-            yield Label(f"[b]⚙ Settings for {self.model.name[:60]}[/b]  [dim](per model; absolute overrides)[/dim]", classes="ms-title")
-            fields = list(_FIELDS)
+            yield Label(f"[b]⚙ Settings for {self.model.name[:60]}[/b]  [dim]({hint})[/dim]", classes="ms-title")
             for i in range(0, len(fields), 3):
                 with Horizontal(classes="ms-row"):
                     for name, label, typ in fields[i:i + 3]:
@@ -66,7 +77,7 @@ class ModelSettingsModal(ModalScreen[bool]):
                 w.remove()
         values: dict[str, object] = {}
         errors: list[str] = []
-        for name, label, typ in _FIELDS:
+        for name, label, typ in getattr(self, "_fields", _FIELDS):
             raw = self.query_one(f"#ms-{name}", Input).value.strip()
             if raw == "":
                 continue
