@@ -177,6 +177,37 @@ def test_streaming_turn_with_memory_flow(bridge):
     assert status["session"] and status["busy"] is False
 
 
+def test_cancel_persists_turn_and_unlocks_stream(bridge):
+    # regression (audit P0): Stop raised AgentCancelled — a BaseException —
+    # which slipped past work()'s `except Exception`: no done event ever
+    # queued, the SSE writer pinged forever, the GUI composer stayed locked,
+    # and the whole turn (user msg + partials) was never saved.
+    from ohmyllm.backends.mock import MockBackend
+
+    MockBackend.delay = 0.4  # class-level: in-process servers pick it up
+    try:
+        resp = bridge.req("POST", "/api/message", {"text": "count slowly please"})
+        cancelled = []
+
+        def hook(ev, data):
+            if ev in ("chunk", "token") and not cancelled:
+                cancelled.append(True)
+                bridge.post("/api/cancel")
+
+        events = sse_events(resp, hook=hook)
+        assert cancelled, "stream produced no chunks to cancel mid-way"
+    finally:
+        MockBackend.delay = 0.0
+    assert events, "stream must yield events"
+    assert events[-1][0] == "done", "cancel must terminate the stream with done"
+    assert events[-1][1].get("error") == "cancelled"
+    status = bridge.get("/api/status")
+    assert status["busy"] is False, "composer must unlock after cancel"
+    chats = bridge.get("/api/chats")["chats"]
+    active = [c for c in chats if c["id"] == status["session"]]
+    assert active and active[0]["messages"] >= 1, "cancelled turn must be on disk"
+
+
 def test_approval_roundtrip_over_sse(bridge):
     bridge.post("/api/mode", {"mode": "sandboxed"})  # workspace writes need confirmation
     got = {}

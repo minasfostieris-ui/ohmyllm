@@ -95,6 +95,10 @@ class ModelsScreen(Screen):
             names.append("mock")  # dev fixture: never hide the active backend
         if self._filter != "all":
             return [self._filter] if self._filter in names else names[:1]
+        # the active backend's rows first: offline probes cost up to 3 s
+        # each and must not delay the server the user actually uses
+        cur = self.app.svc.config.default_backend.value
+        names.sort(key=lambda n: n != cur)
         return names
 
     def _be_obj(self, name: str | None = None):
@@ -152,6 +156,10 @@ class ModelsScreen(Screen):
                 models.extend(listed)
             except BackendError as exc:
                 notes.append(f"[red]{be.display_name}:[/] {str(exc)[:120]}")
+            # progressive: rows land as each backend answers, not after the
+            # slowest offline probe
+            self._models = list(models)
+            self._populate()
         self._models = models
         self._populate()
         counts = " · ".join(
@@ -180,7 +188,6 @@ class ModelsScreen(Screen):
         gpu_total = sum(g.total_bytes for g in gpus) or None
         frees = [g.free_bytes for g in gpus if g.free_bytes is not None]
         gpu_free = sum(frees) if frees else None
-        gen = cfg.generation
         order = {be: i for i, be in enumerate(_SECTION_ORDER)}
         # stable sort: keeps whatever within-section order _models already has
         grouped = sorted(self._models, key=lambda m: order.get(m.backend.value, 9))
@@ -192,7 +199,7 @@ class ModelsScreen(Screen):
                 shown_be = m.backend
                 t.add_row(f"[b dim]── {m.backend.value} ──[/]", "", "", "", "", "", "", "")
                 self._rows.append(None)
-            est = m.vram_estimate(gen, gpu_total, gpu_free)
+            est = m.vram_estimate(cfg.settings_for(m.backend, m.name), gpu_total, gpu_free)
             fit = est.status if est else "?"
             style = {"comfortable": "green", "tight": "yellow", "too_large": "red"}.get(fit, "dim")
             tested = vision_cached(m.backend.value, m.name)

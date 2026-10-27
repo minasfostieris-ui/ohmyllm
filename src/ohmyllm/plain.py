@@ -6,6 +6,8 @@ Works in dumb terminals; same services/policy/runtime as the TUI.
 from __future__ import annotations
 
 import asyncio
+import json
+import signal
 import sys
 from typing import Any
 
@@ -15,6 +17,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
 
+from .agents.runtime import AgentCancelled
 from .config import BackendName, PermissionMode
 from .core import Services
 from .doctor import run_checks, summarize
@@ -24,6 +27,7 @@ from .sessions import make_title
 class PlainApp:
     def __init__(self, svc: Services, resume_sid: str | None = None) -> None:
         self.svc = svc
+        self._cancel: asyncio.Event | None = None
         self.console = Console()
         self.rt = svc.runtime()
         self.tok_s = 0.0
@@ -38,6 +42,15 @@ class PlainApp:
 
     # ------------------------------------------------------------------ run
     async def run(self) -> int:
+        loop = asyncio.get_running_loop()
+        try:
+            def _sigint() -> None:
+                if self._cancel is not None:
+                    self._cancel.set()
+
+            loop.add_signal_handler(signal.SIGINT, _sigint)
+        except (NotImplementedError, AttributeError):
+            pass  # Windows: KeyboardInterrupt path handles it
         await self._backend_banner()
         self._print_help()
         while True:
@@ -99,19 +112,28 @@ class PlainApp:
                     live.stop()
                 self.console.print(f"[red]⚠ {ev.get('message')}[/red]")
 
+        self._cancel = asyncio.Event()
+        result = None
         try:
             result = await self.rt.run_turn(
                 self.sess, user_text,
                 prompt_fn=self._prompt, on_event=on_event,
-                user_requested_memory=memory_directive,
+                cancel=self._cancel, user_requested_memory=memory_directive,
             )
+        except AgentCancelled:
+            self.console.print("[yellow]⚠ turn cancelled[/yellow]")
+        except KeyboardInterrupt:
+            # Ctrl+C unwinds the await — partial messages still belong on disk
+            self.console.print("[yellow]⚠ turn interrupted[/yellow]")
         finally:
             if live:
                 live.stop()
+            self.svc.sessions.save(self.sess)  # every path: crash/Ctrl+C included
+        if result is None:
+            return
         self.tok_s = result.tokens_per_s or self.tok_s
         if not result.text and result.error is None:
             self.console.print("[dim](no text produced)[/dim]")
-        self.svc.sessions.save(self.sess)
         if result.error:
             self.console.print(f"[red]backend error: {result.error}[/red]  (try /backend)")
 
@@ -181,7 +203,10 @@ class PlainApp:
         elif cmd == "export":
             self._export(arg)
         elif cmd == "settings":
-            c.print_json(self.svc.config.model_dump_json())
+            # NEVER dump raw config: [cloud] keys would land in terminal
+            # scrollback / logs / bug reports. Same masking as the bridge.
+            from .bridge import _safe_config
+            c.print_json(json.dumps(_safe_config(self.svc.config), indent=2))
         elif cmd == "remember":
             await self._turn(f"remember that {arg}", memory_directive=True)
         else:

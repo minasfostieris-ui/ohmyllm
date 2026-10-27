@@ -29,6 +29,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from . import __version__, paths
+from .agents.runtime import AgentCancelled, TurnResult
 from .capabilities import thinking_support as _thinking_support
 from .config import BackendName, Config, PermissionMode
 from .core import Services
@@ -55,6 +56,7 @@ class BridgeState:
         self.approvals: dict[str, asyncio.Future] = {}
         self.cancel: asyncio.Event | None = None
         self.busy = False
+        self.turn_lock = threading.Lock()  # atomic busy-check-and-claim
         self.interjections: list[str] = []
         self.tok_s = 0.0
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -242,8 +244,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/message":
                 return self._message(body)
             if path == "/api/cancel":
-                if self.state.cancel:
-                    self.state.cancel.set()
+                # Event.set() from this (HTTP) thread is not loop-safe —
+                # hop onto the loop
+                if self.state.cancel is not None and self.state.loop is not None:
+                    self.state.loop.call_soon_threadsafe(self.state.cancel.set)
                 return self._json(200, {"ok": True})
             if path.startswith("/api/approval/"):
                 return self._approval(path.rsplit("/", 1)[-1], body)
@@ -766,10 +770,17 @@ class Handler(BaseHTTPRequestHandler):
         text = str(body.get("text", "")).strip()
         if not text:
             return self._json(400, {"error": "empty message"})
-        if self.state.busy:
-            # queue it into the running turn instead of refusing
-            self.state.interjections.append(text)
-            return self._json(202, {"queued": True, "count": len(self.state.interjections)})
+        with self.state.turn_lock:
+            if self.state.busy:
+                # queue it into the running turn instead of refusing
+                self.state.interjections.append(text)
+                return self._json(202, {"queued": True, "count": len(self.state.interjections)})
+            # claim NOW, on this thread: two rapid POSTs (double Enter, two
+            # tabs) used to both see busy=False and run two turns over one
+            # Session; and /api/cancel arriving before work() started was a
+            # silent no-op because the event did not exist yet
+            self.state.busy = True
+            self.state.cancel = asyncio.Event()
         if body.get("new") or not self.state.session_id:
             sess = self.state.svc.new_session()
             self.state.session_id = sess.id
@@ -779,6 +790,10 @@ class Handler(BaseHTTPRequestHandler):
             if loaded:
                 sess = loaded
                 self.state.session_id = sess.id
+        if body.get("new") or body.get("session"):
+            # interjections queued for the PREVIOUS chat must never leak into
+            # this one (a cancelled/short turn never drains the list)
+            self.state.interjections.clear()
 
         self._sse_init()
         q: queue.Queue = queue.Queue()
@@ -807,30 +822,44 @@ class Handler(BaseHTTPRequestHandler):
 
         async def work() -> None:
             rt = self.state.svc.runtime()
-            self.state.busy = True
-            self.state.cancel = asyncio.Event()
+
+            def done_payload(res: Any, *, cancelled: bool = False) -> tuple:
+                return ("done", {
+                    "text": res.text, "error": res.error or ("cancelled" if cancelled else None),
+                    "steps": res.steps, "tokens_per_s": res.tokens_per_s, "calls": res.calls,
+                    "usage": dict(rt.last_usage or {}), "model": sess.model or "",
+                    "reasoning": res.reasoning[:6000], "tokens": res.tokens,
+                    "ttft_s": res.ttft_s, "session": sess.id, "title": sess.title,
+                })
+
             try:
                 res = await rt.run_turn(
                     sess, text, prompt_fn=prompt_fn, on_event=on_event,
                     cancel=self.state.cancel, user_requested_memory=bool(body.get("memory_directive")),
                     interjections=self.state.interjections,
                 )
-                self.state.svc.sessions.save(sess)
                 if sess.title in ("New chat", "", None):
                     new_title = make_title(text)
                     self.state.svc.sessions.rename(sess.id, new_title)
                     sess.title = new_title
                 self.state.tok_s = res.tokens_per_s or self.state.tok_s
-                q.put(("done", {"text": res.text, "error": res.error, "steps": res.steps,
-                                "tokens_per_s": res.tokens_per_s, "calls": res.calls,
-                                "usage": res.usage, "model": sess.model or "",
-                                "reasoning": res.reasoning[:6000],
-                                "session": sess.id, "title": sess.title}))
+                q.put(done_payload(res))
+            except AgentCancelled:
+                # Stop pressed or the turn unwound: partial work is REAL —
+                # persist it, and always emit done so the SSE writer exits
+                # and the GUI composer unlocks (was: infinite pings, lost
+                # turn, frozen UI — the P0 the audit called out)
+                q.put(done_payload(TurnResult(text="", error=None, cancelled=True),
+                                   cancelled=True))
             except Exception as exc:  # noqa: BLE001
                 tb = traceback.extract_tb(exc.__traceback__)
                 where = f" (at {tb[-1].filename.rsplit('/', 1)[-1]}:{tb[-1].lineno})" if tb else ""
                 q.put(("error", {"message": f"{type(exc).__name__}: {exc}{where}"}))
             finally:
+                try:
+                    self.state.svc.sessions.save(sess)
+                except Exception:  # noqa: BLE001
+                    pass
                 self.state.busy = False
 
         assert self.state.loop is not None

@@ -188,10 +188,16 @@ async def test_choose_opens_settings_for_the_cursor_row(oml_env, svc):
     async with app.run_test(size=(140, 46)) as pilot:
         await pilot.pause(0.9)
         app.replace_screen("models")
-        await pilot.pause(1.2)
+        await pilot.pause(0.5)
         screen = app.screen
         assert isinstance(screen, ModelsScreen)
         t = screen.query_one(DataTable)
+        # offline backend probes cost up to 3 s each and Windows runners can
+        # hang on them — wait for the rows, don't encode a platform's timing
+        for _ in range(60):
+            if t.row_count >= 2:
+                break
+            await pilot.pause(0.25)
         assert t.row_count >= 2
         names = [r.name for r in screen._rows if r is not None]
         target = names[-1]  # last row — never row 0

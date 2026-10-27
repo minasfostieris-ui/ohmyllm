@@ -101,6 +101,9 @@ class OhMyLLMApp(App[None]):
         self.svc = Services.boot(self._workspace)
         self._warm_gpus()
         self._health_probe()
+        # VRAM free/used and backend health drift the moment a model loads or
+        # a server dies — a one-shot probe lies for the whole session
+        self.set_interval(20, self._status_refresh)
         if not self.svc.config.first_run_completed:
             from .screens.wizard import WizardScreen
 
@@ -230,6 +233,10 @@ class OhMyLLMApp(App[None]):
         for s in self.screen_stack:
             for b in s.query(ModeBanner):
                 b.set_mode(mode)
+
+    def _status_refresh(self) -> None:
+        self._health_probe()
+        self.set_timer(0.05, lambda: self._sync_vram_text())
 
     @work(exclusive=True)
     async def _warm_gpus(self) -> None:
