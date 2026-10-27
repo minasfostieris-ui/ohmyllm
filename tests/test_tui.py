@@ -615,10 +615,12 @@ async def test_frames_are_thin_solid_ring_borders(oml_env, svc, monkeypatch):
 
 
 @pytest.mark.asyncio()
-async def test_models_scrollbar_continuous_ring_thumb(oml_env, svc, monkeypatch):
-    """The user's P0: the side bar must be one continuous, straight column.
-    The patched renderer paints thumb cells with the ring BACKGROUND color
-    (no reverse video, no fractional glyphs) — straight in every font."""
+async def test_models_right_edge_is_one_straight_border_column(oml_env, svc, monkeypatch):
+    """The user's P0: the models screen's right edge must be ONE straight
+    continuous column. Textual paints its vertical scrollbar one cell INSIDE
+    the widget, so a thumb column can never coincide with the border column —
+    the two adjacent lines are what read as zig-zag. The bordered boxes
+    therefore hide the built-in scrollbar; the glyph border is the edge."""
     from textual.widgets import DataTable
 
     _truecolor(monkeypatch)
@@ -632,26 +634,23 @@ async def test_models_scrollbar_continuous_ring_thumb(oml_env, svc, monkeypatch)
         for i in range(40):
             t.add_row(f"filler{i}", "", "", "", "", "", "", "")
         await pilot.pause(0.5)
-        assert t.show_vertical_scrollbar, "models table must keep its side bar"
-        ring = app.get_css_variables()["ring"].lower()
-        sb = t._vertical_scrollbar
-        from textual.geometry import Region
-        lines = sb.render_lines(Region(0, 0, sb.size.width, sb.size.height))
-        thumb_rows = [
-            i for i, strip in enumerate(lines)
-            if any(
-                s.style and s.style.bgcolor
-                and (s.style.bgcolor.name or "").lower() == ring
-                and set(s.text) <= {" "}
-                for s in strip
-            )
-        ]
-        assert thumb_rows, "no ring-background scrollbar thumb rendered"
-        assert thumb_rows == list(range(thumb_rows[0], thumb_rows[-1] + 1)), \
-            "thumb fragmented — must be one contiguous run"
-        assert not any(
-            s.style.reverse for strip in lines for s in strip
-        ), "thumb must use plain background cells, not reverse video"
+        assert t.styles.scrollbar_size_vertical == 0, \
+            "bordered models table must not paint a scrollbar beside the border"
+        band = app.screen.query_one("#models-band")
+        edge = band.region.right - 1
+        rows: dict[int, str] = {}
+        for y, strip in enumerate(app.screen._compositor.render_strips()):
+            x = 0
+            for seg in strip._segments:
+                for ch in seg.text:
+                    if ch == "\n":
+                        continue
+                    if x == edge:
+                        rows[y] = ch
+                    x += 1
+        side = [rows.get(y, "") for y in range(band.region.y + 1, band.region.bottom - 1)]
+        assert side and all(c == "│" for c in side), \
+            f"right edge is not one continuous │ column: {side}"
 
 
 def test_app_forces_color_despite_no_color_env(monkeypatch):

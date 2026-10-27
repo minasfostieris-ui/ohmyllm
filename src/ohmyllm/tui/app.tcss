@@ -82,22 +82,19 @@ VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
 #screen-title { height: 1; padding: 0 2; color: $accent; text-style: bold; }
 .detail-box {
     height: auto; max-height: 38%; padding: 0 1; color: $text-muted;
-    overflow-y: auto; border: solid $ring; border-right: none;
+    overflow-y: auto; border: solid $ring;
 }
-#models-band { height: 1fr; width: 100%; border-right: none; }
-#soul-band { border-right: none; }
+#models-band { height: 1fr; width: 100%; }
 /* .band = thin solid-cyan box frame: ┌ ─ ┐ │ └ ┘ */
 .band { border: solid $ring; background: transparent; padding: 0; height: auto; overflow: hidden; }
 DataTable { height: 1fr; width: 1fr; background: $surface; }
-#chats-table { margin: 0 0 0 1; border: solid $ring; border-right: none; }
-/* bordered scrollables: the scrollbar column IS the right edge — thumb and
-   track share the border's column, so the line is always perfectly straight
-   (a glyph border one cell outside the thumb reads as "jagged" to users). */
-#models-table, #chats-table, #chats-preview, .detail-box, #soul-area {
-    overflow-y: scroll;
-    scrollbar-background: $tint;
-    scrollbar-background-hover: $tint;
-    scrollbar-background-active: $tint;
+#chats-table { margin: 0 0 0 1; border: solid $ring; }
+/* Textual paints its scrollbar one cell INSIDE the widget, adjacent to any
+   border — the thumb column and the border column never coincide, which
+   reads as a zig-zag. Where a box already has a solid right border, the
+   built-in scrollbar is hidden; the single │ line is the edge. */
+#models-table, #chats-table, #chats-preview, .detail-box, #soul-area, #slash-menu {
+    scrollbar-size: 0 0;
 }
 DataTable > .datatable--header { background: $tint; color: $text; }
 DataTable > .datatable--cursor { background: $ring; color: $ring-text; }
@@ -215,15 +212,12 @@ PermsScreen { overflow-y: auto; }
 .perm-row { height: 1; margin-top: 1; }
 
 /* ---------- slash command menu ---------- */
-#slash-band { display: none; margin: 0 2; border-right: none; }
+#slash-band { display: none; margin: 0 2; }
 #slash-menu {
     height: auto;
     max-height: 10;
     background: $surface;
-    overflow-y: scroll;
-    scrollbar-background: $tint;
-    scrollbar-background-hover: $tint;
-    scrollbar-background-active: $tint;
+    scrollbar-size: 0 0;
 }
 
 /* markdown furniture: painted, never glyph bars */

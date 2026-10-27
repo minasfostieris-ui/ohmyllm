@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+from rich.cells import set_cell_size
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -259,25 +260,25 @@ class ModelsScreen(Screen):
             style = {"comfortable": "green", "tight": "yellow", "too_large": "red"}.get(fit, "dim")
             tested = vision_cached(m.backend.value, m.name)
             if m.name in getattr(self, "_probing", set()):
-                vis = "[yellow]⏳[/]"
+                vis = "[yellow]…[/]"
             elif tested is not None:
-                vis = "[green]👁[/]" if tested else "[dim]✗v[/]"
+                vis = "[green]✓[/]" if tested else "[dim]✗v[/]"
             elif m.vision is True:
-                vis = "[green]👁[/]"
+                vis = "[green]✓[/]"
             elif m.vision is False:
                 vis = "[dim]✗v[/]"
             else:
                 vis = "[dim]?v[/]"
             th = m.thinking or thinking_support(m.name, m.params_b)
-            th_cell = {"levels": "[green]⚡[/]", "forced": "[cyan]★[/]",
+            th_cell = {"levels": "[green]≡[/]", "forced": "[cyan]★[/]",
                        "on-off": "[yellow]◐[/]", "none": "[dim]✗[/]"}.get(th or "", "[dim]?[/]")
-            fit_cell = {"comfortable": "✓", "tight": "⚠", "too_large": "✗"}.get(fit, "?")
+            fit_cell = {"comfortable": "✓", "tight": "!", "too_large": "✗"}.get(fit, "?")
             cap_cell = {True: "✓", False: "·", None: "?"}[m.tool_capable]
             sz = f"{human_bytes(m.size_bytes).replace(' ', '')}·{(m.quant or '?')[:4]}" if m.size_bytes else "?"
             vr = human_bytes(est.min_bytes).replace(" ", "") if est else "?"
             star = "★" if (m.name == cur and m.backend.value == cur_be) else ""
             t.add_row(
-                (star + m.name)[:name_w - 1],
+                set_cell_size(star + m.name, name_w - 1),
                 sz,
                 f"{m.params_b:g}B" if m.params_b else "?",
                 vr,

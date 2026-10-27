@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+from rich.cells import set_cell_size
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -111,8 +112,8 @@ class ChatsScreen(Screen):
         for s in self._filtered():
             when = datetime.fromtimestamp(s.updated_at).strftime("%Y-%m-%d %H:%M")
             table.add_row(
-                "📌" if s.pinned else "", s.title[:46], when, s.backend or "—",
-                (s.model or "—")[:12], str(s.message_count), s.id[:12],
+                "★" if s.pinned else "", set_cell_size(s.title, 46), when, s.backend or "—",
+                set_cell_size(s.model or "—", 12), str(s.message_count), s.id[:12],
             )
             self._row_order.append(s.id)
         if self._row_order:
