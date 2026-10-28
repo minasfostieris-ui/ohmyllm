@@ -712,16 +712,19 @@ async function provConnect(pid) {
   const key = await promptModal(`🔑 ${p.name} API key`, cur + (cur ? "\n" : "") + signup, true);
   if (key === null) return;
   let models = p.models || "";
-  if (key) {
-    const m = await promptModal(`${p.name} model ids (optional)`,
-      "comma-separated — needed when the gateway has no /models listing (e.g. Alibaba Token Plan). Leave empty to list live.");
-    if (m === null) return;
-    if (m) models = m;
-  }
-  const r = await post("/api/providers/key", { pid, key, models });
+  const r = await post("/api/providers/key", { pid, key, models, probe: true });
   if (r && r.error) { toast(r.error, "bad"); return; }
   _provData = r; renderProviders();
   toast(key ? `${p.name} key saved` : `${p.name} key removed`);
+  if (key && r.models_ok === false) {
+    // gateway has no /models listing — only now ask for ids
+    const m = await promptModal(`${p.name} model ids`,
+      "this gateway has no /models listing — comma-separated ids, e.g. qwen3-coder, llama-3.3-70b");
+    if (m) {
+      const r2 = await post("/api/providers/key", { pid, key, models: m });
+      if (r2 && !r2.error) { _provData = r2; renderProviders(); toast(`${p.name}: ${m.split(",").length} model(s) registered`); }
+    }
+  }
   if (key) {
     const u = await post("/api/providers/use", { pid });
     if (u && !u.error) { _provData = u; renderProviders(); toast(`${p.name} → default backend (cloud)`); }
@@ -1033,7 +1036,7 @@ function renderHelp() {
   <tr><td><code>/clear</code></td><td>empty the visible stream</td></tr>
   <tr><td><code>/market</code></td><td>models + voice models to download (Market tab)</td></tr>
   <tr><td><code>/providers</code></td><td>connect cloud API keys — Providers tab</td></tr>
-  <tr><td><code>/voice</code></td><td>speech-to-text status (TUI: hold Ctrl+E to talk)</td></tr>
+  <tr><td><code>/voice</code></td><td>speech-to-text status · hold <kbd>Ctrl+E</kbd> anywhere to talk</td></tr>
   <tr><td><code>/help</code></td><td>this screen</td></tr></table>
   <h3>where do API keys go?</h3>
   <p>Open the <b>Providers</b> tab (left sidebar) → pick OpenRouter / Anthropic / OpenAI / … →
@@ -1393,10 +1396,60 @@ $("#wz-back").onclick = () => { if (wzIdx) { wzIdx--; wzShow(); } };
 
 /* --------------------------------------------------------------- global keys */
 const KEYMAP = { m: "models", b: "backend", p: () => setModeUi(), s: "memory", d: "doctor", g: "settings", o: "chats", h: "help", n: () => newChat(), k: openPalette };
+
+/* ------------------------------------------------- hold-to-talk (Ctrl+E) */
+let _mic = null, _micStream = null, _micChunks = [], _micAuto = null;
+const _inputPlaceholder = $("#input").placeholder;
+async function talkStart() {
+  if (_mic || state.streaming) return;
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+    toast("this browser cannot record audio", "bad"); return;
+  }
+  try { _micStream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+  catch { toast("microphone blocked — allow it in the browser, then retry", "bad"); return; }
+  _micChunks = [];
+  _mic = new MediaRecorder(_micStream);
+  _mic.ondataavailable = (e) => { if (e.data.size) _micChunks.push(e.data); };
+  _mic.start();
+  _micAuto = setTimeout(talkStop, 30000);  // never leave the mic hot
+  const inp = $("#input");
+  inp.classList.add("mic-live");
+  inp.placeholder = "🎙 listening… release Ctrl+E when done";
+}
+function talkStop() {
+  if (!_mic) return;
+  const rec = _mic;
+  _mic = null;
+  clearTimeout(_micAuto);
+  if (rec.state !== "inactive") rec.stop();
+  rec.onstop = async () => {
+    if (_micStream) { _micStream.getTracks().forEach((t) => t.stop()); _micStream = null; }
+    const inp = $("#input");
+    inp.classList.remove("mic-live");
+    inp.placeholder = _inputPlaceholder;
+    const blob = new Blob(_micChunks, { type: rec.mimeType || "audio/webm" });
+    _micChunks = [];
+    if (!blob.size) return;
+    const b64 = await new Promise((res) => {
+      const fr = new FileReader();
+      fr.onload = () => res(String(fr.result).split(",")[1]);
+      fr.readAsDataURL(blob);
+    });
+    toast("🎧 transcribing…");
+    const r = await post("/api/voice/transcribe", { audio: b64 });
+    if (r && r.error) { toast(r.error, "bad"); return; }
+    if (r && r.text) {
+      inp.value = (inp.value + " " + r.text).trim();
+      inp.focus();
+      toast(`🎙 ${r.text.slice(0, 60)}${r.text.length > 60 ? "…" : ""}`);
+    }
+  };
+}
 document.addEventListener("keydown", async (e) => {
   if ((e.ctrlKey || e.metaKey) && !e.altKey) {
     const k = e.key.toLowerCase();
     if (k === "q") { e.preventDefault(); if (await confirmModal("quit", "Quit the OhMyLLM window?", "Quit")) window.close(); return; }
+    if (k === "e" && e.ctrlKey && !e.metaKey && !e.repeat) { e.preventDefault(); talkStart(); return; }
     const fn = KEYMAP[k];
     if (fn) { e.preventDefault(); typeof fn === "function" ? fn() : switchView(fn); }
     if (k === "enter" && $("#view-memory")?.hidden === false) { e.preventDefault(); $("#soul-save").click(); }
@@ -1409,7 +1462,10 @@ document.addEventListener("keydown", async (e) => {
     if (k === "a") answerApproval("session");
     if (k === "p") answerApproval("always");
   }
+  if (e.key.toLowerCase() === "e" && !e.ctrlKey && !e.metaKey && !e.altKey && _mic) talkStop();
 });
+document.addEventListener("keyup", (e) => { if (e.code === "KeyE") talkStop(); });
+window.addEventListener("blur", () => talkStop());
 
 /* ------------------------------------------------------------------ boot */
 async function boot() {

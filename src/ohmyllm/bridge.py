@@ -286,6 +286,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._market_download(body)
             if path == "/api/vision/probe":
                 return self._run(self._vision_probe(body))
+            if path == "/api/voice/transcribe":
+                return self._run(self._voice_transcribe(body))
             if path == "/api/providers/key":
                 code, payload = self._providers_key(body)
                 return self._json(code, payload)
@@ -494,6 +496,39 @@ class Handler(BaseHTTPRequestHandler):
         return {"providers": rows, "active": cl.provider,
                 "default_backend": self.state.svc.config.default_backend.value}
 
+    def _probe_models(self, pid: str) -> bool:
+        """True when the provider's /models listing answers with entries.
+        Gateways without a listing (e.g. Alibaba Token Plan) return False —
+        the GUI then asks for model ids instead of pretending."""
+        import httpx
+
+        from .providers import get as _pg
+        from .providers import is_custom, key_for
+
+        cl = self.state.svc.config.cloud
+        key = key_for(pid, cl.keys)
+        if not key:
+            return False
+        if is_custom(pid) and pid in cl.customs:
+            base = (cl.bases.get(pid) or "").rstrip("/")
+            kind = "openai"
+        else:
+            p = _pg(pid)
+            if p is None:
+                return False
+            base, kind = p.base_url.rstrip("/"), p.kind
+        headers = ({"x-api-key": key, "anthropic-version": "2023-06-01"}
+                   if kind == "anthropic" else {"Authorization": f"Bearer {key}"})
+        try:
+            r = httpx.get(f"{base}/models", headers=headers, timeout=10.0)
+            if r.status_code != 200:
+                return False
+            j = r.json()
+            data = j.get("data") or j.get("models") or []
+            return bool(data)
+        except Exception:  # noqa: BLE001 — a probe failure is never fatal
+            return False
+
     def _providers_key(self, body: dict) -> tuple[int, dict]:
         pid = str(body.get("pid") or "").strip()
         raw_key = body.get("key", "")
@@ -525,7 +560,12 @@ class Handler(BaseHTTPRequestHandler):
                 cl.provider = ""
             self._revert_cloud_default_if_orphaned()
         self.state.svc.save_config()
-        return 200, self._providers_state()
+        payload = self._providers_state()
+        # the GUI asks for a live /models probe (probe: true) so it only
+        # falls back to asking for model ids when the gateway has no
+        # listing; tests and other callers never touch the network here
+        payload["models_ok"] = self._probe_models(pid) if (key and body.get("probe")) else None
+        return 200, payload
 
     def _providers_use(self, body: dict) -> tuple[int, dict]:
         pid = str(body.get("pid") or "").strip()
@@ -581,6 +621,49 @@ class Handler(BaseHTTPRequestHandler):
             cl.model_lists[pid] = models
         self.state.svc.save_config()
         return 200, self._providers_state()
+
+    async def _voice_transcribe(self, body: dict) -> tuple[int, dict]:
+        """Hold-to-talk from the browser: MediaRecorder webm/opus arrives as
+        base64, ffmpeg decodes it to the 16 kHz mono WAV the STT engines
+        want, then the normal engine routing answers."""
+        import asyncio
+        import base64
+        import shutil
+        import tempfile
+
+        from . import voice as V
+
+        b64 = str(body.get("audio") or "")
+        if not b64:
+            return 400, {"error": "audio (base64) required"}
+        if len(b64) > 40_000_000:
+            return 400, {"error": "audio too large"}
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:  # noqa: BLE001
+            return 400, {"error": "audio is not valid base64"}
+        ff = shutil.which("ffmpeg")
+        if ff is None:
+            return 500, {"error": "no ffmpeg on this machine — cannot decode browser audio"}
+        tmp = Path(tempfile.mkdtemp(prefix="oml-voice-"))
+        try:
+            src = tmp / "in.bin"
+            src.write_bytes(raw)
+            wav = tmp / "in.wav"
+            cp = await asyncio.create_subprocess_exec(
+                ff, "-y", "-i", str(src), "-ar", "16000", "-ac", "1", str(wav),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+            _, err = await asyncio.wait_for(cp.communicate(), timeout=60)
+            if cp.returncode or not wav.exists():
+                return 500, {"error": "audio decode failed: "
+                                      + err.decode(errors="replace")[-160:]}
+            lang = self.state.svc.config.voice.language
+            text, terr = await V.transcribe(wav, language=None if lang == "auto" else lang)
+            if terr:
+                return 502, {"error": terr}
+            return 200, {"text": text}
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     async def _vision_probe(self, body: dict) -> tuple[int, dict]:
         from .vision import probe_vision, save_verdict

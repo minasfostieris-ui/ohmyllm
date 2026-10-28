@@ -103,7 +103,25 @@ class ChatScreen(Screen):
 
     @on(Input.Changed, "#chat-input")
     def _input_changed(self, event: Input.Changed) -> None:
+        self._talk_e_guard()
         self._update_slash_menu(event.value)
+
+    def _talk_e_guard(self) -> None:
+        # terminals without the kitty keyboard protocol auto-repeat Ctrl+E
+        # as plain 'e' while the key is held — those e's would otherwise
+        # pile up in the input. While recording, any edit that differs from
+        # the armed snapshot ONLY by extra 'e' characters is undone.
+        rec = getattr(self, "_rec", None)
+        if rec is None or not rec.running:
+            return
+        snap = getattr(self, "_talk_snap", None)
+        if snap is None:
+            return
+        value, cursor = snap
+        inp = self.query_one("#chat-input", Input)
+        if inp.value != value and inp.value.replace("e", "") == value.replace("e", ""):
+            inp.value = value
+            inp.cursor_position = cursor
 
     def _set_slash(self, visible: bool) -> None:
         self.query_one("#slash-band").display = visible
@@ -366,6 +384,8 @@ class ChatScreen(Screen):
             return
         self._rec = rec
         self._rec_path = wav
+        _ci = self.query_one("#chat-input", Input)
+        self._talk_snap = (_ci.value, _ci.cursor_position)
         self._talk_last = _t.monotonic()
         self.app.notify(f"🎙 {eng} armed — talk… release Ctrl+E when done", timeout=30)
         old = getattr(self, "_talk_timer", None)

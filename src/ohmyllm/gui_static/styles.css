@@ -209,7 +209,7 @@ pre.diff .add { color: var(--accent); } pre.diff .del { color: var(--coral); } p
 .stream-empty .big { font-size: 15px; color: var(--fg-dim); }
 .stream-empty svg { width: 46px; height: 46px; fill: none; stroke: var(--accent-deep); stroke-width: 1.6; margin-bottom: 10px; }
 
-.composer { position: relative; max-width: 916px; width: 100%; margin: 0 auto; padding: 10px 28px 18px; display: flex; gap: 10px; align-items: flex-end; }
+.composer { position: relative; max-width: 916px; width: 100%; margin: 0 auto; padding: 10px 28px 18px; display: flex; gap: 10px; align-items: center; }
 .composer::before { content: ""; position: absolute; inset: -22px 0 0 0; background: linear-gradient(var(--canvas), transparent); pointer-events: none; }
 #input {
   flex: 1; resize: none; max-height: 240px; background: var(--surface);
@@ -217,6 +217,7 @@ pre.diff .add { color: var(--accent); } pre.diff .del { color: var(--coral); } p
   font: 15px/1.5 var(--sans); position: relative;
 }
 #input:focus { outline: none; border-color: var(--accent-deep); box-shadow: 0 0 0 3px rgba(122,199,159,.12); }
+#input.mic-live { border-color: var(--coral); box-shadow: 0 0 0 3px rgba(224,122,106,.18); }
 .slash-hint {
   position: absolute; bottom: 74px; left: 28px; right: 28px; background: var(--surface-2);
   border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; z-index: 5;

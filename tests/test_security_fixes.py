@@ -595,6 +595,7 @@ async def test_models_backend_cycle_and_table_fits(oml_env, svc, monkeypatch):
     async with app.run_test(size=(120, 40)) as pilot:
         await pilot.pause(0.7)
         app.svc.config.cloud.keys["openrouter"] = "sk-cycle-test"
+        app.svc.save_config()  # refresh reloads from disk; persist like real usage does
         app.replace_screen("models")
         await pilot.pause(0.8)
         scr = app.screen
@@ -637,7 +638,7 @@ def test_registry_provider_static_models_via_bridge(bridge):
     assert names == ["qwen3.8-flash", "qwen3-coder-plus"]
 
 
-async def test_cloud_pick_switches_backend_and_escape_stops_at_modal(oml_env, svc, monkeypatch):
+async def test_cloud_pick_switches_backend_without_settings_modal(oml_env, svc, monkeypatch):
     import ohmyllm.voice as _v
 
     monkeypatch.setattr(_v.shutil, "which", lambda n: None)
@@ -651,6 +652,7 @@ async def test_cloud_pick_switches_backend_and_escape_stops_at_modal(oml_env, sv
     async with app.run_test(size=(112, 40)) as pilot:
         await pilot.pause(0.7)
         app.svc.config.cloud.keys["openrouter"] = "sk-pick-test"
+        app.svc.save_config()  # refresh reloads from disk; persist like real usage does
         app.replace_screen("models")
         await pilot.pause(0.8)
         scr = app.screen
@@ -666,9 +668,13 @@ async def test_cloud_pick_switches_backend_and_escape_stops_at_modal(oml_env, sv
         cfg = app.svc.config
         assert cfg.default_backend == BackendName.CLOUD, "cloud pick must switch default backend"
         assert cfg.cloud.default_model == "gpt-test"
-        # escape closes ONLY the settings modal, models screen survives
-        top = app.screen
-        assert type(top).__name__ == "ModelSettingsModal"
+        # a cloud API has no per-model GPU knobs: choosing it must NOT open
+        # the settings modal (manual 's' still does), and escape at the
+        # models screen must stop there
+        assert isinstance(app.screen, ModelsScreen), "cloud pick must not ask for settings"
+        scr.action_settings()
+        await pilot.pause(0.3)
+        assert type(app.screen).__name__ == "ModelSettingsModal"
         await pilot.press("escape")
         await pilot.pause(0.4)
         assert isinstance(app.screen, ModelsScreen), "escape leaked through the modal"

@@ -174,6 +174,7 @@ class ModelsScreen(Screen):
     # --------------------------------------------------------------- refresh
     @work(exclusive=True)
     async def refresh_models(self) -> None:
+        self.app.svc.reload_config()  # pick up keys the GUI bridge just saved
         label = self._filter
         try:
             self.query_one("#screen-title", Static).update(
@@ -376,7 +377,11 @@ class ModelsScreen(Screen):
             cfg.default_backend = m.backend
             self.app.svc.save_config()
             self._populate()
-            if f"{key}:{m.name}" not in cfg.model_settings:
+            if key == "cloud":
+                # a cloud API has no GPU knobs worth asking about — the
+                # global generation settings (temp/top-p/max) apply as-is
+                self.app.notify(f"default model → cloud:{m.name}")
+            elif f"{key}:{m.name}" not in cfg.model_settings:
                 # first time this model is picked: ask for its per-model settings
                 self.app.notify(f"{m.name} is new here — set its per-model settings")
                 self._open_settings(m)

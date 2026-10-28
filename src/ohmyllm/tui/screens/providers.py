@@ -123,6 +123,7 @@ class ProvidersScreen(Screen):
         return rows["Popular"] + rows["Other"] + rows["Custom"]
 
     def refresh_list(self) -> None:
+        self.app.svc.reload_config()  # the GUI bridge may have saved keys meanwhile
         lst = self.query_one(OptionList)
         # clear_options() resets the cursor — remember what the user was on so
         # follow-up keys (x, e, u) don't silently no-op after a rebuild

@@ -140,6 +140,15 @@ class Services:
         self._backend_cache.clear()  # backends hold config refs; rebuild lazily
         self.save_config()
 
+    def reload_config(self) -> Config:
+        """Re-read config.toml from disk without writing anything back: the
+        GUI bridge is a separate process, so keys/provider/model changes it
+        saves are invisible to this TUI until now."""
+        cfg = self.config_store.load()
+        self.config = cfg
+        self._backend_cache.clear()
+        return cfg
+
     def set_mode(self, mode: PermissionMode, *, phrase: str | None = None) -> bool:
         """Full access requires the exact phrase; every change is audited."""
         if mode is PermissionMode.FULL_ACCESS:
