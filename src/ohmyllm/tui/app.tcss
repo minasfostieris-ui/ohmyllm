@@ -200,7 +200,7 @@ HelpMarkdown { padding: 1 3; }
 #recent-memory { height: 8; color: $text-muted; background: $surface; padding: 1 2; }
 
 /* ---------- inputs & chips: painted, no glyph frames ---------- */
-Input { margin: 0 1; border: none; background: $surface; color: $text; }
+Input { margin: 0 1; border: none; background: $surface; color: $text; scrollbar-size-horizontal: 0; }
 Input:focus { background: $boost; }
 #chat-input:focus { border: solid $ring; background: $surface; }
 
