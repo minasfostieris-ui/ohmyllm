@@ -315,3 +315,52 @@ def test_message_while_busy_is_queued(bridge, monkeypatch):
     assert queued is not None, "never observed busy"
     body = queued if isinstance(queued, dict) else _json.loads(queued.read())
     assert body.get("queued") is True and body.get("count", 0) >= 1
+
+
+def test_voice_record_roundtrip(bridge, monkeypatch, tmp_path):
+    # server-side hold-to-talk: fake recorder + engine, real route wiring
+    from ohmyllm import voice as V
+
+    class FakeRec:
+        def __init__(self, out):
+            self.out, self._live = out, False
+
+        @property
+        def running(self):
+            return self._live
+
+        def start(self):
+            self.out.write_bytes(b"RIFF" + b"\0" * 20000)
+            self._live = True
+            return None
+
+        def stop(self):
+            self._live = False
+
+    async def fake_transcribe(wav, language=None):
+        return "hello world", ""
+
+    monkeypatch.setattr(V, "Recorder", FakeRec)
+    monkeypatch.setattr(V, "voice_dir", lambda: tmp_path)
+    monkeypatch.setattr(V, "transcribe", fake_transcribe)
+
+    assert bridge.post("/api/voice/record", {"action": "start"}).get("ok") is True
+    r = bridge.post("/api/voice/record", {"action": "stop"})
+    assert r.get("text") == "hello world"
+    assert bridge.post("/api/voice/record", {"action": "stop"}).get("text") == ""
+    assert "error" in bridge.post("/api/voice/record", {"action": "bogus"})
+
+
+def test_bridge_syncs_disk_config(bridge, oml_env):
+    # the TUI is a separate process; its saves must show up in the GUI
+    import time
+
+    from ohmyllm.config import ConfigStore
+
+    st = ConfigStore()
+    assert bridge.get("/api/status")["backend"] == "mock"  # fixture default
+    cfg = st.load()
+    cfg.default_backend = "ollama"
+    time.sleep(0.02)
+    st.save(cfg)
+    assert bridge.get("/api/status")["backend"] == "ollama"

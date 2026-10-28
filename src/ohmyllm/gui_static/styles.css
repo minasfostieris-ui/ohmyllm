@@ -384,6 +384,8 @@ table.grid tr.active td { background: rgba(122,199,159,.07); }
 .prov-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 8px; cursor: pointer; border: 1px solid transparent; }
 .prov-row:hover, .prov-row:focus-visible { background: var(--surface, rgba(255,255,255,.04)); border-color: var(--border, #333); outline: none; }
 .prov-glyph { width: 22px; height: 22px; flex: 0 0 22px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; background: var(--surface, rgba(255,255,255,.06)); color: var(--fg, #ddd); font-size: 12px; font-weight: 700; }
+.prov-glyph.has-logo { background: transparent; }
+.prov-glyph svg { width: 17px; height: 17px; display: block; }
 .prov-name { font-weight: 600; font-size: 14px; white-space: nowrap; }
 .prov-blurb { color: var(--muted, #999); font-size: 12.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pb { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border, #444); color: var(--muted, #aaa); white-space: nowrap; }

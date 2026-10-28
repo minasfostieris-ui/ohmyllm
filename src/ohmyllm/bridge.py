@@ -64,6 +64,9 @@ class BridgeState:
         self.market_state: Any = None
         self.market_cancel: bool = False
         self.market_thread: Any = None
+        self.cfg_mtime = 0.0
+        self.talk: Any = None  # server-side hold-to-talk recorder
+        self.talk_pending = False  # start() still spawning the recorder
         self.shutdown_hook = lambda: None
 
     def ensure_session(self) -> Any:
@@ -85,8 +88,8 @@ class BridgeState:
             busy=self.busy,
             backend_ready=bool(self.active_backend_ready) if self.active_backend_ready is not None else None,
             tok_s=self.tok_s,
-            ctx_window=self.svc.config.settings_for(
-                self.svc.config.default_backend, self.svc.current_model()).num_ctx,
+            ctx_window=snap["num_ctx"],  # cloud-aware window from the snapshot,
+                                         # not the raw local num_ctx setting
             session=sess.id if sess else None,
             session_title=sess.title if sess else None,
             saved=True,
@@ -138,6 +141,22 @@ class Handler(BaseHTTPRequestHandler):
             return True
         tok = self.headers.get("X-OMLLM-Token", "") or (parse_qs(urlparse(self.path).query).get("t", [""])[0])
         return tok == self.state.token
+
+    def _sync_disk_config(self) -> None:
+        """The TUI is a separate process; its saves are invisible here until
+        config.toml's mtime moves — then reload before serving any state."""
+        import os
+
+        try:
+            mt = os.path.getmtime(self.state.svc.config_store.path)
+        except OSError:
+            return
+        if self.state.cfg_mtime and mt != self.state.cfg_mtime:
+            self.state.cfg_mtime = mt
+            with contextlib.suppress(Exception):
+                self.state.svc.reload_config()
+        elif not self.state.cfg_mtime:
+            self.state.cfg_mtime = mt
 
     def _json(self, code: int, payload: Any) -> None:
         body = json.dumps(payload, default=str, ensure_ascii=False).encode()
@@ -191,6 +210,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/health":
                 return self._json(200, {"ok": True, "version": __version__})
             if path == "/api/status":
+                self._sync_disk_config()
                 return self._json(200, self.state.status())
             if path == "/api/market":
                 return self._market()
@@ -201,11 +221,13 @@ class Handler(BaseHTTPRequestHandler):
 
                 return self._json(200, {"line": status_line()})
             if path == "/api/providers":
+                self._sync_disk_config()
                 return self._json(200, self._providers_state())
             if path == "/api/skills":
                 return self._json(200, {"skills": [
                     {"name": sk.name, "description": sk.description} for sk in self.state.svc.skills.list()]})
             if path == "/api/config":
+                self._sync_disk_config()
                 return self._json(200, _safe_config(self.state.svc.config))
             if path == "/api/backends":
                 return self._run(self._backends())
@@ -288,6 +310,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._run(self._vision_probe(body))
             if path == "/api/voice/transcribe":
                 return self._run(self._voice_transcribe(body))
+            if path == "/api/voice/record":
+                return self._run(self._voice_record(body))
             if path == "/api/providers/key":
                 code, payload = self._providers_key(body)
                 return self._json(code, payload)
@@ -664,6 +688,56 @@ class Handler(BaseHTTPRequestHandler):
             return 200, {"text": text}
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+    async def _voice_record(self, body: dict) -> tuple[int, dict]:
+        """Server-side hold-to-talk: the Tauri webview (and any browser the
+        user has denied mic access to) cannot getUserMedia — but the bridge
+        runs on this machine, so pw-record/arecord can. Ctrl+E in the GUI
+        starts the SAME recorder the TUI uses; release stops + transcribes."""
+        import asyncio
+        import time
+
+        from . import voice as V
+
+        action = str(body.get("action") or "")
+        if action == "start":
+            if self.state.talk is not None and self.state.talk["rec"].running:
+                return 200, {"ok": True, "already": True}
+            wav = V.voice_dir() / f"gui-hold-{int(time.time() * 1000)}.wav"
+            rec = V.Recorder(wav)
+            self.state.talk_pending = True
+            try:
+                err = await asyncio.to_thread(rec.start)
+            finally:
+                self.state.talk_pending = False
+            if err:
+                return 500, {"error": err}
+            self.state.talk = {"rec": rec, "path": wav}
+            return 200, {"ok": True}
+        if action == "stop":
+            # a quick tap can release before the recorder finished spawning —
+            # give a pending start up to 3s to land, then stop what exists
+            for _ in range(30):
+                if self.state.talk is not None or not self.state.talk_pending:
+                    break
+                await asyncio.sleep(0.1)
+            talk, self.state.talk = self.state.talk, None
+            if talk is None:
+                return 200, {"text": "", "note": "not recording"}
+            await asyncio.to_thread(talk["rec"].stop)
+            wav = talk["path"]
+            if not wav.exists() or wav.stat().st_size < 10_000:
+                with contextlib.suppress(OSError):
+                    wav.unlink(missing_ok=True)
+                return 500, {"error": "too short — hold Ctrl+E, speak, release when done"}
+            lang = self.state.svc.config.voice.language
+            text, terr = await V.transcribe(wav, language=None if lang == "auto" else lang)
+            with contextlib.suppress(OSError):
+                wav.unlink(missing_ok=True)
+            if terr:
+                return 502, {"error": terr}
+            return 200, {"text": text}
+        return 400, {"error": "action must be start or stop"}
 
     async def _vision_probe(self, body: dict) -> tuple[int, dict]:
         from .vision import probe_vision, save_verdict
