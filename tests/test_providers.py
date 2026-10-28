@@ -9,7 +9,7 @@ import pytest
 
 from ohmyllm import providers
 from ohmyllm.backends.registry import make_backend
-from ohmyllm.config import Config
+from ohmyllm.config import BackendName, Config
 
 
 # ---------------------------------------------------------------- registry
@@ -223,3 +223,77 @@ async def test_providers_screen_connect_use(oml_env, svc, monkeypatch):
         await pilot.pause(0.4)
         assert app.svc.config.cloud.provider == "openrouter"
         assert app.svc.config.default_backend.value == "cloud"
+
+
+def test_cloud_ctx_from_provider_metadata():
+    def handler(req):
+        return httpx.Response(200, json={"data": [
+            {"id": "deepseek/deepseek-chat", "context_length": 163840},
+            {"id": "openai/gpt-4o", "context_length": 128000},
+            {"id": "no-meta-model"},
+        ]})
+
+    cfg = _cfg("openrouter", "sk-or-x")
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(handler))
+    models = asyncio.run(be.list_models())
+    by = {m.name: m for m in models}
+    assert by["deepseek/deepseek-chat"].ctx_len == 163840
+    assert by["openai/gpt-4o"].ctx_len == 128000
+    assert by["no-meta-model"].ctx_len is None
+    # the cache the ctx% bar + compaction read is populated
+    assert be._ctx_map()["openai/gpt-4o"] == 128000
+
+
+def test_cloud_ctx_name_heuristics():
+    def handler(req):
+        return httpx.Response(200, json={"data": [
+            {"id": "vendor/llama-3.1-8b-128k"},
+            {"id": "vendor/qwen-long-1m"},
+            {"id": "vendor/phi-4-mini"},
+        ]})
+
+    cfg = _cfg("openrouter", "sk-or-x")
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(handler))
+    by = {m.name: m for m in asyncio.run(be.list_models())}
+    assert by["vendor/llama-3.1-8b-128k"].ctx_len == 131072
+    assert by["vendor/qwen-long-1m"].ctx_len == 1048576
+    assert by["vendor/phi-4-mini"].ctx_len is None  # "mini" is not a window
+
+
+def test_status_snapshot_uses_cloud_window(oml_env, svc):
+    svc.config.default_backend = BackendName.CLOUD
+    svc.config.cloud.provider = "openrouter"
+    svc.config.cloud.keys["openrouter"] = "sk-or-x"
+    svc.config.cloud.model_lists["openrouter"] = "vendor/big-model-256k"
+    svc.config.generation.num_ctx = 4096
+    be = svc.backend("cloud")  # constructs + caches; static list path
+    asyncio.run(be.list_models())
+    svc.config.cloud.default_model = "vendor/big-model-256k"
+    snap = svc.status_snapshot(ctx_used=1000)
+    assert snap["num_ctx"] == 262144
+    assert snap["ctx_pct"] == 0  # 1000 / 256k — not the old 4096 panic
+
+
+def test_runtime_ctx_budget_prefers_cloud_window(oml_env, svc):
+    from ohmyllm.agents import AgentRuntime
+
+    svc.config.default_backend = BackendName.CLOUD
+    be = svc.backend("cloud")
+    be._ctx_map()["vendor/x"] = 131072
+    rt = AgentRuntime(backend=be, registry=svc.registry, policy=svc.policy,
+                      approvals=svc.approvals, audit=svc.audit, config=svc.config,
+                      soul=svc.soul)
+    assert rt._ctx_budget("vendor/x", svc.config.generation) == 131072
+    assert rt._ctx_budget("unknown", svc.config.generation) == max(2048, svc.config.generation.num_ctx)
+
+
+def test_static_list_ctx_suffix():
+    cfg = _cfg("alibaba-token-plan", "sk-x")
+    cfg.cloud.model_lists["alibaba-token-plan"] = "qwen3.8-flash:256k, glm-5.2:1m, plain-model"
+    be = make_backend("cloud", cfg, transport=httpx.MockTransport(
+        lambda r: httpx.Response(404)))
+    by = {m.name: m for m in asyncio.run(be.list_models())}
+    assert by["qwen3.8-flash"].ctx_len == 262144
+    assert by["glm-5.2"].ctx_len == 1048576
+    assert by["plain-model"].ctx_len is None
+    assert be._ctx_map()["qwen3.8-flash"] == 262144

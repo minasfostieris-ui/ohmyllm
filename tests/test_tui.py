@@ -678,3 +678,51 @@ def test_app_forces_color_despite_no_color_env(monkeypatch):
     app = OhMyLLMApp()
     assert app.no_color is False
     assert not [f for f in app._filters if isinstance(f, (Monochrome, NoColor))]
+
+
+@pytest.mark.asyncio()
+async def test_settings_save_accepts_cloud_backend(oml_env, svc):
+    # regression: a cloud-default config could never save — validation only
+    # accepted ollama|lmstudio|mock and rejected the user's real backend
+    from ohmyllm.config import ConfigStore
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(106, 34)) as pilot:
+        await pilot.pause(0.7)
+        app.replace_screen("settings")
+        await pilot.pause(0.8)
+        b = app.screen.query_one("#st-default_backend")
+        await pilot.click("#st-default_backend")
+        await pilot.pause(0.2)
+        await pilot.press("end")
+        for _ in range(len(b.value)):
+            await pilot.press("backspace")
+        await pilot.press(*"cloud")
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.8)
+        assert ConfigStore().load().default_backend.value == "cloud"
+        from ohmyllm.tui.screens.chat import ChatScreen
+        assert isinstance(app.screen, ChatScreen)
+
+
+@pytest.mark.asyncio()
+async def test_settings_error_jumps_to_offending_tab(oml_env, svc):
+    app = OhMyLLMApp()
+    async with app.run_test(size=(106, 34)) as pilot:
+        await pilot.pause(0.7)
+        app.replace_screen("settings")
+        await pilot.pause(0.8)
+        # start on Safety, break a field on the UI tab
+        app.screen._activate_tab(6)
+        await pilot.pause(0.2)
+        m = app.screen.query_one("#st-mode")
+        await pilot.click("#st-safety_confirm")   # any control on this tab
+        await pilot.pause(0.2)
+        app.screen._activate_tab(6)
+        await pilot.pause(0.2)
+        m.value = "bogus"
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.6)
+        assert app.screen._tab_idx == 8, "must jump to the UI tab holding st-mode"
+        assert app.focused is m
+        assert "st-mode" in str(app.screen.query_one("#st-errors").render())

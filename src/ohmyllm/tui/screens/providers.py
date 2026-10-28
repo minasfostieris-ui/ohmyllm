@@ -247,7 +247,8 @@ class ProvidersScreen(Screen):
         self.app.push_screen(KeyModal(
             "custom provider — Name|https://host/v1|model-a,model-b",
             "the last part (model ids, comma-separated) is optional — needed when the "
-            "endpoint has no /models listing; edit later with e", secret=False),
+            "endpoint has no /models listing; append :128k/:1m to declare a context "
+            "window; edit later with e", secret=False),
             lambda val: self._add_custom(val))
 
     def _add_custom(self, val: str | None) -> None:
@@ -293,7 +294,8 @@ class ProvidersScreen(Screen):
             # registry provider: URL is fixed, but gateways without a /models
             # listing (Alibaba Token Plan style) still need a model list
             self.app.push_screen(
-                KeyModal(f"{prov.name} model ids (comma-separated; empty = list from /models)",
+                KeyModal(f"{prov.name} model ids (comma-separated; empty = list from /models; "
+                         f"append :128k/:1m to declare each context window)",
                          cl.model_lists.get(pid, ""), secret=False),
                 lambda val: self._apply_models(pid, val))
             return

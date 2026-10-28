@@ -215,11 +215,15 @@ class ModelsScreen(Screen):
             f"[b]{be}[/b] {sum(1 for m in models if m.backend.value == be)}"
             for be in dict.fromkeys(m.backend.value for m in models)) or "no models"
         gen = self.app.svc.config.generation
+        cur = self.app.svc.current_model()
+        curm = next((m for m in models if m.name == cur), None)
+        ctx_note = (f"ctx {curm.ctx_len:,} (provider)" if curm and curm.ctx_len
+                    else f"ctx {gen.num_ctx}")
         weak = [m for m in self._models if not m.tool_capable and m.why_tool_weak()]
         extra = ""
         if weak:
             extra = "\n" + "\n".join(f"[yellow]⚠ {m.name}:[/] {m.why_tool_weak()}" for m in weak[:4])
-        self._status(f"{counts} · ctx {gen.num_ctx}" + ("\n" + "\n".join(notes) if notes else "") + extra)
+        self._status(f"{counts} · {ctx_note}" + ("\n" + "\n".join(notes) if notes else "") + extra)
 
     # -------------------------------------------------------------- populate
     def _populate(self) -> None:

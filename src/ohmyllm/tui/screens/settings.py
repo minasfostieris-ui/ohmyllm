@@ -94,7 +94,7 @@ class SettingsScreen(Screen):
                              "Ctrl+B switches backend, Ctrl+M manages models.",
                              classes="st-desc")
                 yield from _field("Backend", "st-default_backend", cfg.default_backend.value,
-                                  hint="ollama | lmstudio | mock")
+                                  hint="ollama | lmstudio | cloud | mock")
                 yield from _field("Ollama default model", "st-ollama_default",
                                   cfg.ollama.default_model or "",
                                   placeholder="e.g. qwen2.5:7b-instruct",
@@ -397,17 +397,18 @@ class SettingsScreen(Screen):
                 return None
 
         be = q("st-default_backend").value.strip().lower()
-        if be not in {"ollama", "lmstudio", "mock"}:
-            errors.append("default_backend must be ollama | lmstudio | mock")
+        if be not in {"ollama", "lmstudio", "cloud", "mock"}:
+            errors.append("st-default_backend: must be ollama | lmstudio | cloud | mock")
         mode = q("st-mode").value.strip().lower()
         if mode == "full_access":
             mode = None  # must go through Ctrl+P phrase
-            errors.append("full_access cannot be set from Settings; use the permission screen phrase")
+            errors.append("st-mode: full_access cannot be set from Settings; "
+                          "use the permission screen phrase")
         elif mode not in {"strict", "safe", "sandboxed", "dangerous"}:
-            errors.append("invalid permission mode")
+            errors.append("st-mode: invalid permission mode")
         nt = q("st-native_tools").value.strip().lower()
         if nt not in {"auto", "force", "off"}:
-            errors.append("native_tools must be auto|force|off")
+            errors.append("st-native_tools: must be auto|force|off")
 
         payload: dict = {
             "version": 1,
@@ -493,6 +494,21 @@ class SettingsScreen(Screen):
     def _show_errors(self, errors: list[str]) -> None:
         self.query_one("#st-errors", Static).update(
             "[red]" + "\n".join(f"✖ {e}" for e in errors) + "[/red]")
+        # the offending field may live on a hidden tab — jump there so the
+        # user sees what the complaint is about instead of a cryptic id
+        import re
+
+        m = re.search(r"st-[a-z_]+", " ".join(errors))
+        if not m:
+            return
+        fid = m.group(0)
+        for i, (key, _label) in enumerate(_TABS):
+            page = self.query_one(f"#st-page-{key}")
+            found = page.query(f"#{fid}")
+            if found:
+                self._activate_tab(i)
+                found.first().focus()
+                return
 
 
 def _csv(text: str) -> list[str]:

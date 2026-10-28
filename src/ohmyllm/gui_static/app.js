@@ -719,7 +719,7 @@ async function provConnect(pid) {
   if (key && r.models_ok === false) {
     // gateway has no /models listing — only now ask for ids
     const m = await promptModal(`${p.name} model ids`,
-      "this gateway has no /models listing — comma-separated ids, e.g. qwen3-coder, llama-3.3-70b");
+      "this gateway has no /models listing — comma-separated ids, e.g. qwen3-coder, llama-3.3-70b. Append :128k or :1m to a model to declare its context window.");
     if (m) {
       const r2 = await post("/api/providers/key", { pid, key, models: m });
       if (r2 && !r2.error) { _provData = r2; renderProviders(); toast(`${p.name}: ${m.split(",").length} model(s) registered`); }

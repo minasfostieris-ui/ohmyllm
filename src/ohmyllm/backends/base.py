@@ -59,6 +59,11 @@ class ModelInfo:
                 bits = quant_bits(self.quant)
                 if bits < 16:
                     self.params_b = round(self.size_bytes * 8 / bits / 1e9, 1)
+        if self.ctx_len is None:
+            # -128k / -1m style suffixes are the de-facto context notation
+            cm = re.search(r"(?:^|[-_ ])(\d+(?:\.\d+)?)(k|m)(?:[-_ ]|$)", self.name.lower())
+            if cm:
+                self.ctx_len = int(float(cm.group(1)) * (1024 if cm.group(2) == "k" else 1048576))
         if self.tool_capable is None:
             low = self.name.lower()
             if any(h in low for h in TOOL_CAPABLE_HINTS):

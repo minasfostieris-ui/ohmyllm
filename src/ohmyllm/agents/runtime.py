@@ -172,7 +172,7 @@ class AgentRuntime:
             system = self.prompt_builder.system_prompt(mode=mode, native=bool(native),
                                                        ultrathink=params.ultrathink,
                                                        agent_loop=agent_loop)
-            history = trim_messages(self._outgoing(session), max(4000, params.num_ctx * 3))
+            history = trim_messages(self._outgoing(session), max(4000, self._ctx_budget(model, params) * 3))
             messages = self.prompt_builder.assemble(system, history)
             self._ultrathink_note(messages, params)
             assistant_text = ""
@@ -317,6 +317,16 @@ class AgentRuntime:
         emit({"type": "turn_end", **self._result_payload(result, final_text)})
         return result
 
+    def _ctx_budget(self, model: str, params: Any) -> int:
+        """Token window to plan against: a cloud model's real window when
+        the provider metadata told us (list_models cache), else the local
+        num_ctx setting."""
+        if self.backend.name.value == "cloud":
+            real = getattr(self.backend, "_ctx_map_", {}).get(model)
+            if real:
+                return int(real)
+        return max(2048, int(params.num_ctx))
+
     async def _maybe_compact(
         self, session: Session, model: str, params: Any, emit: Callable[[dict[str, Any]], None],
     ) -> None:
@@ -324,7 +334,7 @@ class AgentRuntime:
         if not self.config.agent.compact or len(session.messages) < 14:
             return
         est = sum(len(str(m.get("content", ""))) for m in session.messages) // 4
-        budget = max(2048, int(params.num_ctx))
+        budget = self._ctx_budget(model, params)
         if est < budget * self.config.agent.compact_ratio:
             return
         keep = 8

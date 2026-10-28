@@ -8,6 +8,7 @@ this class so the rest of the app never learns about wire formats.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -19,6 +20,16 @@ from .base import BackendError, BaseBackend, ChatChunk, ModelInfo, StartResult
 from .thinksplit import ThinkSplitter
 
 ANTHROPIC_VERSION = "2023-06-01"
+
+
+def _ctx_from_row(row: dict) -> int | None:
+    """Context window from a provider's /models entry: OpenRouter says
+    context_length, Anthropic max_input_tokens, others context."""
+    for field in ("context_length", "max_input_tokens", "max_context_length", "context"):
+        v = row.get(field)
+        if isinstance(v, (int, float)) and 512 <= v <= 200_000_000:
+            return int(v)
+    return None
 
 
 def _anth_usage(usage: dict | None) -> dict | None:
@@ -134,10 +145,19 @@ class CloudBackend(BaseBackend):
         for mid in dict.fromkeys(x.strip() for x in raw.split(",")):
             if not mid:
                 continue
+            ctx = None
+            # gateways with no /models listing can still declare the window:
+            # "qwen3.8-flash:256k" or "long-context-model:1m"
+            cm = re.search(r":(\d+(?:\.\d+)?)(k|m)$", mid.lower())
+            if cm:
+                mid = mid[: mid.rfind(":")]
+                ctx = int(float(cm.group(1)) * (1024 if cm.group(2) == "k" else 1048576))
             m = ModelInfo(name=mid, backend=BackendName.CLOUD, tool_capable=True)
+            m.ctx_len = ctx
             m.apply_name_heuristics()
             m.notes.append(label)
             out.append(m)
+        self._note_ctx(out)
         return out
 
     async def list_models(self) -> list[ModelInfo]:
@@ -158,10 +178,24 @@ class CloudBackend(BaseBackend):
             if not mid:
                 continue
             m = ModelInfo(name=mid, backend=BackendName.CLOUD, tool_capable=True)
+            m.ctx_len = _ctx_from_row(row)
             m.apply_name_heuristics()
             m.notes.append(label)
             out.append(m)
+        self._note_ctx(out)
         return sorted(out, key=lambda m: m.name)
+
+    def _ctx_map(self) -> dict[str, int]:
+        cached: dict[str, int] = self.__dict__.setdefault("_ctx_map_", {})
+        return cached
+
+    def _note_ctx(self, models: list[ModelInfo]) -> None:
+        """Remember each model's real context window (provider metadata or
+        name heuristic) so the ctx% bar and auto-compaction stop using the
+        local llama num_ctx setting as the cloud denominator."""
+        for m in models:
+            if m.ctx_len:
+                self._ctx_map()[m.name] = int(m.ctx_len)
 
     # ---------------------------------------------------------------- chat
     def stream_chat(

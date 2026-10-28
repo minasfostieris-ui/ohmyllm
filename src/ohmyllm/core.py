@@ -211,15 +211,23 @@ class Services:
 
     def status_snapshot(self, tok_s: float = 0.0, ctx_used: int = 0) -> dict[str, Any]:
         gen = self.config.settings_for(self.config.default_backend, self.current_model())
+        ctx_total = gen.num_ctx
+        if self.config.default_backend.value == "cloud":
+            # a cloud model's window comes from the provider's own metadata
+            # (OpenRouter context_length etc.), not the local llama setting
+            be = self._backend_cache.get("cloud")
+            real = getattr(be, "_ctx_map_", {}).get(self.current_model() or "")
+            if real:
+                ctx_total = int(real)
         return {
             "backend": self.config.default_backend.value,
             "model": self.current_model() or "—",
             "mode": self.config.permission_mode.value,
             "ultrathink": gen.ultrathink,
             "effort": gen.effort,
-            "num_ctx": gen.num_ctx,
+            "num_ctx": ctx_total,
             "ctx_used": ctx_used,
-            "ctx_pct": round(100 * ctx_used / max(1, gen.num_ctx)),
+            "ctx_pct": round(100 * ctx_used / max(1, ctx_total)),
             "tokens_s": tok_s,
             "updated": time.time(),
         }
