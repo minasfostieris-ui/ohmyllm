@@ -136,7 +136,9 @@ def find_recorder() -> list[str] | None:
 
 _STT_PATTERNS = {
     "sensevoice": ("sensevoice*.gguf",),
-    "parakeet": ("parakeet*.gguf",),
+    # whisper.cpp's parakeet-cli (the packaged one) loads ggml-*.bin; the
+    # standalone parakeet.cpp loads *.gguf — try the packaged format first
+    "parakeet": ("ggml-parakeet*.bin", "parakeet*.gguf"),
     "whisper": ("ggml-*.bin",),
 }
 
@@ -144,16 +146,28 @@ _STT_PATTERNS = {
 def stt_model_of(engine: str) -> Path | None:
     d = voice_dir()
     pats = _STT_PATTERNS.get(engine, ())
+    # a ggml-parakeet*.bin also matches whisper's ggml-*.bin glob — never
+    # let an engine receive another family's file
+    bad = _STT_EXCLUDE.get(engine, ())
     for pat in pats:
-        hits = sorted(d.rglob(pat), key=lambda p: p.stat().st_size, reverse=True)
+        hits = [p for p in sorted(d.rglob(pat), key=lambda p: p.stat().st_size,
+                                  reverse=True)
+                if not any(b in p.name.lower() for b in bad)]
         if hits:
             return hits[0]  # biggest = the quality pick the user downloaded
     return None
 
 
+# engine -> name tokens that belong to a different model family
+_STT_EXCLUDE = {"whisper": ("parakeet", "sensevoice"),
+                "parakeet": ("sensevoice",),
+                "sensevoice": ("parakeet",)}
+
+
 def stt_model() -> Path | None:
     d = voice_dir()
-    bins = sorted(d.rglob("ggml-*.bin"), key=lambda p: p.stat().st_size)
+    bins = [p for p in sorted(d.rglob("ggml-*.bin"), key=lambda p: p.stat().st_size)
+            if "parakeet" not in p.name.lower() and "sensevoice" not in p.name.lower()]
     if bins:
         return bins[0]
     for eng in ("sensevoice", "parakeet"):

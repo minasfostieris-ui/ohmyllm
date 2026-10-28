@@ -228,12 +228,13 @@ STT_CATALOG: list[MarketEntry] = [
     MarketEntry(
         mid="stt-parakeet", section="stt",
         title="Parakeet TDT 0.6B v3 · Q8 (NVIDIA)",
-        repo="handy-computer/parakeet-tdt-0.6b-v3-gguf", file="parakeet-tdt-0.6b-v3-Q8_0.gguf",
-        size_gb=0.74,
+        repo="ggml-org/parakeet-GGUF", file="ggml-parakeet-tdt-0.6b-v3-q8_0.bin",
+        size_gb=0.669,
         short="the English pick — top EN accuracy, tiny footprint",
         blurb="NVIDIA Parakeet-TDT: best-in-class English WER at 0.6B params. "
               "English-only by design — pick SenseVoice or Whisper for other "
-              "languages. Runtime: parakeet.cpp (parakeet-cli on PATH).",
+              "languages. Runtime: whisper.cpp ≥1.9 (parakeet-cli ships with "
+              "it; this is the .bin format that binary loads).",
         tags=("stt", "english"),
     ),
     MarketEntry(

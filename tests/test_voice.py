@@ -91,6 +91,21 @@ def test_stt_model_of_per_family(vdir):
     assert voice.stt_model() is not None  # fallback scan finds sensevoice
 
 
+def test_stt_model_families_never_cross(vdir):
+    # whisper.cpp's parakeet model is a ggml-*.bin — it must be found by
+    # parakeet, and NEVER handed to the whisper engine (and vice versa:
+    # the packaged .bin wins over a leftover standalone parakeet .gguf)
+    (vdir / "p").mkdir(parents=True)
+    (vdir / "w").mkdir(parents=True)
+    (vdir / "p" / "ggml-parakeet-tdt-0.6b-v3-q8_0.bin").write_bytes(b"x" * 10)
+    (vdir / "p" / "parakeet-tdt-0.6b-v3-Q8_0.gguf").write_bytes(b"x" * 1000)
+    (vdir / "w" / "ggml-small.bin").write_bytes(b"x")
+    pk = voice.stt_model_of("parakeet")
+    assert pk is not None and pk.name == "ggml-parakeet-tdt-0.6b-v3-q8_0.bin"
+    wh = voice.stt_model_of("whisper")
+    assert wh is not None and wh.name == "ggml-small.bin"
+
+
 # -------------------------------------------------------------- transcribe
 class _Proc:
     def __init__(self, out: bytes):
