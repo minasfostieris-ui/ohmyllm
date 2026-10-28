@@ -412,6 +412,7 @@ function handleEvent(ev, d) {
     case "compaction": addEvline("ctx", `🗜 compacted ${d.before}→${d.after} messages`, "dim"); break;
     case "interjection": addMsg("user", d.text || ""); break;
     case "ultrathink_review": liveText = ""; addEvline("ultra", "🌀 reviewing draft, re-deriving, rewriting…", "dim"); break;
+    case "agentloop_audit": liveText = ""; addEvline("ultra", "🔁 auditing completion — evidence required before the answer…", "dim"); break;
     case "retry": addEvline("retry", d.reason || "", "warn"); break;
     case "thinking": state.reasonBuf = ""; state.thinkNode = null; addEvline("think", `💭 ${thinkVerb()} (step ${d.step || "?"})`, "dim"); break;
     case "thinking_text": liveThink(d.text || ""); break;
@@ -762,7 +763,7 @@ function _paintMarket(data) {
   const g = data.vram_bytes ? Math.round(data.vram_bytes / 1073741824) : null;
   const badge = { fits: ["✓", "ok"], tight: ["⚠", "warn"], no: ["✗", "bad"], unknown: ["?", "dim"] };
   const entries = data.entries || [];
-  const SECTIONS = [["llm", "💬 Models"], ["stt", "🎤 Speech-to-text"], ["tts", "🔊 Text-to-speech"]];
+  const SECTIONS = [["llm", "💬 Models"], ["stt", "🎤 Speech-to-text"]];
   const active = grid.dataset.section || "llm";
   const tabs = SECTIONS.map(([k, label]) => {
     const n = entries.filter((e) => (e.section || "llm") === k).length;
@@ -777,7 +778,7 @@ function _paintMarket(data) {
     const size = sec === "llm" ? e.size_gb.toFixed(1) + " GB" : (e.size_gb * 1000).toFixed(0) + " MB";
     const fit = sec === "llm"
       ? `<span class="mc-fit ${cls}">${txt} ${esc(e.fit_label)}${e.kind !== "gguf" ? " · " + esc(e.kind) : ""}</span>`
-      : `<span class="mc-fit dim">${sec === "stt" ? "🎤 speech-to-text" : "🔊 text-to-speech"} · ~/.ohmyllm/voice/</span>`;
+      : `<span class="mc-fit dim">🎤 speech-to-text · ~/.ohmyllm/voice/</span>`;
     let bar = "";
     if (sec === "llm" && vramGb) {
       const pct = Math.min(100, Math.round((e.size_gb / vramGb) * 100));
@@ -1023,6 +1024,7 @@ function renderHelp() {
   <table>
   <tr><td><code>/remember &lt;fact&gt;</code></td><td>write a durable memory to soul.md</td></tr>
   <tr><td><code>/ultrathink [on|off]</code></td><td>deep reasoning: the agent thinks much longer and harder</td></tr>
+  <tr><td><code>/agentloop [on|off]</code></td><td>relentless loop: never stop until the result is verified perfect</td></tr>
   <tr><td><code>/new</code></td><td>start a fresh session</td></tr>
   <tr><td><code>/rename &lt;title&gt;</code></td><td>rename the current chat</td></tr>
   <tr><td><code>/export [md|json]</code></td><td>export the current chat</td></tr>
@@ -1032,7 +1034,6 @@ function renderHelp() {
   <tr><td><code>/market</code></td><td>models + voice models to download (Market tab)</td></tr>
   <tr><td><code>/providers</code></td><td>connect cloud API keys — Providers tab</td></tr>
   <tr><td><code>/voice</code></td><td>speech-to-text status (TUI: hold Ctrl+E to talk)</td></tr>
-  <tr><td><code>/tts on|off</code> · <code>/say &lt;text&gt;</code></td><td>spoken replies (Phonon voices)</td></tr>
   <tr><td><code>/help</code></td><td>this screen</td></tr></table>
   <h3>where do API keys go?</h3>
   <p>Open the <b>Providers</b> tab (left sidebar) → pick OpenRouter / Anthropic / OpenAI / … →
@@ -1057,7 +1058,7 @@ const SLASHES = [
   ["/remember", "write a memory"], ["/new", "fresh chat"], ["/rename", "rename chat"], ["/market", "model marketplace"],
   ["/export", "export chat"], ["/models", "model list"], ["/mode", "permission mode"],
   ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"],
-  ["/ultrathink", "deep reasoning on/off"], ["/think", "off|low|medium|high|xhigh|max"], ["/skill:", "cast a skill: /skill:<name>"],
+  ["/ultrathink", "deep reasoning on/off"], ["/agentloop", "relentless verified-completion loop"], ["/think", "off|low|medium|high|xhigh|max"], ["/skill:", "cast a skill: /skill:<name>"],
 ];
 $("#input").addEventListener("input", () => {
   autoGrow();
@@ -1127,18 +1128,6 @@ async function handleSlash(text) {
       addEvline("note", "voice · " + (r.line || "unavailable"));
       break;
     }
-    case "/tts": {
-      const want = (arg || "").toLowerCase();
-      const r = await post("/api/voice/tts", { on: want === "on" ? true : want === "off" ? false : null });
-      toast(r && r.error ? r.error : `TTS ${r.enabled ? "on" : "off"} — replies spoken needs audio.cpp + a Phonon voice from Market`);
-      break;
-    }
-    case "/say": {
-      if (!arg) { toast("usage: /say some words"); break; }
-      const r = await post("/api/voice/say", { text: arg });
-      toast(r && r.error ? r.error : "speaking…");
-      break;
-    }
     case "/backend": switchView("backend"); break;
     case "/rename": if (state.session) patch(`/api/chats/${state.session}`, { title: arg || "renamed" }).then(refreshStatus); break;
     case "/export": if (state.session) post(`/api/chats/${state.session}/export`, { format: arg.includes("json") ? "json" : "markdown" }).then((r) => toast(`exported → ${r.path}`)); break;
@@ -1182,6 +1171,19 @@ async function handleSlash(text) {
       if (r && r.error) { toast(`ultrathink: ${r.error}`); break; }
       state.config = r.config;
       toast(want ? "ultrathink ON — deep thinking from the next turn" : "ultrathink off");
+      refreshStatus();
+      break;
+    }
+    case "/agentloop": {
+      const cur = !!(state.config && state.config.agent && state.config.agent.agent_loop);
+      const want = arg === "on" ? true : arg === "off" ? false : !cur;
+      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
+      merged.agent = merged.agent || {};
+      merged.agent.agent_loop = want;
+      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
+      if (r && r.error) { toast(`agentloop: ${r.error}`); break; }
+      state.config = r.config;
+      toast(want ? "🔁 agent loop ON — verified completion from the next turn" : "agent loop off");
       refreshStatus();
       break;
     }

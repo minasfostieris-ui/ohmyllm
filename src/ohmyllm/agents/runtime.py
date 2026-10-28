@@ -25,6 +25,7 @@ from ..sessions import Session
 from ..tools.registry import ToolRegistry
 from ..tools.spec import ToolContext, ToolResult
 from .parser import ParsedCall, ToolCallParser
+from .prompts import AGENTLOOP_AUDIT as AGENTLOOP_AUDIT_MSG
 from .prompts import PromptBuilder, trim_messages
 from .validator import ToolCallValidator
 
@@ -151,7 +152,12 @@ class AgentRuntime:
         self._turn_cache: dict[str, str] = {}
         final_text = ""
         step = 0
-        while step < self.config.agent.max_steps:
+        agent_loop = self.config.agent.agent_loop
+        # the loop mode exists to keep working — a 4-step budget would
+        # strangle it; ride a floor of 24 while honoring a bigger setting
+        budget = max(self.config.agent.max_steps, 24) if agent_loop else self.config.agent.max_steps
+        audit_done = False
+        while step < budget:
             self._check_cancel(cancel)
             step += 1
             result.steps = step
@@ -163,7 +169,9 @@ class AgentRuntime:
                     session.add_message("user", inj)
                     emit({"type": "interjection", "text": inj})
             await self._maybe_compact(session, model, params, emit)
-            system = self.prompt_builder.system_prompt(mode=mode, native=bool(native), ultrathink=params.ultrathink)
+            system = self.prompt_builder.system_prompt(mode=mode, native=bool(native),
+                                                       ultrathink=params.ultrathink,
+                                                       agent_loop=agent_loop)
             history = trim_messages(self._outgoing(session), max(4000, params.num_ctx * 3))
             messages = self.prompt_builder.assemble(system, history)
             self._ultrathink_note(messages, params)
@@ -256,6 +264,14 @@ class AgentRuntime:
                 continue
 
             if not parsed:
+                if agent_loop and not audit_done and result.calls:
+                    # completion audit: no final answer without evidence —
+                    # exactly once per turn so the loop can never deadlock
+                    audit_done = True
+                    emit({"type": "agentloop_audit"})
+                    session.add_message("assistant", assistant_text.strip()[:4000])
+                    session.add_message("user", AGENTLOOP_AUDIT_MSG)
+                    continue
                 final_text = self._clean_final(assistant_text)
                 if params.ultrathink and len(final_text) > 80:
                     refined = await self._ultrathink_refine(

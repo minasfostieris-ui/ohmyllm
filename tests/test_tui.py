@@ -106,6 +106,21 @@ async def test_tui_approval_modal(oml_env, svc):
 
 
 @pytest.mark.asyncio()
+async def test_tui_agentloop_command_toggles_config(oml_env, svc):
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        inp = app.screen.query_one("#chat-input")
+        inp.value = "/agentloop on"
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert app.svc.config.agent.agent_loop is True
+        inp.value = "/agentloop off"
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert app.svc.config.agent.agent_loop is False
+
+@pytest.mark.asyncio()
 async def test_tui_chats_screen_and_draft_preserved(oml_env, svc):
     app = OhMyLLMApp()
     async with app.run_test(size=(140, 46)) as pilot:

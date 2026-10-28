@@ -38,10 +38,9 @@ class ChatScreen(Screen):
         ("/market", "", "recommended models — VRAM fit + one-key download"),
         ("/providers", "", "connect cloud API keys — OpenRouter, Anthropic, OpenAI, …"),
         ("/voice", "", "speech-to-text status (hold ctrl+E to talk)"),
-        ("/tts", "[on|off]", "speak replies with a Phonon voice"),
-        ("/say", "<text>", "speak once"),
         ("/onboarding", "", "reopen the first-run tutorial"),
         ("/ultrathink", "[on|off]", "deep reasoning: think much longer and harder"),
+        ("/agentloop", "[on|off]", "relentless loop: never stop until the result is verified perfect"),
         ("/memory", "", "soul.md editor"), ("/soul", "", "soul.md editor"), ("/doctor", "", "diagnostics"),
         ("/settings", "", "all settings"), ("/chats", "", "browse chats"), ("/new", "", "fresh chat"),
         ("/clear", "", "fresh chat"), ("/rename", "<title>", "rename this chat"),
@@ -416,20 +415,6 @@ class ChatScreen(Screen):
         inp.focus()
         self.app.notify(f"🎙 {text[:60]}{'…' if len(text) > 60 else ''}", timeout=6)
 
-    # ------------------------------------------------------------------ tts
-    @work(exclusive=False, group="speak")
-    async def _speak(self, text: str) -> None:
-        from ... import voice as _v
-
-        ok, err = await _v.speak(text)
-        if err:
-            self.app.notify(err, severity="warning", timeout=8)
-            if self.app.svc.config.voice.tts_enabled:
-                # don't nag after every turn — disable until the user opts in again
-                self.app.svc.config.voice.tts_enabled = False
-                self.app.svc.save_config()
-                self.app.notify("🔇 TTS switched off — fix the runtime then /tts on", timeout=8)
-
     def action_paste_image(self) -> None:
         self._grab_clip()
 
@@ -572,8 +557,6 @@ class ChatScreen(Screen):
             if result.error:
                 self._sysline(f"backend error: {result.error} — check /backend or Ctrl+B", "error")
             app.tok_s = result.tokens_per_s or app.tok_s
-            if result.text and not result.error and app.svc.config.voice.tts_enabled:
-                self._speak(result.text[:2000])
         except AgentCancelled:
             self._finalize()
             self._sysline("turn cancelled", "system")
@@ -662,6 +645,11 @@ class ChatScreen(Screen):
             if self._stream_md is not None:
                 self._stream_md.update("")
             self._sysline("ultrathink: reviewing the draft, re-deriving everything, rewriting…", "system")
+        elif t == "agentloop_audit":
+            self._buffer = ""
+            if self._stream_md is not None:
+                self._stream_md.update("")
+            self._sysline("agent loop: auditing completion — evidence required before the final answer…", "system")
         elif t == "compaction":
             panel.add_event(ev)
             self._sysline(f"compacted context: {ev.get('before')} → {ev.get('after')} messages", "system")
@@ -1056,6 +1044,15 @@ class ChatScreen(Screen):
             app.svc.config.generation.ultrathink = want == "on"
             app.svc.save_config()
             app.notify(f"ultrathink {'ON — the agent will think this through properly' if want == 'on' else 'off'} · applies from the next turn")
+        elif cmd == "agentloop":
+            cur = app.svc.config.agent.agent_loop
+            want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
+            app.svc.config.agent.agent_loop = want == "on"
+            app.svc.save_config()
+            app.notify(
+                "🔁 agent loop ON — the agent may not stop until every requirement is "
+                "verified with evidence (bigger step budget + completion audit)"
+                if want == "on" else "agent loop off")
         elif cmd.startswith("skill:"):
             name = cmd.split(":", 1)[1]
             body = app.svc.skills.read(name)
@@ -1080,26 +1077,6 @@ class ChatScreen(Screen):
             from ... import voice as _v
 
             self._sysline("voice status · " + _v.status_line(), "system")
-        elif cmd == "tts":
-            from ... import voice as _v
-
-            want = arg.lower()
-            cur = app.svc.config.voice.tts_enabled
-            if want == "on":
-                app.svc.config.voice.tts_enabled = True
-                app.svc.save_config()
-                app.notify("🔊 TTS on — replies will be spoken (needs audio.cpp + a Phonon voice from /market)")
-            elif want == "off":
-                app.svc.config.voice.tts_enabled = False
-                app.svc.save_config()
-                app.notify("🔇 TTS off")
-            else:
-                app.notify(f"tts is {'on' if cur else 'off'} — /tts on|off · /say <text> speaks once")
-        elif cmd == "say":
-            if not arg:
-                app.notify("usage: /say some words out loud")
-            else:
-                self._speak(arg)
         elif cmd == "skillimport":
             import subprocess
             import sys as _sys

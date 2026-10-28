@@ -1,8 +1,8 @@
-"""Voice I/O: speech-to-text (whisper.cpp) and text-to-speech (audio.cpp/Phonon).
+"""Voice input: speech-to-text (whisper.cpp / SenseVoice / Parakeet / WhisperX).
 
 Everything degrades honestly: if the runtime binary is missing we say so
 with the exact install command instead of pretending. Models live under
-~/.ohmyllm/voice/ (marketplace downloads land there for STT/TTS entries).
+~/.ohmyllm/voice/ (marketplace downloads land there for STT entries).
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ _WHISPER_BINS = ("whisper-cli", "whisper-cpp", "whisper", "main")
 _WHISPERX_BINS = ("whisperx",)
 _SENSEVOICE_BINS = ("sensevoice-cli", "sensevoice", "sense-voice")
 _PARAKEET_BINS = ("parakeet-cli", "parakeet", "parakeet-tdt")
-_TTS_BINS = ("audio-cli", "audiocpp", "audio.cpp", "phonon-cli", "tts")
+
 
 
 def _which_any(names: tuple[str, ...]) -> str | None:
@@ -114,14 +114,6 @@ def pick_engine(lang: str | None = None) -> tuple[str, str] | tuple[None, str]:
     return None, "no STT engine on PATH (whisper-cli / whisperx / sensevoice-cli / parakeet-cli)"
 
 
-def find_tts() -> str | None:
-    for b in _TTS_BINS:
-        p = shutil.which(b)
-        if p:
-            return p
-    return None
-
-
 def recorder_candidates() -> list[list[str]]:
     """Every 16 kHz mono WAV recorder available, best first: PipeWire > ALSA > ffmpeg."""
     out: list[list[str]] = []
@@ -169,16 +161,6 @@ def stt_model() -> Path | None:
         if m:
             return m
     return None
-
-
-def tts_model() -> Path | None:
-    d = voice_dir()
-    # market stores gradium/phonon-40m-en as voice/tts/gradium__phonon-40m-en/model.q8.gguf —
-    # the family lives in the DIRECTORY name, not the file name
-    cands = [p for p in d.rglob("*.gguf")
-             if "phonon" in str(p.relative_to(d)).lower()
-             and "mmproj" not in p.name.lower()]
-    return sorted(cands, key=lambda p: p.stat().st_size)[0] if cands else None
 
 
 # ---------------------------------------------------------------- record
@@ -300,62 +282,11 @@ async def _kill(proc: asyncio.subprocess.Process) -> None:
         await proc.wait()
 
 
-# -------------------------------------------------------------------- speak
-async def speak(text: str, *, timeout: float = 180.0) -> tuple[bool, str | None]:
-    binary = find_tts()
-    if binary is None:
-        return False, ("no TTS runtime — audio.cpp (Phonon GGUFs): "
-                       "https://github.com/audiocpp — once installed, /tts on works")
-    model = tts_model()
-    if model is None:
-        return False, "no Phonon voice downloaded — /market → Text-to-speech"
-    play = shutil.which("paplay") or shutil.which("ffplay") or shutil.which("afplay")
-    if play is None:
-        return False, "no audio player (paplay/ffplay/afplay)"
-    import time as _t
-
-    out_wav = voice_dir() / f"say-{int(_t.time() * 1000)}.wav"
-    out_wav.unlink(missing_ok=True)  # a stale wav must never masquerade as this reply
-    cmd = [binary, "-m", str(model), "-f", str(out_wav), "--text", text[:2000]]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
-        _, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        rc = proc.returncode
-    except TimeoutError:
-        await _kill(proc)
-        out_wav.unlink(missing_ok=True)
-        return False, "tts timed out"
-    except OSError as exc:
-        return False, f"tts failed: {exc}"
-    if rc:
-        tail = " ".join((err or b"").decode(errors="replace").split())[-200:]
-        out_wav.unlink(missing_ok=True)
-        return False, f"tts engine exited {rc}: {tail or 'no error output'}"
-    if not out_wav.exists() or out_wav.stat().st_size < 1000:
-        return False, "tts produced no audio"
-    play_cmd = [play, str(out_wav)] if "ffplay" not in play else [play, "-nodisp", "-autoexit", "-loglevel", "error", str(out_wav)]
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *play_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        await _kill(proc)
-        return False, "playback timed out"
-    except OSError:
-        out_wav.unlink(missing_ok=True)
-        return False, "playback failed"
-    out_wav.unlink(missing_ok=True)
-    return True, None
-
-
 def status_line() -> str:
     parts = []
     eng = [e for e, ok in (("sensevoice", find_sensevoice()), ("parakeet", find_parakeet()),
                            ("whisperx", find_whisperx()), ("whisper", find_whisper())) if ok]
     parts.append("🎤 " + ("✓ " + "/".join(eng) if eng else "✗ (install whisper.cpp / whisperx / sensevoice.cpp / parakeet.cpp)"))
-    parts.append("🔊 " + ("tts ✓" if find_tts() else "tts ✗"))
     parts.append("mic " + ("✓" if find_recorder() else "✗"))
     parts.append("stt-model " + ("✓" if stt_model() else "✗"))
-    parts.append("voice " + ("✓" if tts_model() else "✗"))
     return " · ".join(parts)

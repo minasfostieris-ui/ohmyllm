@@ -150,6 +150,7 @@ kbd {
 .topline {
   display: flex; align-items: center; gap: 14px; padding: 10px 20px;
   border-bottom: 1px solid var(--line); background: var(--surface);
+  flex-wrap: wrap;
 }
 .topline h2 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .save-flag { font-size: 11.5px; color: var(--muted); font-family: var(--mono); }
@@ -162,7 +163,7 @@ button.chip { cursor: pointer; }
 button.chip:hover { border-color: var(--line-strong); color: var(--fg); }
 .chip.mode-strict, .chip.mode-sandboxed { border-color: var(--amber); color: var(--amber); }
 .chip.mode-full_access { border-color: var(--coral); color: var(--coral); font-weight: 600; }
-.chip.static.full { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.chip.static { max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
 
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .view[hidden] { display: none; }
@@ -393,23 +394,24 @@ table.grid tr.active td { background: rgba(122,199,159,.07); }
 .pm-input:focus { outline: none; border-color: var(--accent, #7aa2f7); }
 
 /* ------------------------------------------------------------ marketplace */
-.market-head { color: var(--muted, #999); margin: 0 0 14px; font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.market-head { color: var(--muted, #999); margin: 0 0 14px; font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 14px 20px 0; }
 .market-seg { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--border, #333); border-radius: 10px; background: var(--surface, rgba(255,255,255,.02)); }
 .market-seg .chip { border: none; background: transparent; border-radius: 7px; padding: 5px 12px; }
 .market-seg .chip.active { background: color-mix(in srgb, var(--accent, #7aa2f7) 18%, transparent); color: var(--accent, #7aa2f7); font-weight: 600; }
 .market-seg .chip .cnt { color: var(--muted, #888); font-size: 11.5px; margin-left: 5px; }
 .market-seg .chip.active .cnt { color: var(--accent, #7aa2f7); }
-.market-gpu { color: var(--muted, #999); font-size: 13px; margin-right: 4px; }
-.market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; }
-.market-card { position: relative; overflow: hidden; border: 1px solid var(--border, #333); border-radius: 10px; padding: 14px 16px; cursor: pointer; transition: border-color .15s, transform .1s; background: var(--surface, rgba(255,255,255,.02)); display: flex; flex-direction: column; }
+.market-gpu { color: var(--muted, #999); font-size: 13px; margin-right: 4px; white-space: nowrap; }
+.market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 14px; padding: 0 20px 20px; align-content: start; }
+.market-card { position: relative; overflow: hidden; border: 1px solid var(--border, #333); border-radius: 10px; padding: 14px 16px; cursor: pointer; transition: border-color .15s, transform .1s; background: var(--surface, rgba(255,255,255,.02)); display: flex; flex-direction: column; min-width: 0; }
 .market-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--muted, #555); }
 .market-card.f-ok::before { background: var(--success, #4ec9a0); }
 .market-card.f-warn::before { background: var(--warning, #e5c07b); }
 .market-card.f-bad::before { background: var(--error, #e06c75); }
 .market-card.f-dim::before { background: var(--accent, #7aa2f7); }
 .market-card:hover, .market-card:focus-visible { border-color: var(--accent, #7aa2f7); transform: translateY(-1px); outline: none; }
+#view-market { overflow-y: auto; }
 .mc-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-.mc-title { font-weight: 600; font-size: 14.5px; }
+.mc-title { font-weight: 600; font-size: 14.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mc-size { font-variant-numeric: tabular-nums; color: var(--fg, #ddd); font-weight: 700; white-space: nowrap; }
 .mc-fit { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; margin: 7px 0 9px; padding: 2px 9px; border-radius: 999px; width: fit-content; }
 .mc-fit.ok { color: var(--success, #4ec9a0); background: color-mix(in srgb, var(--success, #4ec9a0) 12%, transparent); }

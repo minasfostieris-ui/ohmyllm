@@ -24,13 +24,13 @@ def _mkpng(p: Path, w: int = 1563, h: int = 200) -> Path:
 
 # ------------------------------------------------------------------ catalog
 def test_catalog_curated_entries():
-    assert len(market.CATALOG) == 24
+    assert len(market.CATALOG) == 14  # 10 llm + 4 stt — TTS removed, Spark added
     secs = {e.section for e in market.CATALOG}
-    assert secs == {"llm", "stt", "tts"}
+    assert secs == {"llm", "stt"}
     assert all(e.mid.startswith("stt-") for e in market.CATALOG if e.section == "stt")
     ids = {e.mid for e in market.CATALOG}
-    assert {"qwen38-iq2xs", "qwen38-q6k", "sushi-9b", "gemma4-26b", "gemma4-12b",
-            "gpt-oss-20b", "qwen3-coder-30b", "r1-14b", "phi-4"} <= ids
+    assert {"qwen38-iq2xs", "qwen38-q6k", "sushi-9b", "spark-x26-4b", "gemma4-26b",
+            "gemma4-12b", "gpt-oss-20b", "qwen3-coder-30b", "r1-14b", "phi-4"} <= ids
     g12 = next(e for e in market.CATALOG if e.mid == "gemma4-12b")
     assert g12.mtp == "mtp-gemma-4-12B-it.gguf" and g12.mtp_url.endswith(g12.mtp)
     for e in market.CATALOG:
@@ -247,10 +247,10 @@ async def test_market_screen_lists_fits(oml_env, svc):
         from textual.widgets import OptionList
 
         lst = app.screen.query_one(OptionList)
-        assert lst.option_count >= 24  # 9 llm + 4 stt + 11 phonon + 3 section headers
+        assert lst.option_count >= 16  # 10 llm + 4 stt + 2 section headers
         prompts = " ".join(str(lst.get_option_at_index(i).prompt) for i in range(lst.option_count))
-        assert "GB" in prompts and "SenseVoice" in prompts and "Phonon" in prompts
-        assert "Speech-to-text" in prompts and "Text-to-speech" in prompts
+        assert "GB" in prompts and "SenseVoice" in prompts
+        assert "Speech-to-text" in prompts and "Text-to-speech" not in prompts
 
 
 async def test_paste_attaches_and_sends_parts(oml_env, svc, tmp_path, monkeypatch):

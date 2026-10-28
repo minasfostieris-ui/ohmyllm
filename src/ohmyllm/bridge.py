@@ -286,22 +286,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._market_download(body)
             if path == "/api/vision/probe":
                 return self._run(self._vision_probe(body))
-            if path == "/api/voice/tts":
-                v = self.state.svc.config.voice
-                want = body.get("on", None)
-                if want is not None:
-                    if isinstance(want, bool):
-                        v.tts_enabled = want
-                    elif isinstance(want, str) and want.lower() in ("on", "true", "yes", "1"):
-                        v.tts_enabled = True
-                    elif isinstance(want, str) and want.lower() in ("off", "false", "no", "0"):
-                        v.tts_enabled = False
-                    else:
-                        return self._json(400, {"error": "on must be true/false"})
-                    self.state.svc.save_config()
-                return self._json(200, {"enabled": v.tts_enabled})
-            if path == "/api/voice/say":
-                return self._run(self._voice_say(body))
             if path == "/api/providers/key":
                 code, payload = self._providers_key(body)
                 return self._json(code, payload)
@@ -597,15 +581,6 @@ class Handler(BaseHTTPRequestHandler):
             cl.model_lists[pid] = models
         self.state.svc.save_config()
         return 200, self._providers_state()
-
-    async def _voice_say(self, body: dict) -> tuple[int, dict]:
-        from .voice import speak
-
-        text = str(body.get("text") or "").strip()
-        if not text:
-            return 400, {"error": "text required"}
-        ok, err = await speak(text)
-        return (200, {"ok": True}) if ok else (502, {"error": err or "tts failed"})
 
     async def _vision_probe(self, body: dict) -> tuple[int, dict]:
         from .vision import probe_vision, save_verdict

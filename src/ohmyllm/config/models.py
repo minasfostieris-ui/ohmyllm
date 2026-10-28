@@ -162,7 +162,6 @@ class CloudSettings(BaseModel):
 class VoiceSettings(BaseModel):
     language: str = Field("auto", description="STT language hint (auto|en|ko|zh|ja|es|...)")
     engine: str = Field("auto", description="STT engine override (auto|sensevoice|parakeet|whisper|whisperx)")
-    tts_enabled: bool = Field(False, description="/tts on: speak replies via audio.cpp+Phonon")
 
 
 class MemorySettings(BaseModel):
@@ -212,6 +211,7 @@ class AgentSettings(BaseModel):
     compact: bool = Field(True, description="auto-summarize old history when context fills up")
     compact_ratio: float = Field(0.75, gt=0.2, le=0.95, description="compact when est prompt tokens exceed ratio*num_ctx")
     thinking_visible: bool = Field(True, description="stream the model's reasoning live in chat (/think hide, Ctrl+T)")
+    agent_loop: bool = Field(False, description="/agentloop: relentless completion — verify everything, never stop early (step floor 24 + one evidence audit)")
 
 
 class UiSettings(BaseModel):

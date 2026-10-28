@@ -118,7 +118,7 @@ class OhMyLLMApp(App[None]):
         Binding("ctrl+m", "screen_models", "Models", priority=True),
         Binding("ctrl+b", "screen_backend", "Backend", priority=True),
         Binding("ctrl+p", "screen_perms", "Permissions", priority=True),
-        Binding("ctrl+s", "screen_memory", "Memory", priority=True),
+        Binding("ctrl+s", "screen_memory", "Memory"),
         Binding("ctrl+d", "screen_doctor", "Doctor", priority=True),
         Binding("ctrl+h", "screen_help", "Help", priority=True),
         Binding("ctrl+o", "screen_chats", "Chats", priority=True),

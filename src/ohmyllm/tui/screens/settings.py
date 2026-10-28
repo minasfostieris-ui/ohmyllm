@@ -8,7 +8,7 @@ from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.events import Focus
+from textual.events import Click, Focus
 from textual.screen import Screen
 from textual.widgets import Button, Input, Label, OptionList, Static, Switch
 from textual.widgets._option_list import Option
@@ -69,21 +69,25 @@ class SettingsScreen(Screen):
         Binding("escape", "close", "Back"),
         Binding("left", "prev_tab", "Prev tab", priority=False),
         Binding("right", "next_tab", "Next tab", priority=False),
+        # Input swallows up/down before the screen can see them, so these
+        # must be priority bindings; the actions delegate to OptionList when
+        # the theme picker holds focus (see _move).
+        Binding("up", "prev_field", "Previous field", priority=True),
+        Binding("down", "next_field", "Next field", priority=True),
         Binding("ctrl+s", "save", "Save", priority=True),
     ]
 
     def compose(self) -> ComposeResult:
         cfg = self.app.svc.config
+        yield Static(
+            "[b]⚙ Settings[/]  [dim]←/→ tabs · ↑/↓ fields · ctrl+s saves · "
+            "esc leaves without saving[/dim]",
+            id="screen-title",
+        )
+        with Horizontal(id="settings-tabs"):
+            for key, label in _TABS:
+                yield Button(label, id=f"st-tab-{key}", classes="st-tab")
         with VerticalScroll(id="settings-body", classes="screen-body"):
-            yield Static(
-                "[b]⚙ Settings[/]  [dim]←/→ switch tabs · ↑/↓ move · "
-                "esc leaves without saving · Save validates everything[/dim]",
-                id="screen-title",
-            )
-            with Horizontal(id="settings-tabs"):
-                for key, label in _TABS:
-                    yield Button(label, id=f"st-tab-{key}", classes="st-tab")
-
             # ------------------------------------------------------ Model tab
             with Vertical(id="st-page-model", classes="st-page -show"):
                 yield Static("Which server answers, and which model is the default. "
@@ -175,6 +179,9 @@ class SettingsScreen(Screen):
                 yield from _switch("Stream live thinking", "st-thinking_visible",
                                    cfg.agent.thinking_visible,
                                    hint="show the thinking panel in chat (Ctrl+T)")
+                yield from _switch("Relentless agent loop", "st-agentloop",
+                                   cfg.agent.agent_loop,
+                                   hint="/agentloop: never stop until the result is verified perfect")
 
             # ---------------------------------------------------- Memory tab
             with Vertical(id="st-page-memory", classes="st-page"):
@@ -250,15 +257,16 @@ class SettingsScreen(Screen):
                 yield Static("[dim]full_access must be enabled via Ctrl+P with the "
                              "confirmation phrase[/dim]", classes="st-desc")
 
+        with Vertical(id="settings-footer"):
             yield Static("", id="st-desc-focused")
+            yield Static("", id="st-errors")
             with Horizontal(id="settings-actions"):
                 yield Button("Save settings", id="st-save", variant="primary")
                 yield Button("Discard & back", id="st-cancel")
-            yield Static("", id="st-errors")
 
     def on_mount(self) -> None:
         cur = resolve_theme(self.app.svc.config.ui.theme)
-        self.query_one("#st-theme-list", OptionList).index = cur
+        self.query_one("#st-theme-list", OptionList).highlighted = THEME_ORDER.index(cur)
         self._activate_tab(0)
 
     # ------------------------------------------------------------- tab logic
@@ -285,6 +293,53 @@ class SettingsScreen(Screen):
 
     def action_prev_tab(self) -> None:
         self._activate_tab(getattr(self, "_tab_idx", 0) - 1)
+    # ------------------------------------------------- classical field walk
+    def _fields(self) -> list:
+        page = self.query_one(f"#st-page-{_TABS[getattr(self, '_tab_idx', 0)][0]}")
+        out = [w for w in page.query("Input, Switch, OptionList") if w.focusable]
+        out += [self.query_one("#st-save"), self.query_one("#st-cancel")]
+        return out
+
+    def _move(self, step: int) -> None:
+        f = self.focused
+        if isinstance(f, OptionList):
+            # arrows belong to the list while it is focused — live preview
+            if step > 0:
+                f.action_cursor_down()
+            else:
+                f.action_cursor_up()
+            return
+        fields = self._fields()
+        if not fields:
+            return
+        try:
+            i = fields.index(self.focused)
+        except ValueError:
+            i = 0 if step > 0 else len(fields) - 1
+        else:
+            i = (i + step) % len(fields)
+        fields[i].focus()
+
+    def action_next_field(self) -> None:
+        self._move(1)
+
+    def action_prev_field(self) -> None:
+        self._move(-1)
+
+    # ------------------------------------------------- whole-row click targets
+    @on(Click)
+    def _row_click(self, event: Click) -> None:
+        # clicking the label column focuses (or toggles) the field beside it —
+        # classical TUIs let you hit the whole row, not a 7-cell switch
+        w = event.control
+        if isinstance(w, (Label, Static)) and w.parent is not None:
+            sw = w.parent.query(Switch)
+            if sw:
+                sw.first().toggle()
+                return
+            inp = w.parent.query(Input)
+            if inp:
+                inp.first().focus()
 
     # --------------------------------------------------------- focus helper
     @on(Focus)
@@ -292,10 +347,6 @@ class SettingsScreen(Screen):
         wid = getattr(event.sender, "id", None)
         if isinstance(event.sender, (Input, Switch)) and wid:
             self._show_desc(wid)
-
-    def _show_desc(self, fid: str | None) -> None:
-        text = _DESCS.get(fid or "", "")
-        self.query_one("#st-desc-focused", Static).update(f"[dim]{text}[/dim]")
 
     # ---------------------------------------------------------- theme picker
     @on(OptionList.OptionHighlighted, "#st-theme-list")
@@ -313,7 +364,7 @@ class SettingsScreen(Screen):
     def _selected_theme(self) -> str:
         tl = self.query_one("#st-theme-list", OptionList)
         try:
-            opt = tl.get_option_at_index(tl.index) if tl.index is not None else None
+            opt = tl.get_option_at_index(tl.highlighted) if tl.highlighted is not None else None
         except Exception:  # noqa: BLE001
             opt = None
         return opt.id if opt and opt.id in THEMES else resolve_theme(self.app.svc.config.ui.theme)
@@ -398,6 +449,7 @@ class SettingsScreen(Screen):
                 "tool_timeout": num(q("st-tool_timeout"), float),
                 "native_tools": nt,
                 "thinking_visible": s("st-thinking_visible"),
+                "agent_loop": s("st-agentloop"),
             },
             "memory": {
                 "enabled": s("st-mem_enabled"),

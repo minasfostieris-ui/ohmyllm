@@ -177,10 +177,13 @@ DataTable > .datatable--hover { background: $tint; }
 .st-page { display: none; width: 100%; height: auto; }
 .st-page.-show { display: block; }
 .st-row2 { height: 1; width: 100%; margin-bottom: 1; }
+.st-row2 Input { background: $boost; color: $text; }
+.st-row2 Input:focus { background: $tint; text-style: bold; }
 .st-k { width: 36; color: $text; }
+#settings-footer { height: auto; padding: 0 2 1 2; }
 .st-inline-hint { color: $text-muted; }
 .st-desc { color: $text-muted; margin-bottom: 1; }
-#st-desc-focused { height: 1; color: $text-muted; margin-top: 1; }
+#st-desc-focused { height: 1; color: $text-muted; }
 #st-theme-list { height: 8; width: 1fr; margin-bottom: 1; }
 
 /* ---------- wizard ---------- */

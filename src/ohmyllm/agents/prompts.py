@@ -57,6 +57,39 @@ calling any tool:
 Be thorough over fast. The user prefers a long, careful answer to a quick
 shallow one."""
 
+AGENT_LOOP = """## AGENT LOOP mode (active) — stopping early is the only failure
+
+The user armed the relentless agent loop. A task is DONE only when its
+result is VERIFIED working — not when you believe it probably works.
+- Never hand back an unverified claim. After every change, execute
+  something that proves it: run the program, run the tests, call the
+  endpoint, read the output. Reading code and assuming it works is NOT
+  verification.
+- For UI/visual work: render it. Write a throwaway script that launches
+  the thing and captures a screenshot to a PNG file. If you can see
+  images, READ the screenshot, critique it against every requirement
+  (layout, clipping, contrast, copy), fix what is wrong, re-render,
+  re-inspect — repeat until it is right. If you cannot see images,
+  verify via DOM dumps, pixel statistics, logs and exit codes instead.
+- "Should work", "looks correct" and "I think it's fine" are forbidden
+  conclusions. Quote the command you ran and the output you observed.
+- If blocked, change strategy — do not quit. Only report a blocker after
+  at least three genuinely different attempts, with the exact error from
+  each.
+- Keep going until every acceptance criterion has fresh evidence from
+  THIS turn. When you finish, end with a short EVIDENCE LEDGER:
+  requirement → how it was verified → observed result.
+You have a large step budget on purpose. Use it."""
+
+AGENTLOOP_AUDIT = (
+    "AGENTLOOP AUDIT: before finishing, list every acceptance criterion "
+    "from the user's request and the concrete evidence (command run + "
+    "observed output) that each is satisfied. If ANY criterion lacks "
+    "fresh evidence from this turn, do NOT answer — call the tools "
+    "needed to verify or fix it now. Only produce your final reply once "
+    "the evidence ledger is complete."
+)
+
 MEMORY_GUIDE = """\
 ## Memory (soul.md)
 {content}"""
@@ -121,6 +154,7 @@ class PromptBuilder:
         native: bool,
         allowed_tools: list[str] | None = None,
         ultrathink: bool = False,
+        agent_loop: bool = False,
     ) -> str:
         parts = [BASE_SYSTEM]
         if self.workspace:
@@ -164,6 +198,8 @@ class PromptBuilder:
                 parts.append(MEMORY_GUIDE.format(content=block))
         if ultrathink:
             parts.append(ULTRATHINK)
+        if agent_loop:
+            parts.append(AGENT_LOOP)
         return "\n\n".join(parts)
 
     def assemble(self, system: str, history: list[dict]) -> list[dict]:

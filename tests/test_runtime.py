@@ -409,3 +409,53 @@ def test_context_compaction(oml_env, svc):
     assert "user likes tests" in sess.messages[0]["content"]
     assert any(e["type"] == "compaction" for e in events)
     assert len(sess.messages) < 21
+
+
+def test_agentloop_audit_blocks_unevidenced_final(oml_env, svc):
+    # with the loop armed, a "should work now" answer after tool calls is
+    # refused once: the runtime injects the audit and keeps the turn going
+    svc.config.agent.agent_loop = True
+    be = svc.backend()
+    call = {"id": "r1", "function": {"name": "soul_read", "arguments": {}}}
+    be.script = [
+        [ChatChunk(content="", tool_calls=[call], done=True)],
+        [ChatChunk(content="All done — it should work now."), ChatChunk(done=True)],
+        [ChatChunk(content="Verified: soul_read returned the memory file. "
+                           "EVIDENCE LEDGER: read → ok."), ChatChunk(done=True)],
+    ]
+    rt = make_rt(svc)
+    sess = svc.new_session()
+    events: list = []
+    res = asyncio.run(rt.run_turn(sess, "do the thing", model="mock-tool-7b",
+                                  on_event=events.append))
+    assert sum(1 for e in events if e["type"] == "agentloop_audit") == 1
+    assert res.text.startswith("Verified:")
+    # the audit message actually entered the conversation
+    assert any("AGENTLOOP AUDIT" in str(m.get("content", "")) for m in sess.messages)
+
+
+def test_agentloop_off_keeps_plain_final_answer(oml_env, svc):
+    svc.config.agent.agent_loop = False
+    be = svc.backend()
+    call = {"id": "r1", "function": {"name": "soul_read", "arguments": {}}}
+    be.script = [
+        [ChatChunk(content="", tool_calls=[call], done=True)],
+        [ChatChunk(content="All done — it should work now."), ChatChunk(done=True)],
+    ]
+    rt = make_rt(svc)
+    sess = svc.new_session()
+    events: list = []
+    res = asyncio.run(rt.run_turn(sess, "do the thing", model="mock-tool-7b",
+                                  on_event=events.append))
+    assert not any(e["type"] == "agentloop_audit" for e in events)
+    assert res.text == "All done — it should work now."
+
+
+def test_agentloop_directive_in_system_prompt(oml_env, svc):
+    from ohmyllm.config import PermissionMode as _PM
+
+    rt = make_rt(svc)
+    p = rt.prompt_builder.system_prompt(mode=_PM.SANDBOXED, native=True, agent_loop=True)
+    assert "AGENT LOOP mode (active)" in p
+    q = rt.prompt_builder.system_prompt(mode=_PM.SANDBOXED, native=True)
+    assert "AGENT LOOP" not in q

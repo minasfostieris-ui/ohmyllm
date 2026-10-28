@@ -23,8 +23,7 @@ from ...market import (
 )
 
 _SECTION_TITLES = {"llm": "[b]💬 Language models[/]",
-                   "stt": "[b]🎤 Speech-to-text[/]  [dim]hold ctrl+E to talk[/dim]",
-                   "tts": "[b]🔊 Text-to-speech · Phonon family[/]  [dim]/tts on[/dim]"}
+                   "stt": "[b]🎤 Speech-to-text[/]  [dim]hold ctrl+E to talk[/dim]"}
 _FIT_MARK = {"fits": "[green]✓[/green]", "tight": "[yellow]⚠[/yellow]",
              "no": "[red]✗[/red]", "unknown": "[dim]?[/dim]"}
 _FIT_COLOR = {"fits": "green", "tight": "yellow", "no": "red", "unknown": "dim"}
@@ -58,13 +57,15 @@ class MarketScreen(Screen):
     MarketScreen { padding: 1 2; }
     #market-list { height: auto; max-height: 60%; }
     #market-detail { height: 1fr; margin-top: 1; }
-    #market-dl { height: auto; display: none; margin-top: 1; }
+    #market-dl { dock: bottom; height: auto; display: none; margin-top: 1; }
+    #market-progress { width: 1fr; }
     """
 
     def compose(self) -> ComposeResult:
         self._vram = detect_vram_bytes()
         yield Static(
-            f"🛒 [b]Model marketplace[/b] — enter downloads · esc backs   ·   detected {_gpu_headline(self._vram)}",
+            f"🛒 [b]Model marketplace[/b] — enter downloads · esc backs (cancels a running download)"
+            f"   ·   detected {_gpu_headline(self._vram)}",
             id="screen-title",
         )
         yield OptionList(id="market-list")
@@ -132,7 +133,7 @@ class MarketScreen(Screen):
             have = bool(shutil.which("ninfer"))
             kind += (" · [green]NInfer build selected (runtime detected)[/green]" if have else
                      " · GGUF for LM Studio — NInfer MTP build auto-used if installed")
-        dest = ("~/.ohmyllm/voice/ (where the STT/TTS engines find it)"
+        dest = ("~/.ohmyllm/voice/ (where the STT engines find it)"
                 if e.section != "llm" else
                 "~/.lmstudio/models (vision companion included)")
         try:
@@ -154,7 +155,12 @@ class MarketScreen(Screen):
         self._start_download()
 
     def action_close(self) -> None:
-        self._cancel = True
+        if getattr(self, "_worker_running", False):
+            # esc during a download cancels it and stays on screen — the
+            # worker notices _cancel, paints 'cancelled', then hides the box
+            self._cancel = True
+            self.query_one("#market-dl-label", Static).update("[yellow]cancelling …[/yellow]")
+            return
         # the app uses replace_screen (not push) to get here — pop would
         # empty the stack and brick the UI
         self.app.replace_screen("chat")

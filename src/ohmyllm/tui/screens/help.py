@@ -33,7 +33,12 @@ HELP = """\
 `/help` `/model [name]` `/backend [ollama|lmstudio|mock]` `/mode [strict|safe|sandboxed|dangerous|full_access]`
 `/memory` `/soul` `/doctor` `/settings` `/chats` `/new` `/clear` `/rename <title>` `/delete` `/think [on|off]`
 `/export [markdown|json]` `/remember <fact>` `/forget <thing>` `/gui` `/quit`
-`/market` `/providers` `/voice` `/tts [on|off]` `/say <text>` `/onboarding`
+`/market` `/providers` `/voice` `/onboarding` `/ultrathink [on|off]` `/agentloop [on|off]`
+
+**`/agentloop`** arms a relentless completion loop: the system prompt forbids
+stopping until every requirement is verified with evidence (run it, test it,
+screenshot it and look at it if you can see images), the step budget rises,
+and one completion audit blocks any final answer that lacks fresh proof.
 
 **Where do API keys go?** `/providers` (or the Providers tab in the GUI):
 paste your OpenRouter / Anthropic / OpenAI / … key — stored in
@@ -41,7 +46,7 @@ paste your OpenRouter / Anthropic / OpenAI / … key — stored in
 (`OMLLM_KEY_OPENROUTER`, `OPENAI_API_KEY`, …) work too and win.
 
 **Voice**: hold `Ctrl+E` in chat to talk (SenseVoice/Parakeet/Whisper by
-language — models in `/market`), `/tts on` to hear replies (Phonon voices).
+language — models in `/market`).
 
 
 ## Skills

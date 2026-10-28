@@ -334,15 +334,14 @@ class WizardScreen(Screen):
         eng = [e for e, ok in (("sensevoice", _v.find_sensevoice()), ("parakeet", _v.find_parakeet()),
                                ("whisperx", _v.find_whisperx()), ("whisper", _v.find_whisper())) if ok]
         body.mount(Static(
-            "[b]🎙 Voice[/b] — talk to OhMyLLM instead of typing, hear replies back\n\n"
+            "[b]🎙 Voice[/b] — talk to OhMyLLM instead of typing\n\n"
             f"  mic recorder: {'✓' if _v.find_recorder() else '✗ (need pw-record/arecord/ffmpeg)'}\n"
-            f"  STT runtime:  {'✓ ' + '/'.join(eng) if eng else '✗ (whisper.cpp / whisperx / sensevoice.cpp / parakeet.cpp)'}\n"
-            f"  TTS runtime:  {'✓' if _v.find_tts() else '✗ (audio.cpp for Phonon voices)'}\n\n"
+            f"  STT runtime:  {'✓ ' + '/'.join(eng) if eng else '✗ (whisper.cpp / whisperx / sensevoice.cpp / parakeet.cpp)'}\n\n"
             "  [b]Do you want Speech-to-Text?[/] Hold Ctrl+E to talk — the transcript\n"
             "  lands in your input box. Engines by language:\n"
             "    English → Parakeet 0.6B (v3)      EN·KO·ZH·JA·YUE → SenseVoice-Small\n"
             "    ~99 other languages → Whisper + VAD (WhisperX)\n\n"
-            "  Pick models any time: [b]/market[/] → Speech-to-text / Text-to-speech.\n"
+            "  Pick models any time: [b]/market[/] → Speech-to-text.\n"
             "  (Skip this step — nothing is downloaded without you choosing.)\n"
         ))
         row = Horizontal(
@@ -357,9 +356,6 @@ class WizardScreen(Screen):
         )
         body.mount(row)
         body.mount(Static(
-            "\n  [b]Want TTS?[/] /tts on makes replies spoken through a Phonon voice\n"
-            "  (gradium family — en/es/fr/de/pt + multilingual, 22–85 MB each,\n"
-            "  pick them in /market → Text-to-speech). Needs audio.cpp installed.\n"
             "  [dim]Tip: /onboarding reopens this tutorial any time.[/dim]"
         ))
 

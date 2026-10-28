@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from ohmyllm import market, voice
+from ohmyllm.config.models import VoiceSettings
 
 
 @pytest.fixture
@@ -153,18 +154,22 @@ def test_market_voice_dest_routing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(v, "voice_dir", lambda: tmp_path / "voice")
     stt = next(e for e in market.CATALOG if e.mid == "stt-sensevoice")
-    tts = next(e for e in market.CATALOG if e.mid == "tts-40m-de")
     llm = next(e for e in market.CATALOG if e.section == "llm")
     norm = lambda x: str(x).replace("\\", "/")  # noqa: E731 — Windows separators
     assert norm(market.download_dest(stt)).endswith(
         "voice/stt/FunAudioLLM__SenseVoiceSmall-GGUF")
-    assert "voice/tts" in norm(market.download_dest(tts))
     assert str(market.download_dest(llm)).startswith(str(tmp_path / "lm"))
 
 
-def test_zipball_url():
-    pack = next(e for e in market.CATALOG if e.mid == "tts-voices-pack")
-    assert pack.url == "https://huggingface.co/gradium/phonon-voices/archive/main.zip"
+def test_no_tts_anywhere():
+    # TTS was removed from the app: no catalog entries, no config field,
+    # no speak()/find_tts() in the voice module
+    assert not [e for e in market.CATALOG if e.section == "tts"]
+    assert not hasattr(voice, "speak") and not hasattr(voice, "find_tts")
+    assert "tts_enabled" not in VoiceSettings.model_fields
+
+
+
 
 
 # ------------------------------------------------------------------ status
@@ -179,12 +184,11 @@ def test_voice_settings_roundtrip(svc):
     from ohmyllm.config import ConfigStore
 
     cfg = svc.config
-    assert cfg.voice.language == "auto" and cfg.voice.tts_enabled is False
-    cfg.voice.tts_enabled = True
+    assert cfg.voice.language == "auto"
     cfg.voice.language = "ko"
     svc.save_config()
     again = ConfigStore().load()
-    assert again.voice.tts_enabled is True and again.voice.language == "ko"
+    assert again.voice.language == "ko"
 
 
 # ---------------------------------------------------------------- TUI glue
@@ -204,7 +208,7 @@ async def test_ctrl_e_binding_and_honest_notify(oml_env, svc, monkeypatch):
         assert any("STT" in n or "whisper" in n for n in notes)
 
 
-async def test_voice_and_tts_commands(oml_env, svc, monkeypatch):
+async def test_voice_command_reports_stt(oml_env, svc, monkeypatch):
     from ohmyllm.tui.app import OhMyLLMApp
 
     monkeypatch.setattr(voice.shutil, "which", lambda n: None)
@@ -215,19 +219,9 @@ async def test_voice_and_tts_commands(oml_env, svc, monkeypatch):
         inp.value = "/voice"
         await pilot.press("enter")
         await pilot.pause(0.4)
-        assert True
-        inp.value = "/tts on"
-        await pilot.press("enter")
-        await pilot.pause(0.4)
-        assert app.svc.config.voice.tts_enabled is True
-        inp.value = "/tts off"
-        await pilot.press("enter")
-        await pilot.pause(0.4)
-        assert app.svc.config.voice.tts_enabled is False
-        # persisted
-        from ohmyllm.config import ConfigStore
-
-        assert ConfigStore().load().voice.tts_enabled is False
+        lines = " ".join(str(w.render()) for w in
+                         app.screen.query("#history Static")).lower()
+        assert "stt-model" in lines or "sensevoice" in lines or "whisper" in lines
 
 
 async def test_onboarding_reopens_wizard(oml_env, svc):
@@ -327,40 +321,6 @@ def test_recorder_stop_is_fast(vdir):
     rec.stop()
     assert time.monotonic() - t0 < 1.0  # was ~2.03s freezing the UI per release
 
-
-def test_tts_model_matches_dir_names(vdir):
-    d = vdir / "tts" / "gradium__phonon-40m-en"
-    d.mkdir(parents=True)
-    (d / "model.q8.gguf").write_bytes(b"x")
-    assert voice.tts_model() is not None  # file name has no "phonon" — dir does
-
-
-def test_speak_no_stale_replay(vdir, monkeypatch):
-
-    (vdir / "tts").mkdir(parents=True)
-    (vdir / "tts" / "gradium__phonon-40m-en").mkdir()
-    (vdir / "tts" / "gradium__phonon-40m-en" / "model.q8.gguf").write_bytes(b"x")
-    monkeypatch.setattr(voice, "find_tts", lambda: "/usr/bin/audio-cli")
-    monkeypatch.setattr(voice.shutil, "which", lambda n: "/usr/bin/paplay" if n == "paplay" else None)
-
-    class Proc:
-        returncode = 1
-
-        async def communicate(self):
-            return b"", b"segfault"
-
-        def kill(self):
-            pass
-
-        async def wait(self):
-            return 1
-
-    async def fake_exec(*a, **k):
-        return Proc()
-
-    monkeypatch.setattr(voice.asyncio, "create_subprocess_exec", fake_exec)
-    ok, err = asyncio.run(voice.speak("anything"))
-    assert not ok and "exited 1" in err  # failed engine never plays an old wav
 
 
 async def test_market_voice_highlight_no_crash(oml_env, svc):

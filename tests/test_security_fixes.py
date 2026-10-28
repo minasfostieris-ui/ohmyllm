@@ -468,14 +468,7 @@ def test_market_download_pre_try_error(oml_env, monkeypatch):
     assert out.error and "NotADirectoryError" in out.error and out.done
 
 
-def test_bridge_tts_coercion_and_key_caps(bridge):
-    bridge.post("/api/voice/tts", {"on": True})
-    r = bridge.post("/api/voice/tts", {"on": None})   # status query must NOT disable
-    assert r["enabled"] is True
-    r = bridge.post("/api/voice/tts", {"on": "false"})
-    assert r["enabled"] is False
-    r = bridge.post("/api/voice/tts", {"on": "maybe"})
-    assert "error" in r
+def test_bridge_key_caps(bridge):
     bridge.post("/api/providers/key", {"pid": "groq", "key": "gsk-real"})
     r = bridge.post("/api/providers/key", {"pid": "groq", "key": 0})
     assert "error" in r

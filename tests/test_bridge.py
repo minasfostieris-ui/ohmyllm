@@ -59,15 +59,12 @@ def test_bridge_voice_routes(bridge):
 
     r = bridge.get("/api/voice")
     assert "line" in r and "🎤" in r["line"]
-    r = bridge.post("/api/voice/tts", {"on": True})
-    assert r["enabled"] is True
-    r = bridge.post("/api/voice/tts", {"on": False})
-    assert r["enabled"] is False
-    r = bridge.post("/api/voice/say", {})
-    assert "error" in r
+    # TTS is gone: the routes must 404, not half-work
+    assert "error" in bridge.post("/api/voice/tts", {"on": True})
+    assert "error" in bridge.post("/api/voice/say", {})
     r = bridge.get("/api/market")
     secs = {e.get("section") for e in r["entries"]}
-    assert {"llm", "stt", "tts"} <= secs
+    assert secs == {"llm", "stt"}
     assert voice.status_line().startswith("🎤")
 
 
@@ -94,7 +91,7 @@ def test_bridge_providers_masked(bridge):
 
 def test_market_get_shape(bridge):
     r = bridge.get("/api/market")
-    assert "entries" in r and len(r["entries"]) == 24
+    assert "entries" in r and len(r["entries"]) == 14  # 10 llm + 4 stt (TTS removed)
     for e in r["entries"]:
         assert {"mid", "title", "size_gb", "fit", "fit_label", "blurb", "repo"} <= set(e)
     p = bridge.get("/api/market/progress")

@@ -26,7 +26,7 @@ class MarketEntry:
     size_gb: float
     blurb: str
     short: str = ""  # one-line pitch for the detail pane header
-    section: str = "llm"  # llm | stt | tts — voice models land in ~/.ohmyllm/voice/
+    section: str = "llm"  # llm | stt — voice models land in ~/.ohmyllm/voice/
     zipball: bool = False  # fetch the whole repo archive (sample packs)
     kind: str = "gguf"  # gguf -> LM Studio folder; ninfer -> own runtime
     companion: str | None = None  # mmproj file needed for vision, same repo
@@ -96,6 +96,23 @@ CATALOG: list[MarketEntry] = [
               "Macs. Vision companion included.",
         companion="Qwen3.5-9b-Sushi-Coder-RL.BF16-mmproj.gguf",
         tags=("forced thinking", "vision", "coder", "fits 8 GB"),
+    ),
+    MarketEntry(
+        mid="spark-x26-4b",
+        title="Spark-X2.6-4B · Q8_0",
+        repo="XHToken/Spark-X2.6-4B-GGUF",
+        file="Spark-X2.6-4B-Q8_0.gguf",
+        size_gb=4.4,
+        short="on-device agent 4B — thinking none/low/high, near-lossless Q8",
+        blurb="SparkLLM's on-device flagship: best-in-class 4B agent/coder "
+              "that matches ~9B models, Apache-2.0, en+zh. Q8_0 is the "
+              "near-lossless quant at 4.4 GB — fits any 6 GB+ card with "
+              "room for context. Controllable thinking budget: /think off "
+              "answers straight, /think low thinks briefly, /think high "
+              "thinks fully (medium/xhigh/max clamp to the model's high; "
+              "/ultrathink rides it with a raised reply cap). Native tool "
+              "calling — needs LM Studio 0.4+ or llama.cpp b10828+.",
+        tags=("thinking levels", "agent", "tools", "fits 6 GB"),
     ),
     MarketEntry(
         mid="gemma4-26b",
@@ -243,52 +260,7 @@ STT_CATALOG: list[MarketEntry] = [
     ),
 ]
 
-# TTS: the whole gradium Phonon family (11 repos) — Meta-Phonon distilled,
-# tiny (22-85 MB) Apache-2.0 voices. Runtime: audio.cpp.
-def _phonon(mid: str, lang: str, repo: str, file: str, gb: float, note: str = "",
-            companion: str | None = None) -> MarketEntry:
-    return MarketEntry(
-        mid=mid, section="tts",
-        title=f"Phonon {lang} · {repo.split('-')[-1] if 'phonon' in repo else repo}",
-        repo=f"gradium/{repo}", file=file, size_gb=gb,
-        short=f"TTS voice — {lang}{note}",
-        blurb=f"gradium/{repo}: distilled Meta Phonon text-to-speech ({lang}). "
-              "Apache-2.0, runs via audio.cpp (phonon-cli/audio-cli on PATH). "
-              "OhMyLLM: /tts on makes replies spoken; /say <text> speaks once.",
-        companion=companion,
-        tags=("tts", lang.lower()),
-    )
-
-
-TTS_CATALOG: list[MarketEntry] = [
-    _phonon("tts-31m-en", "English 31M", "phonon-31m-en", "model.q8.gguf", 0.065),
-    _phonon("tts-40m-en", "English 40M", "phonon-40m-en", "model.q8.gguf", 0.075),
-    _phonon("tts-40m-es", "Spanish", "phonon-40m-es", "model.q8.gguf", 0.075),
-    _phonon("tts-40m-fr", "French", "phonon-40m-fr", "model.q8.gguf", 0.075),
-    _phonon("tts-40m-de", "German", "phonon-40m-de", "model.q8.gguf", 0.075),
-    _phonon("tts-40m-pt", "Portuguese", "phonon-40m-pt", "model.q8.gguf", 0.075),
-    _phonon("tts-40m-multi", "Multilingual", "phonon-40m-multilingual", "model.q8.gguf", 0.075,
-            " — one voice, five languages"),
-    _phonon("tts-31m-llamacpp", "English (llama.cpp build)", "phonon-31m-en-llamacpp",
-            "phonon-31m-en-Q8_0.gguf", 0.022, " — 22 MB, runs in llama.cpp",
-            companion="mmproj-phonon-31m-en-F32.gguf"),
-    _phonon("tts-31m-audiocpp", "English (audio.cpp build)", "phonon-31m-en-audiocpp",
-            "phonon-31m-en-q8_0.gguf", 0.085, " — official audio.cpp packaging"),
-    _phonon("tts-mimi", "Mimi audio tokenizer", "phonon-mimi", "model.safetensors", 0.041,
-            " — needed by some audio.cpp pipelines"),
-    MarketEntry(
-        mid="tts-voices-pack", section="tts",
-        title="Phonon voices · sample pack",
-        repo="gradium/phonon-voices", file="main.zip", size_gb=0.008,
-        short="451 reference voice samples (en/de/fr/es/pt) — audition the voices",
-        blurb="Every Phonon voice's exclamation/happy/question/support samples. "
-              "Download to audition, then pick the model that sounds right.",
-        zipball=True,
-        tags=("tts", "samples"),
-    ),
-]
-
-CATALOG = CATALOG + STT_CATALOG + TTS_CATALOG
+CATALOG = CATALOG + STT_CATALOG
 
 
 def resolve(entry: MarketEntry) -> MarketEntry:
@@ -358,7 +330,7 @@ def download_dest(entry: MarketEntry) -> Path:
     (unsloth uses mmproj-F16.gguf for several models) — a flat folder would
     have them overwrite each other's vision projectors. Voice models live
     under ~/.ohmyllm/voice/ where the engine discovers them."""
-    if entry.section in ("stt", "tts"):
+    if entry.section == "stt":
         from .voice import voice_dir
         base = voice_dir() / entry.section
     else:

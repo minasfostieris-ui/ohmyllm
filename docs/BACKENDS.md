@@ -83,7 +83,6 @@ Speech I/O is engine-routed by language + what is actually installed
 | Parakeet | English | `parakeet-cli` (parakeet.cpp) | `/market → stt-parakeet` |
 | WhisperX | ~99 languages + VAD | `whisperx` (pip) | own weights, or ggml for `whisper` |
 | Whisper | ~99 languages | `whisper-cli` (whisper.cpp) | `/market → stt-whisper-*` |
-| Phonon TTS | 6 voices + multilingual | `audio-cli` / `phonon-cli` (audio.cpp) | `/market → tts-*` |
 
 `pick_engine("ko")` → SenseVoice; `"en"` → Parakeet when its model is
 present; everything else → WhisperX then Whisper. An engine is only
