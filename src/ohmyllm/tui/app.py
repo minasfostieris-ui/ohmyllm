@@ -367,10 +367,14 @@ class OhMyLLMApp(App[None]):
             be = self.svc.backend()
             ok, _info = await be.health()
             if not ok and self.svc.config.default_backend.value != "mock":
-                res = await be.ensure_running()
-                ok = res.ok
-                if not res.ok:
-                    self._notice(f"{be.display_name}: {res.message}")
+                if self.svc.may_autostart(be.name.value):
+                    res = await be.ensure_running()
+                    ok = res.ok
+                    if not res.ok:
+                        self._notice(f"{be.display_name}: {res.message}")
+                else:
+                    self._notice(f"{be.display_name} is not running — start it yourself, "
+                                 "or set auto_start=true in config.toml to let oml launch it")
             self.backend_ok = ok
         except Exception as exc:  # noqa: BLE001
             self.backend_ok = False

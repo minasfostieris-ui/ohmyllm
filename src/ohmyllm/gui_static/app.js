@@ -987,6 +987,8 @@ const SCHEMA = [
   ["agent.native_tools", "native tools", "select", ["auto", "force", "off"]],
   ["agent.react_fallback", "ReAct fallback", "bool"],
   ["agent.thinking_visible", "stream live thinking", "bool"],
+  ["agent.agent_loop", "relentless agent loop", "bool"],
+  ["agent.tone", "tone of voice", "select", ["default", "ruthless", "chill", "friendly", "professional", "terse"]],
   ["§", "memory"],
   ["memory.enabled", "soul memory enabled", "bool"], ["memory.agent_writes", "agent may write memories", "bool"],
   ["memory.require_explicit_save", "require explicit save intent", "bool"],
@@ -1076,6 +1078,7 @@ function renderHelp() {
   <tr><td><code>/providers</code></td><td>connect cloud API keys — Providers tab</td></tr>
   <tr><td><code>/voice</code></td><td>speech-to-text status · hold <kbd>Ctrl+E</kbd> anywhere to talk</td></tr>
   <tr><td><code>/mail</code></td><td>email account status · <code>oml mail setup</code> to connect</td></tr>
+  <tr><td><code>/tone</code></td><td>how the AI talks: default · ruthless · chill · friendly · professional · terse</td></tr>
   <tr><td><code>/help</code></td><td>this screen</td></tr></table>
   <h3>where do API keys go?</h3>
   <p>Open the <b>Providers</b> tab (left sidebar) → pick OpenRouter / Anthropic / OpenAI / … →
@@ -1099,7 +1102,7 @@ function renderHelp() {
 const SLASHES = [
   ["/remember", "write a memory"], ["/new", "fresh chat"], ["/rename", "rename chat"], ["/market", "model marketplace"],
   ["/export", "export chat"], ["/models", "model list"], ["/mode", "permission mode"],
-  ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"], ["/mail", "email status"], ["/voice", "voice status"],
+  ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"], ["/mail", "email status"], ["/voice", "voice status"], ["/tone", "how the AI talks"],
   ["/ultrathink", "deep reasoning on/off"], ["/agentloop", "relentless verified-completion loop"], ["/think", "off|low|medium|high|xhigh|max"], ["/skill:", "cast a skill: /skill:<name>"],
 ];
 $("#input").addEventListener("input", () => {
@@ -1234,6 +1237,25 @@ async function handleSlash(text) {
       if (r && r.error) { toast(`agentloop: ${r.error}`); break; }
       state.config = r.config;
       toast(want ? "🔁 agent loop ON — verified completion from the next turn" : "agent loop off");
+      refreshStatus();
+      break;
+    }
+    case "/tone": {
+      const opts = ["default", "ruthless", "chill", "friendly", "professional", "terse"];
+      const want = (arg || "").toLowerCase();
+      if (!want) {
+        const cur = (state.config && state.config.agent && state.config.agent.tone) || "default";
+        addEvline("note", `tone · current: ${cur} — /tone ${opts.filter((o) => o !== cur).join("|")}`);
+        break;
+      }
+      if (!opts.includes(want)) { toast(`unknown tone "${want}" — ${opts.join("|")}`, "bad"); break; }
+      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
+      merged.agent = merged.agent || {};
+      merged.agent.tone = want;
+      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
+      if (r && r.error) { toast(`tone: ${r.error}`, "bad"); break; }
+      state.config = r.config;
+      toast(`tone → ${want} (from the next turn)`);
       refreshStatus();
       break;
     }

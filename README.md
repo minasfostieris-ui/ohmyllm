@@ -39,10 +39,12 @@ you ──> ohmyllm ──> agent runtime ──> policy engine ──> tools
 - **VRAM intelligence** — detects NVIDIA/AMD/integrated GPUs (nvidia-smi,
   rocm-smi, sysfs, sysctl, WMI) and tells you per model: minimum and
   comfortable VRAM, whether it fits your card, and why a model is tool-weak.
-- **Backends** — Ollama (NDJSON streaming, native tools, auto-`serve`, model
-  pull with live progress) and LM Studio (OpenAI-compatible + native API,
-  SSE tool-call accumulation, launch helpers). Plus a **mock backend** — a
-  scripted but fully real agent for demos/tests without any model.
+- **Backends** — Ollama (NDJSON streaming, native tools, model pull with
+  live progress) and LM Studio (OpenAI-compatible + native API, SSE tool-call
+  accumulation). oml never launches either server behind your back —
+  `auto_start` defaults to false; enable it in config.toml or start the app
+  yourself. Plus a **mock backend** — a scripted but fully real agent for
+  demos/tests without any model.
   → [docs/BACKENDS.md](docs/BACKENDS.md)
 - **Email** — `oml mail setup` connects an IMAP/SMTP account (Gmail app
   password, Outlook, Fastmail, iCloud, anything). The agent can then

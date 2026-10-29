@@ -1,6 +1,8 @@
+import asyncio
 import json
 
 import httpx
+import pytest
 
 from ohmyllm.backends import LMStudioBackend, OllamaBackend, make_backend
 from ohmyllm.config import Config
@@ -64,7 +66,6 @@ def test_ollama_chat_stream_and_tools():
             )
         return httpx.Response(200, content=payload.encode())
 
-    import asyncio
 
     async def drain(gen):
         chunks = []
@@ -95,7 +96,6 @@ def test_ollama_pull_progress():
 
     seen = []
     be = OllamaBackend(cfg, transport=ollama_transport({"POST /api/pull": pull}))
-    import asyncio
 
     asyncio.run(be.pull("qwen2.5:7b", progress=lambda s, p: seen.append((s, p))))
     assert ("pulling manifest", None) in seen
@@ -103,12 +103,46 @@ def test_ollama_pull_progress():
     assert seen[-1][0] == "success"
 
 
+def test_default_config_never_autospawns_servers():
+    """Starting oml must not launch LM Studio/Ollama behind the user's back:
+    both auto_start flags default false, the probe helper agrees, and
+    ensure_running on a dead-but-installed Ollama declines to spawn."""
+    import shutil
+
+    cfg = Config()
+    assert cfg.ollama.auto_start is False
+    assert cfg.lmstudio.auto_start is False
+    from ohmyllm.config import ConfigStore
+    from ohmyllm.core import Services
+    svc = Services(ConfigStore(), cfg)
+    assert svc.may_autostart("ollama") is False
+    assert svc.may_autostart("lmstudio") is False
+
+    calls: list = []
+    real_popen = asyncio.create_subprocess_exec
+
+    async def spy(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append(args)
+        raise AssertionError("subprocess launched despite auto_start=false")
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(shutil, "which", lambda x: "/usr/bin/ollama")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
+    be = OllamaBackend(cfg, transport=ollama_transport({
+        "GET /api/version": httpx.Response(500),
+    }))
+    res = asyncio.run(be.ensure_running())
+    assert res.ok is False
+    assert "Auto-start is disabled" in res.message
+    assert calls == []
+    monkeypatch.undo()
+    assert real_popen is asyncio.create_subprocess_exec
+
+
 def test_ollama_ensure_running_when_live():
     cfg = Config()
     be = OllamaBackend(cfg, transport=ollama_transport({
         "GET /api/version": httpx.Response(200, json={"version": "0.3.5"}),
     }))
-    import asyncio
 
     res = asyncio.run(be.ensure_running())
     assert res.ok and res.was_already_running
@@ -118,7 +152,6 @@ def test_ollama_missing_binary_instructions(monkeypatch):
     cfg = Config()
     monkeypatch.setattr("ohmyllm.backends.ollama.shutil.which", lambda x: None)
     be = OllamaBackend(cfg, transport=ollama_transport({"GET /api/version": httpx.Response(500)}))
-    import asyncio
 
     res = asyncio.run(be.ensure_running())
     assert not res.ok and any("ollama.com" in i for i in res.instructions)
@@ -149,7 +182,6 @@ def test_lmstudio_stream_sse():
         return httpx.Response(200, content=SSE,
                               headers={"content-type": "text/event-stream"})
 
-    import asyncio
 
     async def drain(gen):
         return [c async for c in gen]
@@ -177,7 +209,6 @@ def test_lmstudio_models_rich_metadata():
             "capabilities": ["tools"], "ctx_length": 32768, "loaded": True,
         }]}),
     }))
-    import asyncio
 
     models = asyncio.run(be.list_models())
     m = models[0]
@@ -187,7 +218,6 @@ def test_lmstudio_models_rich_metadata():
 
 def test_mock_backend_memories_and_pull():
     cfg = Config()
-    import asyncio
 
     be = make_backend("mock", cfg)
 
@@ -227,7 +257,6 @@ def _lmstudio_stream(deltas: list[dict], captured: dict):
 
 
 def test_lmstudio_sends_unload_false():
-    import asyncio
 
     cap: dict = {}
     be = LMStudioBackend(Config(), transport=_lmstudio_stream(
@@ -239,7 +268,6 @@ def test_lmstudio_sends_unload_false():
 
 
 def test_lmstudio_reasoning_only_falls_back_to_content():
-    import asyncio
 
     cap: dict = {}
     be = LMStudioBackend(Config(), transport=_lmstudio_stream(
@@ -251,7 +279,6 @@ def test_lmstudio_reasoning_only_falls_back_to_content():
 
 
 def test_lmstudio_content_wins_over_reasoning():
-    import asyncio
 
     cap: dict = {}
     be = LMStudioBackend(Config(), transport=_lmstudio_stream(
@@ -270,7 +297,6 @@ async def _collect(be, model: str) -> str:
 
 
 def test_ollama_thinking_only_fallback_and_keepalive():
-    import asyncio
 
     lines = [
         json.dumps({"message": {"thinking": "hmm "}, "done": False}),
@@ -290,7 +316,6 @@ def test_ollama_thinking_only_fallback_and_keepalive():
 
 
 def test_lmstudio_surfaces_sse_error_events():
-    import asyncio
 
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -307,7 +332,6 @@ def test_lmstudio_surfaces_sse_error_events():
 
 
 def test_thinking_flags_reach_the_wire():
-    import asyncio
 
     cap: dict = {}
     cfg = Config()
@@ -337,7 +361,6 @@ def test_thinking_flags_reach_the_wire():
 
 
 def test_ultrathink_escalates_effort_and_budget():
-    import asyncio
 
     cap: dict = {}
     cfg = Config()
@@ -368,7 +391,6 @@ def test_ultrathink_escalates_effort_and_budget():
 
 
 def test_lmstudio_streams_tool_args_progress():
-    import asyncio
 
     frags = ['{"path": "a.txt"', ', "content": "' + ("z" * 320) + "hello world", '"}']
     def handler(request: httpx.Request) -> httpx.Response:
@@ -399,7 +421,6 @@ def test_lmstudio_streams_tool_args_progress():
 def test_lmstudio_ejects_previous_model_on_switch():
     """Switching models must free VRAM: the model OhMyLLM loaded before gets
     ejected when a different one is selected."""
-    import asyncio
 
     calls: list[tuple[str, str]] = []
 
@@ -425,7 +446,6 @@ def test_lmstudio_ejects_previous_model_on_switch():
 def test_lmstudio_loads_with_gpu_offload_flags(monkeypatch):
     """REST load can't control GPU offload — a 9B must not silently run on CPU.
     ensure_loaded must prefer `lms load --gpu max --context-length N`."""
-    import asyncio
     import subprocess
 
     seen: list[list[str]] = []
@@ -453,7 +473,6 @@ def test_lmstudio_loads_with_gpu_offload_flags(monkeypatch):
 def test_ollama_unloads_previous_model_on_switch():
     """Ollama's keep_alive holds the old model on the GPU; switching must
     send keep_alive=0 for the previous model."""
-    import asyncio
 
     seen: list[tuple[str, str, object]] = []
 

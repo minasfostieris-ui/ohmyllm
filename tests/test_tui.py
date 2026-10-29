@@ -120,6 +120,49 @@ async def test_tui_agentloop_command_toggles_config(oml_env, svc):
         await pilot.pause(0.4)
         assert app.svc.config.agent.agent_loop is False
 
+
+@pytest.mark.asyncio()
+async def test_tui_tone_command_sets_config(oml_env, svc):
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        inp = app.screen.query_one("#chat-input")
+        inp.value = "/tone ruthless"
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert app.svc.config.agent.tone == "ruthless"
+        from ohmyllm.config import ConfigStore
+        assert ConfigStore().load().agent.tone == "ruthless"  # persisted
+        inp.value = "/tone nonsense"
+        await pilot.press("enter")
+        await pilot.pause(0.4)
+        assert app.svc.config.agent.tone == "ruthless", "bad tone must not stick"
+
+
+@pytest.mark.asyncio()
+async def test_settings_save_persists_tone(oml_env, svc):
+    app = OhMyLLMApp()
+    async with app.run_test(size=(106, 34)) as pilot:
+        await pilot.pause(0.7)
+        app.replace_screen("settings")
+        await pilot.pause(0.8)
+        app.screen._activate_tab(4)  # Agent tab holds st-tone
+        await pilot.pause(0.4)
+        t = app.screen.query_one("#st-tone")
+        await pilot.click("#st-tone")
+        await pilot.pause(0.2)
+        await pilot.press("end")
+        for _ in range(len(t.value)):
+            await pilot.press("backspace")
+        await pilot.press(*"terse")
+        await pilot.press("ctrl+s")
+        await pilot.pause(0.8)
+        from ohmyllm.config import ConfigStore
+        assert ConfigStore().load().agent.tone == "terse"
+        from ohmyllm.tui.screens.chat import ChatScreen
+        assert isinstance(app.screen, ChatScreen)
+
+
 @pytest.mark.asyncio()
 async def test_tui_chats_screen_and_draft_preserved(oml_env, svc):
     app = OhMyLLMApp()

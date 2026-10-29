@@ -182,6 +182,8 @@ class SettingsScreen(Screen):
                 yield from _switch("Relentless agent loop", "st-agentloop",
                                    cfg.agent.agent_loop,
                                    hint="/agentloop: never stop until the result is verified perfect")
+                yield from _field("Tone of voice", "st-tone", cfg.agent.tone,
+                                  hint="default | ruthless | chill | friendly | professional | terse")
 
             # ---------------------------------------------------- Memory tab
             with Vertical(id="st-page-memory", classes="st-page"):
@@ -409,6 +411,9 @@ class SettingsScreen(Screen):
         nt = q("st-native_tools").value.strip().lower()
         if nt not in {"auto", "force", "off"}:
             errors.append("st-native_tools: must be auto|force|off")
+        tn = q("st-tone").value.strip().lower() or "default"
+        if tn not in {"default", "ruthless", "chill", "friendly", "professional", "terse"}:
+            errors.append("st-tone: must be default | ruthless | chill | friendly | professional | terse")
 
         payload: dict = {
             "version": 1,
@@ -451,6 +456,7 @@ class SettingsScreen(Screen):
                 "native_tools": nt,
                 "thinking_visible": s("st-thinking_visible"),
                 "agent_loop": s("st-agentloop"),
+                "tone": tn,
             },
             "memory": {
                 "enabled": s("st-mem_enabled"),

@@ -26,6 +26,7 @@ from ..tools.registry import ToolRegistry
 from ..tools.spec import ToolContext, ToolResult
 from .parser import ParsedCall, ToolCallParser
 from .prompts import AGENTLOOP_AUDIT as AGENTLOOP_AUDIT_MSG
+from .prompts import AGENTLOOP_GATE as AGENTLOOP_GATE_MSG
 from .prompts import PromptBuilder, trim_messages
 from .validator import ToolCallValidator
 
@@ -157,6 +158,7 @@ class AgentRuntime:
         # strangle it; ride a floor of 24 while honoring a bigger setting
         budget = max(self.config.agent.max_steps, 24) if agent_loop else self.config.agent.max_steps
         audit_done = False
+        gate_done = 0
         while step < budget:
             self._check_cancel(cancel)
             step += 1
@@ -273,6 +275,18 @@ class AgentRuntime:
                     session.add_message("user", AGENTLOOP_AUDIT_MSG)
                     continue
                 final_text = self._clean_final(assistant_text)
+                if agent_loop and result.calls:
+                    # VERDICT GATE: a relentless loop may only stop when it
+                    # cites a tool result it produced THIS turn. Small models
+                    # confidently "finish" after one pass; gate them back in
+                    # (max twice) — evidence beats enthusiasm.
+                    ev = self._cites_fresh_evidence(assistant_text, result.calls)
+                    if ev is None and gate_done < 2:
+                        gate_done += 1
+                        emit({"type": "agentloop_gate", "attempt": gate_done})
+                        session.add_message("assistant", assistant_text.strip()[:4000])
+                        session.add_message("user", AGENTLOOP_GATE_MSG)
+                        continue
                 if params.ultrathink and len(final_text) > 80:
                     refined = await self._ultrathink_refine(
                         session, model, params, final_text, emit, cancel)
@@ -675,6 +689,25 @@ class AgentRuntime:
             if report.leftover_text and not report.calls:
                 return report.leftover_text.strip()
         return text.strip()
+
+    @staticmethod
+    def _cites_fresh_evidence(text: str, calls: list[dict[str, Any]]) -> str | None:
+        """Verdict gate: a finished answer must visibly rest on this turn's
+        tool work. Returns the first cited tool name when the final text
+        quotes/mentions a executed tool, else None. Cheap heuristics only —
+        a confident small model passes by echoing command output; that is
+        the behaviour we want it to be forced into."""
+        low = text.lower()
+        for c in calls:
+            name = str(c.get("name") or "")
+            if not name:
+                continue
+            if name.lower() in low:
+                return name
+            out = str(c.get("output") or "")[:60].strip().lower()
+            if len(out) > 12 and out in low:
+                return name
+        return None
 
     def _finish(
         self, session: Session, result: TurnResult, text: str, gen_time: float, tokens: int,

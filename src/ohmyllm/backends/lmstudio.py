@@ -444,7 +444,12 @@ class LMStudioBackend(BaseBackend):
         # retry with the effort keys stripped instead of a dead turn
         for _attempt in range(2):
             try:
-                async with self._client(self.config.lmstudio.base_url, timeout=httpx.Timeout(params.timeout, read=None)) as c:
+                # read=None would hang forever if the server accepts the
+                # request but never emits (wedged model slot); cap the gap
+                # between SSE lines instead — a streaming turn can take as
+                # long as it likes as long as tokens keep arriving
+                _to = httpx.Timeout(params.timeout, read=min(max(params.timeout, 300.0), 1800.0))
+                async with self._client(self.config.lmstudio.base_url, timeout=_to) as c:
                     async with c.stream("POST", "/v1/chat/completions", json=body) as resp:
                         if resp.status_code != 200:
                             detail = (await resp.aread()).decode(errors="replace")[:300]

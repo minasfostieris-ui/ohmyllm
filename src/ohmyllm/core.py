@@ -117,6 +117,15 @@ class Services:
             self._backend_cache[key] = make_backend(key, self.config)
         return self._backend_cache[key]
 
+    def may_autostart(self, name: str | None = None) -> bool:
+        """Whether the user allowed oml to spawn this local server process.
+        Off by default: booting the app must never launch LM Studio/Ollama
+        behind the user's back — explicit actions still call ensure_running
+        directly."""
+        key = name or self.config.default_backend.value
+        section = getattr(self.config, key, None)
+        return bool(getattr(section, "auto_start", False))
+
     def runtime(self, name: str | None = None) -> AgentRuntime:
         be = self.backend(name)
         return AgentRuntime(

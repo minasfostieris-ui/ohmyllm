@@ -42,6 +42,7 @@ class ChatScreen(Screen):
         ("/onboarding", "", "reopen the first-run tutorial"),
         ("/ultrathink", "[on|off]", "deep reasoning: think much longer and harder"),
         ("/agentloop", "[on|off]", "relentless loop: never stop until the result is verified perfect"),
+        ("/tone", "[name]", "how the agent talks: default|ruthless|chill|friendly|professional|terse"),
         ("/memory", "", "soul.md editor"), ("/soul", "", "soul.md editor"), ("/doctor", "", "diagnostics"),
         ("/settings", "", "all settings"), ("/chats", "", "browse chats"), ("/new", "", "fresh chat"),
         ("/clear", "", "fresh chat"), ("/rename", "<title>", "rename this chat"),
@@ -1074,6 +1075,19 @@ class ChatScreen(Screen):
                 "🔁 agent loop ON — the agent may not stop until every requirement is "
                 "verified with evidence (bigger step budget + completion audit)"
                 if want == "on" else "agent loop off")
+        elif cmd == "tone":
+            opts = ("default", "ruthless", "chill", "friendly", "professional", "terse")
+            want = arg.lower().strip()
+            cur = app.svc.config.agent.tone
+            if not want:
+                self._sysline(f"tone · current: {cur} — /tone " +
+                              "|".join(o for o in opts if o != cur), "system")
+            elif want not in opts:
+                app.notify("unknown tone — " + "|".join(opts), severity="warning")
+            else:
+                app.svc.config.agent.tone = want
+                app.svc.save_config()
+                app.notify(f"tone → {want} — applies from the next turn")
         elif cmd.startswith("skill:"):
             name = cmd.split(":", 1)[1]
             body = app.svc.skills.read(name)

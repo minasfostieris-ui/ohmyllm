@@ -78,10 +78,16 @@ class ApprovalManager:
 
     # ------------------------------------------------------------ checks
     def preapproved(self, tool: str, args: dict) -> bool:
-        return _key(tool, args) in (self._session | self._permanent)
+        if _key(tool, args) in (self._session | self._permanent):
+            return True
+        # "[a]lways this session" on e.g. write_file means the TOOL, not one
+        # exact payload: a loop writing three files must not re-prompt per
+        # file. Permanent rules keep exact-arg matching — they're user-written.
+        return tool in self._session
 
     def remember_session(self, tool: str, args: dict) -> None:
         self._session.add(_key(tool, args))
+        self._session.add(tool)
 
     def add_permanent(self, tool: str, args: dict) -> None:
         self._session.add(_key(tool, args))

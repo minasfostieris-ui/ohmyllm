@@ -270,7 +270,9 @@ class OllamaBackend(BaseBackend):
         thinking_parts: list[str] = []
         try:
             for _attempt in range(2):
-              async with self._client(self.config.ollama.host, timeout=httpx.Timeout(params.timeout, read=None)) as c:
+              # bounded read gap: a wedged serve slot must not hang forever
+              _to = httpx.Timeout(params.timeout, read=min(max(params.timeout, 300.0), 1800.0))
+              async with self._client(self.config.ollama.host, timeout=_to) as c:
                 async with c.stream("POST", "/api/chat", json=body) as resp:
                     if resp.status_code != 200:
                         detail = (await resp.aread()).decode(errors="replace")[:300]

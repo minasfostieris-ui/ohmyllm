@@ -129,14 +129,14 @@ class GenerationSettings(BaseModel):
 class OllamaSettings(BaseModel):
     host: str = "http://127.0.0.1:11434"
     binary: str = "ollama"
-    auto_start: bool = True
+    auto_start: bool = Field(False, description="launch the Ollama app when it is not running (off by default — starting oml must never spawn servers)")
     startup_timeout: float = 30.0
     default_model: str | None = None
 
 
 class LMStudioSettings(BaseModel):
     base_url: str = "http://127.0.0.1:1234"
-    auto_start: bool = True
+    auto_start: bool = Field(False, description="launch the LM Studio app when it is not running (off by default — starting oml must never spawn servers)")
     startup_timeout: float = 30.0
     default_model: str | None = None
     binary_path: str | None = Field(
@@ -212,6 +212,8 @@ class AgentSettings(BaseModel):
     compact_ratio: float = Field(0.75, gt=0.2, le=0.95, description="compact when est prompt tokens exceed ratio*num_ctx")
     thinking_visible: bool = Field(True, description="stream the model's reasoning live in chat (/think hide, Ctrl+T)")
     agent_loop: bool = Field(False, description="/agentloop: relentless completion — verify everything, never stop early (step floor 24 + one evidence audit)")
+    tone: str = Field("default", pattern="^(default|ruthless|chill|friendly|professional|terse)$",
+                      description="/tone: how the agent talks — ruthless, chill, friendly, professional, terse")
 
 
 class UiSettings(BaseModel):

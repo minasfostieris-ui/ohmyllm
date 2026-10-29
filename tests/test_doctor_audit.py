@@ -59,6 +59,34 @@ def test_approval_session_and_permanent_rules(tmp_path):
     assert out3 is ApprovalOutcome.DENIED
 
 
+def test_session_always_covers_new_payloads(tmp_path):
+    # "[a]lways this session" is TOOL-level: an agentloop writing index.html
+    # then style.css must not re-prompt for each new path.
+    from ohmyllm.safety import Decision
+
+    am = ApprovalManager(rules_path=tmp_path / "rules.json")
+    d = Decision(allowed=True, requires_approval=True, risk=4, reasons=("test",))
+    prompts: list = []
+
+    async def approve_session(req):
+        prompts.append(req.tool)
+        return ApprovalOutcome.APPROVED_SESSION
+
+    import asyncio
+
+    out = asyncio.run(am.decide("write_file", {"path": "a.html", "content": "x"}, d, approve_session))
+    assert out.approved and len(prompts) == 1
+    out2 = asyncio.run(am.decide("write_file", {"path": "b.css", "content": "y"}, d, approve_session))
+    assert out2.approved and len(prompts) == 1  # different args, no new prompt
+    # a DIFFERENT tool still asks
+    out3 = asyncio.run(am.decide("run_command", {"command": "ls"}, d, approve_session))
+    assert out3.approved and prompts == ["write_file", "run_command"]
+    # permanent rules stay exact-arg (reload simulates a fresh process)
+    am2 = ApprovalManager(rules_path=tmp_path / "rules.json")
+    out4 = asyncio.run(am2.decide("run_command", {"command": "ls other"}, d, approve_session))
+    assert out4.approved and len(prompts) == 3
+
+
 def test_doctor_statuses(oml_env, monkeypatch):
     checks = run_checks()
     ids = {c.id for c in checks}

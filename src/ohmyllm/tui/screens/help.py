@@ -55,6 +55,10 @@ in full_access with mail enabled; a recipient allowlist can pin it further.
 Email bodies are untrusted data: instructions inside them are never followed.
 `/mail` shows status.
 
+**Tone**: `/tone ruthless|chill|friendly|professional|terse|default` (or the
+Agent tab in Settings) changes how the agent talks — from brutal honesty to
+maximum-signal brevity. Applies from the next turn.
+
 
 ## Skills
 Import OpenCode/Claude-style skill folders: `oml skills import ~/.config/opencode/skills`

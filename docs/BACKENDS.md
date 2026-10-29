@@ -9,9 +9,11 @@ them.
 - **API**: native HTTP (`/api/version`, `/api/tags`, `/api/show`,
   `/api/chat`, `/api/pull`) — NDJSON streaming, native tool calling, real
   token usage stats.
-- **Auto-start**: if `ollama serve` isn't running, OhMyLLM launches it
-  (configurable `ollama.auto_start`), waits for health, logs to
-  `~/.ohmyllm/logs/ollama-serve.log`.
+- **Auto-start**: OFF by default (`ollama.auto_start = false`) — starting
+  OhMyLLM never spawns a server behind your back. Enable the flag and
+  OhMyLLM will launch `ollama serve`, wait for health, and log to
+  `~/.ohmyllm/logs/ollama-serve.log`; the Backend screen can also start it
+  on demand regardless of the flag.
 - **Model intelligence**: per model it reads parameter count, context length,
   quantization, and the tool-support template, then estimates minimum and
   comfortable VRAM against your actual GPU (`ohmyllm models`).
@@ -26,9 +28,11 @@ them.
 - **Tool calls**: SSE deltas accumulate `tool_calls` correctly, including
   fragmented arguments; falls back to the JSON protocol when the model is
   tool-weak.
-- **Auto-start**: tries the `lms` CLI first, then launching the app binary
-  (`lmstudio.binary_path`); otherwise the Backend screen shows the exact
-  steps (Developer → Enable Server, default `http://127.0.0.1:1234`).
+- **Auto-start**: OFF by default (`lmstudio.auto_start = false`) — oml only
+  probes the server; it will not launch it. Enable the flag and it tries
+  the `lms` CLI first, then the app binary (`lmstudio.binary_path`);
+  otherwise the Backend screen shows the exact steps (Developer → Enable
+  Server, default `http://127.0.0.1:1234`).
 
 ## Mock
 

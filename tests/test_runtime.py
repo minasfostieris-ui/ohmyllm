@@ -459,3 +459,18 @@ def test_agentloop_directive_in_system_prompt(oml_env, svc):
     assert "AGENT LOOP mode (active)" in p
     q = rt.prompt_builder.system_prompt(mode=_PM.SANDBOXED, native=True)
     assert "AGENT LOOP" not in q
+
+
+def test_tone_directive_in_system_prompt(oml_env, svc):
+    from ohmyllm.config import PermissionMode as _PM
+
+    rt = make_rt(svc)
+    svc.config.agent.tone = "ruthless"
+    p = rt.prompt_builder.system_prompt(mode=_PM.SANDBOXED, native=True)
+    assert "## TONE: ruthless" in p and "Be brutally honest" in p
+    svc.config.agent.tone = "terse"
+    p = rt.prompt_builder.system_prompt(mode=_PM.SANDBOXED, native=True)
+    assert "## TONE: terse" in p and "Maximum signal" in p
+    svc.config.agent.tone = "default"
+    p = rt.prompt_builder.system_prompt(mode=_PM.SANDBOXED, native=True)
+    assert "## TONE" not in p

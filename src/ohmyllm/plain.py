@@ -18,6 +18,7 @@ from rich.panel import Panel
 from rich.text import Text
 
 from .agents.runtime import AgentCancelled
+from .backends import StartResult
 from .config import BackendName, PermissionMode
 from .core import Services
 from .doctor import run_checks, summarize
@@ -27,6 +28,7 @@ from .sessions import make_title
 class PlainApp:
     def __init__(self, svc: Services, resume_sid: str | None = None) -> None:
         self.svc = svc
+        self._live: Live | None = None
         self._cancel: asyncio.Event | None = None
         self.console = Console()
         self.rt = svc.runtime()
@@ -74,7 +76,8 @@ class PlainApp:
         if ok:
             self.console.print(f"[green]●[/green] {be.display_name} live  ({self.svc.current_model() or 'no model yet'})  mode={self.svc.config.permission_mode.value}")
             return
-        res = await be.ensure_running()
+        res = await be.ensure_running() if self.svc.may_autostart(be.name.value) \
+            else StartResult(ok=False, message=f"{be.display_name} is not running and oml will not launch it (auto_start=false) — start it yourself, /backend mock to explore, or set auto_start=true in config.toml", instructions=[])
         if res.ok:
             self.console.print(f"[green]●[/green] {be.display_name}: {res.message}")
         else:
@@ -88,6 +91,7 @@ class PlainApp:
         if self.svc.config.generation.streaming:
             live = Live(buf, console=self.console, refresh_per_second=14, vertical_overflow="visible")
             live.start()
+        self._live = live
 
         def on_event(ev: dict[str, Any]) -> None:
             nonlocal buf
@@ -128,6 +132,7 @@ class PlainApp:
         finally:
             if live:
                 live.stop()
+            self._live = None
             self.svc.sessions.save(self.sess)  # every path: crash/Ctrl+C included
         if result is None:
             return
@@ -148,17 +153,28 @@ class PlainApp:
         from .safety import ApprovalOutcome
 
         d = req.decision
-        self.console.print(Panel(
-            f"tool: [bold]{req.tool}[/bold]   risk: {d.level} ({d.risk})   mode: {self.svc.config.permission_mode.value}\n"
-            + (req.preview or "")[:1800] + "\n" + d.summary(),
-            title="approval required", border_style="yellow",
-        ))
-        ans = (await asyncio.to_thread(input, "approve? [y]es / [n]o / [a]lways this session / [p]ermanent rule: ")).strip().lower()
-        if ans in ("p", "permanent"):
+        # The streaming Live grabs the terminal's input pipe; reading stdin
+        # underneath it swallows keystrokes (typed answers vanish, Enter reads
+        # as EOF). Pause it, ask, resume.
+        live = self._live
+        if live is not None:
+            live.stop()
+        try:
+            self.console.print(Panel(
+                f"tool: [bold]{req.tool}[/bold]   risk: {d.level} ({d.risk})   mode: {self.svc.config.permission_mode.value}\n"
+                + (req.preview or "")[:1800] + "\n" + d.summary(),
+                title="approval required", border_style="yellow",
+            ))
+            ans = input("approve? [y]es / [n]o / [a]lways this session / [p]ermanent rule: ").strip().lower()
+        finally:
+            if live is not None:
+                live.start()
+        if ans in ("p", "perm", "permanent"):
             return ApprovalOutcome.APPROVED_ALWAYS
         if ans in ("a", "always", "session"):
             return ApprovalOutcome.APPROVED_SESSION
-        if ans.startswith("y"):
+        if ans.startswith("y") or ans == "":
+            # Enter alone = yes (terminal drag often drops the "y")
             return ApprovalOutcome.APPROVED
         return ApprovalOutcome.DENIED
 
@@ -209,6 +225,22 @@ class PlainApp:
             c.print_json(json.dumps(_safe_config(self.svc.config), indent=2))
         elif cmd == "remember":
             await self._turn(f"remember that {arg}", memory_directive=True)
+        elif cmd == "agentloop":
+            cur = self.svc.config.agent.agent_loop
+            want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
+            self.svc.config.agent.agent_loop = want == "on"
+            self.svc.save_config()
+            c.print(f"[bold]agent loop {'ON — verified completion from the next turn' if want == 'on' else 'off'}[/bold]")
+        elif cmd == "tone":
+            opts = ("default", "ruthless", "chill", "friendly", "professional", "terse")
+            if not arg:
+                c.print(f"tone: {self.svc.config.agent.tone} — /tone " + "|".join(opts))
+            elif arg.lower() in opts:
+                self.svc.config.agent.tone = arg.lower()
+                self.svc.save_config()
+                c.print(f"tone → {arg.lower()}")
+            else:
+                c.print(f"[red]unknown tone[/red] — {', '.join(opts)}")
         else:
             c.print(f"[red]unknown command /{cmd}[/red] — try /help")
         return False
@@ -221,6 +253,9 @@ class PlainApp:
         be = self.svc.backend(key)
         ok, _ = await be.health()
         if not ok:
+            if not self.svc.may_autostart(key):
+                self.console.print(f"[yellow]{key} is not running — oml will not launch it (auto_start=false). Start it yourself, or /backend mock to test the picker.[/yellow]")
+                return
             res = await be.ensure_running()
             if not res.ok:
                 self.console.print(f"[yellow]{key}: {res.message}[/yellow]")
@@ -371,7 +406,7 @@ class PlainApp:
 
     def _print_help(self) -> None:
         self.console.print(Panel(
-            "/help /model /backend /mode /soul /memory [edit|forget …] /doctor /settings\n"
+            "/help /model /backend /mode /soul /memory [edit|forget …] /doctor /settings /agentloop /tone\n"
             "/chats [open N] /new /rename <title> /delete [id] /export [json|markdown] /clear /quit\n"
             "Plain mode uses the SAME permission engine as the TUI — blocked is blocked.",
             title="OhMyLLM plain mode", border_style="cyan",
