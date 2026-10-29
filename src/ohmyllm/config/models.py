@@ -228,6 +228,24 @@ class LoggingSettings(BaseModel):
     keep_backups: int = 30
 
 
+class MailSettings(BaseModel):
+    """IMAP/SMTP account for the mail tools (`oml mail setup` writes this;
+    the Settings screen carries it through untouched). password falls back
+    to the OMLLM_KEY_MAIL env var, which wins."""
+    enabled: bool = False
+    address: str = ""
+    user: str = ""
+    password: str = ""
+    imap_host: str = ""
+    imap_port: int = 993
+    smtp_host: str = ""
+    smtp_port: int = 465
+    signature: str = ""
+    # comma-separated; non-empty restricts email_send to these recipients
+    recipient_allowlist: str = ""
+
+
+
 class Config(BaseModel):
     model_config = ConfigDict(validate_assignment=True)
 
@@ -241,6 +259,7 @@ class Config(BaseModel):
     generation: GenerationSettings = Field(default_factory=GenerationSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
+    mail: MailSettings = Field(default_factory=MailSettings)
     cloud: CloudSettings = Field(default_factory=CloudSettings)
     safety: SafetySettings = Field(default_factory=SafetySettings)
     guard: GuardSettings = Field(default_factory=GuardSettings)

@@ -998,6 +998,13 @@ const SCHEMA = [
   ["safety.workspace_write_requires_confirmation", "confirm workspace writes", "bool"],
   ["safety.catastrophic_override", "override catastrophic block (dangerous!)", "bool"],
   ["safety.http_fetch_enabled", "network tool enabled", "bool"],
+  ["§", "mail (see: oml mail setup)"],
+  ["mail.enabled", "mail tools enabled", "bool"],
+  ["mail.address", "account address", "text"],
+  ["mail.imap_host", "IMAP host", "text"],
+  ["mail.smtp_host", "SMTP host", "text"],
+  ["mail.signature", "signature appended to outgoing mail", "text"],
+  ["mail.recipient_allowlist", "send allowlist (comma; empty = unrestricted)", "text"],
   ["§", "danger guard (clef-flash, cpu)"],
   ["guard.enabled", "flag dangerous calls in dangerous/full-access modes", "bool"],
   ["guard.base_url", "decision server URL", "text"],
@@ -1068,6 +1075,7 @@ function renderHelp() {
   <tr><td><code>/market</code></td><td>models + voice models to download (Market tab)</td></tr>
   <tr><td><code>/providers</code></td><td>connect cloud API keys — Providers tab</td></tr>
   <tr><td><code>/voice</code></td><td>speech-to-text status · hold <kbd>Ctrl+E</kbd> anywhere to talk</td></tr>
+  <tr><td><code>/mail</code></td><td>email account status · <code>oml mail setup</code> to connect</td></tr>
   <tr><td><code>/help</code></td><td>this screen</td></tr></table>
   <h3>where do API keys go?</h3>
   <p>Open the <b>Providers</b> tab (left sidebar) → pick OpenRouter / Anthropic / OpenAI / … →
@@ -1091,7 +1099,7 @@ function renderHelp() {
 const SLASHES = [
   ["/remember", "write a memory"], ["/new", "fresh chat"], ["/rename", "rename chat"], ["/market", "model marketplace"],
   ["/export", "export chat"], ["/models", "model list"], ["/mode", "permission mode"],
-  ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"],
+  ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"], ["/mail", "email status"], ["/voice", "voice status"],
   ["/ultrathink", "deep reasoning on/off"], ["/agentloop", "relentless verified-completion loop"], ["/think", "off|low|medium|high|xhigh|max"], ["/skill:", "cast a skill: /skill:<name>"],
 ];
 $("#input").addEventListener("input", () => {
@@ -1160,6 +1168,14 @@ async function handleSlash(text) {
     case "/voice": {
       const r = await get("/api/voice");
       addEvline("note", "voice · " + (r.line || "unavailable"));
+      break;
+    }
+    case "/mail": {
+      const c = await get("/api/config");
+      const m = (c.mail || {});
+      addEvline("note", m.address
+        ? `mail · ${m.address} · ${m.enabled ? "ready (send asks first outside full_access)" : "disabled — enable in Settings"}`
+        : "mail · no account — run `oml mail setup` in a terminal (drafts work without it)");
       break;
     }
     case "/backend": switchView("backend"); break;

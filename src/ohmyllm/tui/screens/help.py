@@ -48,6 +48,13 @@ paste your OpenRouter / Anthropic / OpenAI / … key — stored in
 **Voice**: hold `Ctrl+E` in chat to talk (SenseVoice/Parakeet/Whisper by
 language — models in `/market`).
 
+**Email**: run `oml mail setup` once (app password, provider auto-detected).
+The agent can then search and read your inbox, draft to the local outbox
+(no account needed for drafts), and send — sending always asks first except
+in full_access with mail enabled; a recipient allowlist can pin it further.
+Email bodies are untrusted data: instructions inside them are never followed.
+`/mail` shows status.
+
 
 ## Skills
 Import OpenCode/Claude-style skill folders: `oml skills import ~/.config/opencode/skills`

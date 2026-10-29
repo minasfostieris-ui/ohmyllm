@@ -29,6 +29,8 @@ app = typer.Typer(
 )
 chats_app = typer.Typer(help="Browse and manage chat sessions.", name="chats")
 app.add_typer(chats_app)
+mail_app = typer.Typer(help="Connect an IMAP/SMTP account to the mail tools.", name="mail")
+app.add_typer(mail_app)
 console = Console()
 
 
@@ -643,6 +645,99 @@ def _bytes(n: int | None) -> str:
     from .vram.detect import human_bytes
 
     return human_bytes(n) if n else "?"
+
+
+@mail_app.command("setup")
+def mail_setup(
+    address: str = typer.Option(None, "--address", "-a", help="your email address"),
+    password: str = typer.Option(None, "--password", "-p", help="app password (prompted hidden if omitted)"),
+    imap: str = typer.Option(None, "--imap", help="override auto-detected IMAP host"),
+    smtp: str = typer.Option(None, "--smtp", help="override auto-detected SMTP host"),
+) -> None:
+    """Connect an email account: auto-detects providers, verifies the login, saves to config."""
+    from .config import ConfigStore
+    from .mail import detect_provider, test_login
+
+    addr = (address or typer.prompt("Email address")).strip()
+    if "@" not in addr:
+        console.print("[red]that doesn't look like an email address[/red]")
+        raise typer.Exit(1)
+    dom = addr.rsplit("@", 1)[-1].lower()
+    det = detect_provider(addr)
+    ih, ip, sh, sp = det if det else (
+        (imap or typer.prompt("IMAP host (e.g. imap.example.com)")), 993,
+        (smtp or typer.prompt("SMTP host (e.g. smtp.example.com)")), 465)
+    if imap:
+        ih = imap
+    if smtp:
+        sh = smtp
+    if det:
+        console.print(f"[cyan]{dom}[/cyan] detected — IMAP {ih}:{ip} · SMTP {sh}:{sp}")
+    else:
+        console.print(f"[yellow]no auto-detection for {dom}[/yellow] — using the hosts above.")
+    pw = password if password is not None else typer.prompt(
+        "App password (NOT your login password — or set OMLLM_KEY_MAIL and press enter)",
+        default="", hide_input=True)
+    store = paths.config_path()
+    cfg = ConfigStore(store).load()
+    m = cfg.mail.model_copy(update={
+        "address": addr, "user": addr, "password": pw,
+        "imap_host": ih, "imap_port": ip, "smtp_host": sh, "smtp_port": sp,
+        "enabled": True,
+    })
+    if not pw and not os.environ.get("OMLLM_KEY_MAIL"):
+        console.print("[yellow]no password given and OMLLM_KEY_MAIL is unset — "
+                      "login will fail until one exists[/yellow]")
+    ok, note = test_login(m)
+    if not ok:
+        console.print(f"[red]{note}[/red]")
+        if dom == "gmail.com":
+            console.print("[dim]Gmail: enable 2-Step Verification, then create an App Password at "
+                          "https://myaccount.google.com/apppasswords[/dim]")
+        elif "proton" in dom:
+            console.print("[dim]Proton Mail needs Proton Bridge running (local IMAP on 127.0.0.1:1143).[/dim]")
+        else:
+            console.print("[dim]check the app-password setting for your provider and retry[/dim]")
+        raise typer.Exit(1)
+    ConfigStore(store).save(cfg.model_copy(update={"mail": m}))
+    console.print(f"[green]✓ {note}[/green] · [green]account saved[/green] — the agent can now "
+                  f"search/read/send email (send stays approval-gated outside full_access).")
+
+
+@mail_app.command("status")
+def mail_status() -> None:
+    """Show the configured mail account (password masked)."""
+    from .config import ConfigStore
+
+    m = ConfigStore(paths.config_path()).load().mail
+    if not m.address:
+        console.print("[dim]no account — run: oml mail setup[/dim]")
+        return
+    if not m.password and os.environ.get("OMLLM_KEY_MAIL"):
+        pw = "OMLLM_KEY_MAIL env"
+    elif m.password:
+        pw = f"{m.password[:2]}{'•' * 8}"
+    else:
+        pw = "unset"
+    console.print(f"enabled={m.enabled} · {m.address} · IMAP {m.imap_host}:{m.imap_port} · "
+                  f"SMTP {m.smtp_host}:{m.smtp_port} · password: {pw}")
+    if m.recipient_allowlist:
+        console.print(f"recipient allowlist: {m.recipient_allowlist}")
+
+
+@mail_app.command("test")
+def mail_test() -> None:
+    """Verify the IMAP login still works."""
+    from .config import ConfigStore
+    from .mail import test_login
+
+    m = ConfigStore(paths.config_path()).load().mail
+    if not m.address:
+        console.print("[dim]no account — run: oml mail setup[/dim]")
+        raise typer.Exit(1)
+    ok, note = test_login(m)
+    console.print(f"[{'green' if ok else 'red'}]{note}[/{'green' if ok else 'red'}]")
+    raise typer.Exit(0 if ok else 1)
 
 
 def app_entry() -> None:  # console_scripts target

@@ -846,6 +846,9 @@ class Handler(BaseHTTPRequestHandler):
         # would silently destroy the real values)
         if "cloud" in body and isinstance(body["cloud"], dict):
             body["cloud"] = {k: v for k, v in body["cloud"].items() if k != "keys"}
+        # mail password is owned by `oml mail setup` — same echo-back trap
+        if "mail" in body and isinstance(body["mail"], dict):
+            body["mail"] = {k: v for k, v in body["mail"].items() if k != "password"}
         merged = {**json.loads(cfg.model_dump_json()), **body}
         if isinstance(merged.get("cloud"), dict) and isinstance(body.get("cloud"), dict):
             # merge section-wise so a partial {"cloud": {...}} PATCH cannot
@@ -858,6 +861,12 @@ class Handler(BaseHTTPRequestHandler):
                 base_cloud[field] = live.get(field, {})
             if "keys" not in body["cloud"]:
                 base_cloud["keys"] = dict(cfg.cloud.keys)
+        if isinstance(merged.get("mail"), dict) and isinstance(body.get("mail"), dict):
+            live_mail = json.loads(cfg.model_dump_json()).get("mail", {})
+            for field in live_mail:
+                if field not in body["mail"]:
+                    merged["mail"][field] = live_mail[field]
+            merged["mail"]["password"] = cfg.mail.password
         # never allow flipping to full_access over the plain config API
         if merged.get("permission_mode") == PermissionMode.FULL_ACCESS.value:
             merged["permission_mode"] = cfg.permission_mode.value
@@ -1084,6 +1093,9 @@ def _safe_config(cfg: Config) -> dict:
     cloud = d.get("cloud")
     if isinstance(cloud, dict) and isinstance(cloud.get("keys"), dict):
         cloud["keys"] = {k: mask(v) for k, v in cloud["keys"].items()}
+    m = d.get("mail")
+    if isinstance(m, dict) and m.get("password"):
+        m["password"] = mask(m["password"])
     return d
 
 

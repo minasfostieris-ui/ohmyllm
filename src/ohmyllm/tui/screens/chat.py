@@ -38,6 +38,7 @@ class ChatScreen(Screen):
         ("/market", "", "recommended models — VRAM fit + one-key download"),
         ("/providers", "", "connect cloud API keys — OpenRouter, Anthropic, OpenAI, …"),
         ("/voice", "", "speech-to-text status (hold ctrl+E to talk)"),
+        ("/mail", "", "email account status (oml mail setup to connect)"),
         ("/onboarding", "", "reopen the first-run tutorial"),
         ("/ultrathink", "[on|off]", "deep reasoning: think much longer and harder"),
         ("/agentloop", "[on|off]", "relentless loop: never stop until the result is verified perfect"),
@@ -1097,6 +1098,17 @@ class ChatScreen(Screen):
             from ... import voice as _v
 
             self._sysline("voice status · " + _v.status_line(), "system")
+        elif cmd == "mail":
+            from ... import mail as _m
+            from ...config import ConfigStore
+
+            mm = ConfigStore(paths.config_path()).load().mail
+            if not mm.address:
+                self._sysline("mail · no account — run `oml mail setup` in a terminal "
+                              "(drafts to the local outbox work without it)", "system")
+            else:
+                ok, note = _m.test_login(mm)
+                self._sysline(f"mail · {mm.address} · {'✓ ' + note if ok else '✗ ' + note}", "system")
         elif cmd == "skillimport":
             import subprocess
             import sys as _sys

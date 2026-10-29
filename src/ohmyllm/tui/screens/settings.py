@@ -475,6 +475,9 @@ class SettingsScreen(Screen):
             },
             "ui": {"confirm_quit": s("st-confirm_quit"), "theme": self._selected_theme()},
             "model_settings": self.app.svc.config.model_settings,
+            # mail is configured by `oml mail setup`, not this screen — carry
+            # it through so saving settings never wipes the account
+            "mail": self.app.svc.config.mail.model_dump(),
         }
         if errors:
             self._show_errors(errors)

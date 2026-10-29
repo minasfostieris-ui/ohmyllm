@@ -44,6 +44,14 @@ you ──> ohmyllm ──> agent runtime ──> policy engine ──> tools
   SSE tool-call accumulation, launch helpers). Plus a **mock backend** — a
   scripted but fully real agent for demos/tests without any model.
   → [docs/BACKENDS.md](docs/BACKENDS.md)
+- **Email** — `oml mail setup` connects an IMAP/SMTP account (Gmail app
+  password, Outlook, Fastmail, iCloud, anything). The agent can then
+  `email_search`/`email_read` your inbox (bodies fenced as untrusted data —
+  instructions inside an email are never followed), `email_draft` to a local
+  outbox with **zero setup**, and `email_send` over SMTP. Sending is
+  irreversible: it stays approval-gated in every mode except `full_access`
+  with mail explicitly enabled, and an optional recipient allowlist is
+  enforced even then.
 - **Three frontends** — Textual TUI (the flagship), `--plain` Rich chat, and
   a native GUI (`ohmyllm gui`, Tauri window or browser) — same engine, same
   policy gates.

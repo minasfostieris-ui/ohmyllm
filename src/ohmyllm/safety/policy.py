@@ -24,6 +24,7 @@ class ToolClass(StrEnum):
     MEMORY_READ = "memory_read"
     MEMORY_WRITE = "memory_write"
     STATUS = "status"
+    MAIL = "mail"
     OTHER = "other"
 
 
@@ -35,6 +36,10 @@ TOOL_CLASSES: dict[str, ToolClass] = {
     "patch_file": ToolClass.WRITE,
     "run_command": ToolClass.SHELL,
     "http_fetch": ToolClass.NET,
+    "email_search": ToolClass.MAIL,
+    "email_read": ToolClass.MAIL,
+    "email_draft": ToolClass.MAIL,
+    "email_send": ToolClass.MAIL,
     "skills_list": ToolClass.STATUS,
     "skills_read": ToolClass.STATUS,
     "soul_read": ToolClass.MEMORY_READ,
@@ -264,8 +269,40 @@ class PolicyEngine:
                 # full access still honors the http_fetch kill switch
                 return Decision(True, True, risk, (*reasons, "http_fetch disabled: approval required"))
             return Decision(True, False, risk, tuple(reasons))
+        if cls is ToolClass.MAIL:
+            return self._evaluate_mail(mode, tool, args, reasons)
 
         return Decision(False, False, risk, tuple(reasons))
+
+    def _evaluate_mail(self, mode: PermissionMode, tool: str,
+                       args: dict, reasons: list[str]) -> Decision:
+        """Mail gating. Draft is local and harmless; read/search are network
+        reads behind the [mail] enabled switch; SEND is irreversible and an
+        exfiltration channel — it stays approval-gated everywhere except
+        full_access with an explicit opt-in (and never past the recipient
+        allowlist)."""
+        m = self.config.mail
+        if tool == "email_draft":
+            return Decision(True, False, 1, (*reasons, "draft is local-only"))
+        if mode in (PermissionMode.STRICT, PermissionMode.SAFE):
+            return Decision(False, False, 6, (*reasons, f"{mode.value} mode forbids email"))
+        if tool in ("email_search", "email_read"):
+            if not m.enabled:
+                return Decision(False, False, 6, (*reasons, "email not configured (oml mail setup)"))
+            return Decision(True, False, 5, (*reasons, "mail read: account configured by the user"))
+        # email_send
+        risk = 7
+        if mode in (PermissionMode.SANDBOXED, PermissionMode.DANGEROUS):
+            return Decision(True, True, risk, (*reasons, "sending email is irreversible"))
+        # full_access: silent only with explicit mail opt-in…
+        if not m.enabled:
+            return Decision(True, True, risk, (*reasons, "email not configured: approval required"))
+        # …and never outside the recipient allowlist when one is set
+        allow = [a.strip().lower() for a in m.recipient_allowlist.split(",") if a.strip()]
+        to = str(args.get("to") or "").strip().lower()
+        if allow and to not in allow:
+            return Decision(True, True, 8, (*reasons, f"{to!r} is not on the mail recipient allowlist"))
+        return Decision(True, False, risk, (*reasons, "full_access + mail enabled"))
 
     # --------------------------------------------------------------- helpers
     def _explicitly_allows(self, target: str | Path) -> bool:
