@@ -91,7 +91,7 @@ def test_bridge_providers_masked(bridge):
 
 def test_market_get_shape(bridge):
     r = bridge.get("/api/market")
-    assert "entries" in r and len(r["entries"]) == 14  # 10 llm + 4 stt (TTS removed)
+    assert "entries" in r and len(r["entries"]) == 15  # 11 llm + 4 stt
     for e in r["entries"]:
         assert {"mid", "title", "size_gb", "fit", "fit_label", "blurb", "repo"} <= set(e)
     p = bridge.get("/api/market/progress")

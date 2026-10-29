@@ -24,15 +24,18 @@ def _mkpng(p: Path, w: int = 1563, h: int = 200) -> Path:
 
 # ------------------------------------------------------------------ catalog
 def test_catalog_curated_entries():
-    assert len(market.CATALOG) == 14  # 10 llm + 4 stt — TTS removed, Spark added
+    assert len(market.CATALOG) == 15  # 11 llm + 4 stt — MiniCPM-V-4.7 added
     secs = {e.section for e in market.CATALOG}
     assert secs == {"llm", "stt"}
     assert all(e.mid.startswith("stt-") for e in market.CATALOG if e.section == "stt")
     ids = {e.mid for e in market.CATALOG}
     assert {"qwen38-iq2xs", "qwen38-q6k", "sushi-9b", "spark-x26-4b", "gemma4-26b",
-            "gemma4-12b", "gpt-oss-20b", "qwen3-coder-30b", "r1-14b", "phi-4"} <= ids
+            "gemma4-12b", "gpt-oss-20b", "qwen3-coder-30b", "r1-14b", "phi-4",
+            "minicpm47-35b"} <= ids
     g12 = next(e for e in market.CATALOG if e.mid == "gemma4-12b")
     assert g12.mtp == "mtp-gemma-4-12B-it.gguf" and g12.mtp_url.endswith(g12.mtp)
+    mc = next(e for e in market.CATALOG if e.mid == "minicpm47-35b")
+    assert mc.hybrid and mc.companion == "mmproj-model-f16.gguf"
     for e in market.CATALOG:
         assert e.size_gb > 0 and e.url.startswith("https://huggingface.co/")
         assert e.file in e.url
@@ -53,6 +56,11 @@ def test_fit_verdict_thresholds():
     assert market.fit_verdict(11.0, vram)[0] == "tight"
     assert market.fit_verdict(22.0, vram)[0] == "no"
     assert market.fit_verdict(8.4, None)[0] == "unknown"
+    # hybrid MoE models are designed for CPU+GPU offload: never red
+    key, label = market.fit_verdict(14.5, vram, hybrid=True)
+    assert key == "tight" and "hybrid" in label
+    assert market.fit_verdict(8.4, vram, hybrid=True)[0] == "fits"
+    assert market.fit_verdict(14.5, vram)[0] == "no", "non-hybrid unchanged"
 
 
 def test_detect_vram_runs_silently():
@@ -247,7 +255,7 @@ async def test_market_screen_lists_fits(oml_env, svc):
         from textual.widgets import OptionList
 
         lst = app.screen.query_one(OptionList)
-        assert lst.option_count >= 16  # 10 llm + 4 stt + 2 section headers
+        assert lst.option_count >= 17  # 11 llm + 4 stt + 2 section headers
         prompts = " ".join(str(lst.get_option_at_index(i).prompt) for i in range(lst.option_count))
         assert "GB" in prompts and "SenseVoice" in prompts
         assert "Speech-to-text" in prompts and "Text-to-speech" not in prompts

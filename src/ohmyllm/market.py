@@ -33,6 +33,9 @@ class MarketEntry:
     mtp: str | None = None  # MTP drafter file, same repo — auto-fetched beside the model
     alt: MarketEntry | None = None  # same model, other runtime format
     tags: tuple[str, ...] = ()
+    hybrid: bool = False  # designed for CPU+GPU mixed offload: a MoE with
+    # few active experts stays fast even when weights spill to system RAM,
+    # so a "won't fit VRAM" verdict would be misleading
 
     @property
     def url(self) -> str:
@@ -113,6 +116,25 @@ CATALOG: list[MarketEntry] = [
               "/ultrathink rides it with a raised reply cap). Native tool "
               "calling — needs LM Studio 0.4+ or llama.cpp b10828+.",
         tags=("thinking levels", "agent", "tools", "fits 6 GB"),
+    ),
+    MarketEntry(
+        mid="minicpm47-35b",
+        title="MiniCPM-V-4.7-35B-A3B · IQ3_XS",
+        repo="openbmb/MiniCPM-V-4.7-35B-A3B-gguf",
+        file="MiniCPM-V-4_7-35B-A3B-IQ3_XS.gguf",
+        size_gb=14.5,
+        short="OpenBMB multimodal MoE — 35B total, 3B active, vision + tools",
+        blurb="OpenBMB's flagship MoE, built for mixed RAM+VRAM offload: "
+              "35B total parameters but only ~3B active per token, so it "
+              "runs at high-end phones and 12 GB cards alike — image AND "
+              "text input (mmproj companion auto-fetched) with native tool "
+              "calling. IQ3_XS is 14.5 GB: keep the active experts on the "
+              "GPU, let the rest live in system RAM, and it stays fast. A "
+              "thinking variant ships in the same repo "
+              "(thinking/…-IQ3_XS-thinking.gguf) for harder reasoning.",
+        companion="mmproj-model-f16.gguf",
+        tags=("vision", "tools", "thinking variant", "MoE hybrid"),
+        hybrid=True,
     ),
     MarketEntry(
         mid="gemma4-26b",
@@ -297,8 +319,15 @@ def vram_label(total: int | None) -> str:
     return f"{g} GB VRAM"
 
 
-def fit_verdict(size_gb: float, vram_bytes: int | None) -> tuple[str, str]:
-    """(key, label) — key in {fits, tight, no, unknown}."""
+def fit_verdict(size_gb: float, vram_bytes: int | None,
+                hybrid: bool = False) -> tuple[str, str]:
+    """(key, label) — key in {fits, tight, no, unknown}.
+
+    hybrid=True marks MoE models designed to run from a CPU+GPU mix (the
+    MiniCPM line ships to high-end phones for exactly this reason): they
+    stay fast with most weights in system RAM, so a red "won't fit" VRAM
+    verdict is wrong — report yellow "hybrid" instead.
+    """
     if vram_bytes is None:
         return "unknown", "size ?"
     # compare in raw bytes: GGUF sizes are decimal GB, VRAM is binary —
@@ -309,6 +338,8 @@ def fit_verdict(size_gb: float, vram_bytes: int | None) -> tuple[str, str]:
         return "fits", f"fits {label_gb:.0f} GB"
     if size_bytes <= vram_bytes * 0.95:
         return "tight", f"tight on {label_gb:.0f} GB"
+    if hybrid:
+        return "tight", f"hybrid CPU+GPU on {label_gb:.0f} GB"
     return "no", f"won't fit {label_gb:.0f} GB"
 
 

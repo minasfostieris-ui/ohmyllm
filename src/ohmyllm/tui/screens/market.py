@@ -84,7 +84,7 @@ class MarketScreen(Screen):
                                       id=f"h-{raw.section}-{len(lst.options)}", disabled=True))
                 self._last_section = raw.section
             if raw.section == "llm":
-                key, label = fit_verdict(e.size_gb, self._vram)
+                key, label = fit_verdict(e.size_gb, self._vram, e.hybrid)
                 col = _FIT_COLOR[key]
                 line = f"[{col}]■[/] [b]{e.title}[/b]  [b]{e.size_gb:.1f} GB[/]  [{col}]{label}[/{col}]"
             else:
@@ -119,7 +119,7 @@ class MarketScreen(Screen):
         if e.section != "llm":
             badge = "[cyan]voice model[/] · installs into ~/.ohmyllm/voice/"
         else:
-            key, label = fit_verdict(e.size_gb, self._vram)
+            key, label = fit_verdict(e.size_gb, self._vram, e.hybrid)
             badge = f"{_FIT_MARK[key]} {label}"
         extra = ""
         if key == "no" and e.kind == "gguf":

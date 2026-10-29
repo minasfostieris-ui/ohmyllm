@@ -770,7 +770,7 @@ class Handler(BaseHTTPRequestHandler):
         rows = []
         for e in CATALOG:
             r = resolve(e)
-            key, label = fit_verdict(r.size_gb, vram)
+            key, label = fit_verdict(r.size_gb, vram, r.hybrid)
             rows.append({"mid": e.mid, "title": r.title, "size_gb": r.size_gb, "section": e.section,
                          "fit": key, "fit_label": label, "short": r.short,
                          "blurb": r.blurb, "repo": r.repo, "kind": r.kind,
