@@ -474,3 +474,54 @@ def test_tone_directive_in_system_prompt(oml_env, svc):
     svc.config.agent.tone = "default"
     p = rt.prompt_builder.system_prompt(mode=_PM.SANDBOXED, native=True)
     assert "## TONE" not in p
+
+
+def test_agentloop_echo_breaker_stops_growing_ledger(oml_env, svc):
+    # field repro (gemma-4-e4b on LM Studio): after real work the model
+    # regenerates the SAME long ledger every step, growing it past
+    # max_tokens. The turn must break out after two repeats, not burn the
+    # 24-step loop budget re-echoing.
+    svc.config.agent.agent_loop = True
+    be = svc.backend()
+    call = {"id": "r1", "function": {"name": "soul_read", "arguments": {}}}
+    ledger = "## VERDICT REPORT\n" + ("steady prose without tool words " * 200)  # >2000 chars
+    assert len(ledger) > 2000
+    be.script = [
+        [ChatChunk(content="", tool_calls=[call], done=True)],
+        [ChatChunk(content=ledger), ChatChunk(done=True)],
+        [ChatChunk(content=ledger), ChatChunk(done=True)],
+        [ChatChunk(content=ledger), ChatChunk(done=True)],
+        [ChatChunk(content="SHOULD NEVER BE REACHED"), ChatChunk(done=True)],
+    ]
+    rt = make_rt(svc)
+    sess = svc.new_session()
+    events: list = []
+    res = asyncio.run(rt.run_turn(sess, "audit the thing", model="mock-tool-7b",
+                                  on_event=events.append))
+    assert any(e["type"] == "agentloop_echo_break" for e in events)
+    assert res.steps <= 4  # budget floor is 24 — breaking early is the point
+    assert "SHOULD NEVER BE REACHED" not in res.text
+    assert res.text.startswith("## VERDICT REPORT")  # keeps the last ledger
+
+
+def test_agentloop_no_echo_break_on_distinct_steps(oml_env, svc):
+    svc.config.agent.agent_loop = True
+    be = svc.backend()
+    call = {"id": "r1", "function": {"name": "soul_read", "arguments": {}}}
+    long_a = "## STEP ONE\n" + ("alpha distinct prose " * 200)
+    long_b = "## STEP TWO\n" + ("beta distinct prose " * 200)
+    be.script = [
+        [ChatChunk(content="", tool_calls=[call], done=True)],
+        [ChatChunk(content=long_a), ChatChunk(done=True)],
+        [ChatChunk(content=long_b), ChatChunk(done=True)],
+        [ChatChunk(content=long_b), ChatChunk(done=True)],
+        [ChatChunk(content="## STEP FIVE\n" + long_b[len("## STEP TWO\n"):][:1800]
+         + "\nsoul_read returned data; run_command verified it"), ChatChunk(done=True)],
+    ]
+    rt = make_rt(svc)
+    sess = svc.new_session()
+    events: list = []
+    res = asyncio.run(rt.run_turn(sess, "audit the thing", model="mock-tool-7b",
+                                  on_event=events.append))
+    assert not any(e["type"] == "agentloop_echo_break" for e in events)
+    assert res.text.startswith("## STEP")

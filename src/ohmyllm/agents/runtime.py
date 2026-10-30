@@ -159,6 +159,8 @@ class AgentRuntime:
         budget = max(self.config.agent.max_steps, 24) if agent_loop else self.config.agent.max_steps
         audit_done = False
         gate_done = 0
+        prev_echo = ""
+        echo_runs = 0
         while step < budget:
             self._check_cancel(cancel)
             step += 1
@@ -237,6 +239,23 @@ class AgentRuntime:
                 if turn_ttft is None:
                     turn_ttft = first_at - started
 
+            # GROWING-ECHO DETECTOR: LM Studio truncates the giant ledgers at
+            # max_tokens; the next step regenerates the SAME prefix and grows
+            # it. Exact-arg caching misses those. Two steps sharing a 300-char
+            # opening (on long replies) means the model is spinning, not
+            # working: keep the ledger as the final and stop burning budget.
+            if agent_loop and len(assistant_text) > 2000:
+                sig = assistant_text[:300]
+                if sig == prev_echo:
+                    echo_runs += 1
+                    if echo_runs >= 2:
+                        emit({"type": "agentloop_echo_break", "steps": step})
+                        final_text = self._clean_final(assistant_text)
+                        session.add_message("assistant", final_text)
+                        break
+                else:
+                    echo_runs = 0
+                prev_echo = sig
             parsed: list[ParsedCall] = []
             if native and native_calls:
                 parsed = self.parser.from_native(native_calls)
@@ -319,6 +338,16 @@ class AgentRuntime:
                 self._check_cancel(cancel)
                 await self._handle_call(call, session, ctx, mode, prompt_fn, emit, result, model,
                                       truncated=finish_reason == "length")
+
+            # ECHO BREAKER: small models in loop mode paste the same tool
+            # call (or its ledger) into their prose forever — each duplicate
+            # burns a 60-90 s generation. Two cached duplicates and the turn
+            # goes straight to the forced tool-free final instead of spending
+            # the whole budget re-echoing.
+            if agent_loop and sum(1 for c in result.calls
+                                  if c.get("status") == "cached") >= 2:
+                emit({"type": "agentloop_echo_break", "steps": step})
+                break
 
             if step == self.config.agent.max_steps:
                 break

@@ -115,6 +115,12 @@ class PlainApp:
                 if live:
                     live.stop()
                 self.console.print(f"[red]⚠ {ev.get('message')}[/red]")
+            elif t == "agentloop_gate":
+                self.console.print(f"[yellow]⚖ agent loop verdict gate: no tool evidence cited — bouncing back "
+                                   f"(attempt {ev.get('attempt', 1)}/2)[/yellow]")
+            elif t == "agentloop_echo_break":
+                self.console.print(f"[yellow]↻ agent loop: echo loop detected at step {ev.get('steps')} — "
+                                   "stopping repetition, keeping the answer[/yellow]")
 
         self._cancel = asyncio.Event()
         result = None

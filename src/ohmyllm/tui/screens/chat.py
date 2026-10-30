@@ -672,6 +672,14 @@ class ChatScreen(Screen):
             if self._stream_md is not None:
                 self._stream_md.update("")
             self._sysline("agent loop: auditing completion — evidence required before the final answer…", "system")
+        elif t == "agentloop_gate":
+            self._buffer = ""
+            if self._stream_md is not None:
+                self._stream_md.update("")
+            self._sysline("agent loop: verdict gate — answer cites no tool evidence, demanding it (attempt "
+                          f"{ev.get('attempt', 1)})…", "system")
+        elif t == "agentloop_echo_break":
+            self._sysline(f"agent loop: echo detected at step {ev.get('steps')} — stopping repetition, keeping the answer", "system")
         elif t == "compaction":
             panel.add_event(ev)
             self._sysline(f"compacted context: {ev.get('before')} → {ev.get('after')} messages", "system")
