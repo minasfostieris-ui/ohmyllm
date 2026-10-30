@@ -160,6 +160,7 @@ class AgentRuntime:
         audit_done = False
         gate_done = 0
         prev_echo = ""
+        prev_text = ""
         echo_runs = 0
         while step < budget:
             self._check_cancel(cancel)
@@ -239,23 +240,27 @@ class AgentRuntime:
                 if turn_ttft is None:
                     turn_ttft = first_at - started
 
-            # GROWING-ECHO DETECTOR: LM Studio truncates the giant ledgers at
-            # max_tokens; the next step regenerates the SAME prefix and grows
-            # it. Exact-arg caching misses those. Two steps sharing a 300-char
-            # opening (on long replies) means the model is spinning, not
-            # working: keep the ledger as the final and stop burning budget.
+            # ECHO BREAKER: field repro (gemma-4-e4b on LM Studio) — post-
+            # audit the model regurgitates its evidence ledger forever, each
+            # step starting at a RANDOM offset of the previous copy (often
+            # truncated by max_tokens). Identical prefixes and within-one-
+            # copy duplication BOTH miss that; the tell is OVERLAP: this
+            # step's opening already exists inside the previous reply.
+            # Two overlaps in a row, exact repeats, or a self-duplicated
+            # reply → the ledger becomes the final answer. Stop burning
+            # the 24-step budget on regurgitation.
             if agent_loop and len(assistant_text) > 2000:
                 sig = assistant_text[:300]
-                if sig == prev_echo:
-                    echo_runs += 1
-                    if echo_runs >= 2:
-                        emit({"type": "agentloop_echo_break", "steps": step})
-                        final_text = self._clean_final(assistant_text)
-                        session.add_message("assistant", final_text)
-                        break
-                else:
-                    echo_runs = 0
+                overlap = sig == prev_echo or bool(
+                    prev_text and (sig in prev_text or prev_text[:300] in assistant_text))
+                echo_runs = echo_runs + 1 if overlap else 0
                 prev_echo = sig
+                prev_text = assistant_text
+                if echo_runs >= 2 or self._self_repeats(assistant_text):
+                    emit({"type": "agentloop_echo_break", "steps": step})
+                    final_text = self._clean_final(assistant_text)
+                    session.add_message("assistant", final_text)
+                    break
             parsed: list[ParsedCall] = []
             if native and native_calls:
                 parsed = self.parser.from_native(native_calls)
@@ -413,16 +418,21 @@ class AgentRuntime:
     ) -> str:
         session.add_message(
             "user",
-            "STEP LIMIT reached — do NOT call any more tools. Reply to the user now in plain "
-            "text: summarize what you already found and what (if anything) is still missing.",
+            "STEP LIMIT reached — do NOT call any more tools, and do NOT "
+            "repeat any earlier draft or ledger. Reply to the user NOW in "
+            "plain text, maximum 20 lines: what is done, what evidence "
+            "proved it, what (if anything) is still missing.",
         )
         system = self.prompt_builder.system_prompt(mode=self.policy.mode, native=False, ultrathink=self.config.generation.ultrathink)
         history = trim_messages(self._outgoing(session), max(4000, params.num_ctx * 3))
         messages = self.prompt_builder.assemble(system, history)
+        # hard cap the summary pass: an echo-prone model otherwise keeps
+        # generating pasted ledgers for the whole max_tokens window
+        fparams = params.model_copy(update={"max_tokens": 1200})
         text = ""
         try:
             async for chunk in self.backend.stream_chat(
-                model, messages, params, tools=None, native_tools=False
+                model, messages, fparams, tools=None, native_tools=False
             ):
                 self._check_cancel(cancel)
                 if chunk.content:
@@ -737,6 +747,28 @@ class AgentRuntime:
             if len(out) > 12 and out in low:
                 return name
         return None
+
+    @staticmethod
+    def _self_repeats(text: str, win: int = 300) -> bool:
+        """True when the same `win`-char block occurs twice, non-adjacent.
+        Rolling hash over every position (period-agnostic — sampled windows
+        miss cyclic prose); the exact fingerprint of ledger regurgitation.
+        Honest answers rarely re-emit a verbatim 300-char paragraph."""
+        seen: dict[int, int] = {}
+        h = 0
+        m = (1 << 61) - 1
+        base = 101
+        powk = pow(base, win, m)
+        for i, ch in enumerate(text):
+            h = (h * base + (ord(ch) + 1)) % m
+            if i >= win:
+                h = (h - powk * (ord(text[i - win]) + 1)) % m
+            if i + 1 >= win:
+                j = seen.get(h)
+                if j is not None and i - j - win + 1 >= win:
+                    return True
+                seen.setdefault(h, i - win + 1)
+        return False
 
     def _finish(
         self, session: Session, result: TurnResult, text: str, gen_time: float, tokens: int,

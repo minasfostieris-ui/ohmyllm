@@ -476,16 +476,75 @@ def test_tone_directive_in_system_prompt(oml_env, svc):
     assert "## TONE" not in p
 
 
-def test_agentloop_echo_breaker_stops_growing_ledger(oml_env, svc):
-    # field repro (gemma-4-e4b on LM Studio): after real work the model
-    # regenerates the SAME long ledger every step, growing it past
-    # max_tokens. The turn must break out after two repeats, not burn the
-    # 24-step loop budget re-echoing.
+def test_agentloop_echo_breaker_stops_ledger_regurgitation(oml_env, svc):
+    # field repro (gemma-4-e4b on LM Studio): post-audit the model pastes
+    # its evidence ledger back every step, usually starting at a random
+    # offset of the previous copy. One such self-duplicated reply must
+    # break the turn immediately instead of burning the 24-step budget.
     svc.config.agent.agent_loop = True
     be = svc.backend()
     call = {"id": "r1", "function": {"name": "soul_read", "arguments": {}}}
-    ledger = "## VERDICT REPORT\n" + ("steady prose without tool words " * 200)  # >2000 chars
-    assert len(ledger) > 2000
+    ledger = ("## VERDICT REPORT\n" + "\n".join(
+        f"item {(i * 7919) % 1000}: feature {i} verified via check-{(i * 31) % 97} ok"
+        for i in range(90)))
+    assert len(ledger) > 2000 and not AgentRuntime._self_repeats(ledger)
+    be.script = [
+        [ChatChunk(content="", tool_calls=[call], done=True)],
+        [ChatChunk(content=ledger), ChatChunk(done=True)],          # audit fires
+        [ChatChunk(content=ledger[1200:] + ledger), ChatChunk(done=True)],  # echo!
+        [ChatChunk(content="SHOULD NEVER BE REACHED"), ChatChunk(done=True)],
+    ]
+    rt = make_rt(svc)
+    sess = svc.new_session()
+    events: list = []
+    res = asyncio.run(rt.run_turn(sess, "audit the thing", model="mock-tool-7b",
+                                  on_event=events.append))
+    assert any(e["type"] == "agentloop_echo_break" for e in events)
+    assert res.steps == 3
+    assert "SHOULD NEVER BE REACHED" not in res.text
+    assert "VERDICT REPORT" in res.text  # keeps the ledger as the answer
+
+
+def test_agentloop_echo_breaker_stops_rotating_ledger(oml_env, svc):
+    # THE field pattern: every echo step is ONE copy of the ledger starting
+    # at a random offset — prefixes differ, no single copy self-repeats.
+    # Cross-step overlap (opening already present in the previous reply)
+    # must break it after two overlaps.
+    svc.config.agent.agent_loop = True
+    be = svc.backend()
+    call = {"id": "r1", "function": {"name": "soul_read", "arguments": {}}}
+    ledger = ("## FULL LEDGER\n" + "\n".join(
+        f"crit {(i * 7907) % 991}: verified by run-check {(i * 41) % 89} — ok"
+        for i in range(110)))
+    assert len(ledger) > 3500 and not AgentRuntime._self_repeats(ledger)
+    a = ledger[:3000]              # first draft (truncated by max_tokens)
+    b = ledger[1400:]              # echo: starts mid-A, different prefix
+    c = ledger[2600:4000] + ledger[200:900]  # echo again, another offset
+    assert b[:300] in a and c[:300] in b
+    be.script = [
+        [ChatChunk(content="", tool_calls=[call], done=True)],
+        [ChatChunk(content=a), ChatChunk(done=True)],
+        [ChatChunk(content=b), ChatChunk(done=True)],
+        [ChatChunk(content=c), ChatChunk(done=True)],
+        [ChatChunk(content="SHOULD NEVER BE REACHED"), ChatChunk(done=True)],
+    ]
+    rt = make_rt(svc)
+    sess = svc.new_session()
+    events: list = []
+    res = asyncio.run(rt.run_turn(sess, "audit the thing", model="mock-tool-7b",
+                                  on_event=events.append))
+    assert any(e["type"] == "agentloop_echo_break" for e in events)
+    assert res.steps == 4
+    assert "SHOULD NEVER BE REACHED" not in res.text
+
+
+def test_agentloop_echo_breaker_stops_identical_repeats(oml_env, svc):
+    svc.config.agent.agent_loop = True
+    be = svc.backend()
+    call = {"id": "r1", "function": {"name": "soul_read", "arguments": {}}}
+    ledger = ("## FLAT LEDGER\n" + " ".join(
+        f"w{i}_{(i * 331) % 77}" for i in range(400)))
+    assert len(ledger) > 2000 and not AgentRuntime._self_repeats(ledger)
     be.script = [
         [ChatChunk(content="", tool_calls=[call], done=True)],
         [ChatChunk(content=ledger), ChatChunk(done=True)],
@@ -499,23 +558,23 @@ def test_agentloop_echo_breaker_stops_growing_ledger(oml_env, svc):
     res = asyncio.run(rt.run_turn(sess, "audit the thing", model="mock-tool-7b",
                                   on_event=events.append))
     assert any(e["type"] == "agentloop_echo_break" for e in events)
-    assert res.steps <= 4  # budget floor is 24 — breaking early is the point
+    assert res.steps <= 4
     assert "SHOULD NEVER BE REACHED" not in res.text
-    assert res.text.startswith("## VERDICT REPORT")  # keeps the last ledger
 
 
 def test_agentloop_no_echo_break_on_distinct_steps(oml_env, svc):
     svc.config.agent.agent_loop = True
     be = svc.backend()
     call = {"id": "r1", "function": {"name": "soul_read", "arguments": {}}}
-    long_a = "## STEP ONE\n" + ("alpha distinct prose " * 200)
-    long_b = "## STEP TWO\n" + ("beta distinct prose " * 200)
+    long_a = "## STEP ONE\n" + "\n".join(f"a{i}_{(i * 977) % 61} prose" for i in range(300))
+    long_b = "## STEP TWO\n" + "\n".join(f"b{i}_{(i * 983) % 67} prose" for i in range(300))
+    assert len(long_a) > 2000 and len(long_b) > 2000
+    assert not AgentRuntime._self_repeats(long_a) and not AgentRuntime._self_repeats(long_b)
     be.script = [
         [ChatChunk(content="", tool_calls=[call], done=True)],
         [ChatChunk(content=long_a), ChatChunk(done=True)],
         [ChatChunk(content=long_b), ChatChunk(done=True)],
-        [ChatChunk(content=long_b), ChatChunk(done=True)],
-        [ChatChunk(content="## STEP FIVE\n" + long_b[len("## STEP TWO\n"):][:1800]
+        [ChatChunk(content="## STEP FIVE\n" + long_a[:900]
          + "\nsoul_read returned data; run_command verified it"), ChatChunk(done=True)],
     ]
     rt = make_rt(svc)
@@ -524,4 +583,4 @@ def test_agentloop_no_echo_break_on_distinct_steps(oml_env, svc):
     res = asyncio.run(rt.run_turn(sess, "audit the thing", model="mock-tool-7b",
                                   on_event=events.append))
     assert not any(e["type"] == "agentloop_echo_break" for e in events)
-    assert res.text.startswith("## STEP")
+    assert res.text.startswith("## STEP FIVE")

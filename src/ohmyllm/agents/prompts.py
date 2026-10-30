@@ -87,7 +87,8 @@ AGENTLOOP_AUDIT = (
     "observed output) that each is satisfied. If ANY criterion lacks "
     "fresh evidence from this turn, do NOT answer — call the tools "
     "needed to verify or fix it now. Only produce your final reply once "
-    "the evidence ledger is complete."
+    "the evidence ledger is complete. Emit the ledger ONCE, briefly — do "
+    "NOT restate or complete your earlier draft; a compact table is enough."
 )
 
 AGENTLOOP_GATE = (
@@ -96,7 +97,8 @@ AGENTLOOP_GATE = (
     "you ran (write_file, run_command, read_file, ...) and quote what its "
     "result showed for each requirement. If any requirement was never "
     "actually verified, do NOT answer — run the tool that verifies or fixes "
-    "it first. Then re-issue your final answer WITH the citations."
+    "it first. Then re-issue your final answer WITH the citations — short, "
+    "one copy only, without repeating your earlier draft."
 )
 
 TONES: dict[str, str] = {
