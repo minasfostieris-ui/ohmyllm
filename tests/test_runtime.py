@@ -538,6 +538,37 @@ def test_agentloop_echo_breaker_stops_rotating_ledger(oml_env, svc):
     assert "SHOULD NEVER BE REACHED" not in res.text
 
 
+def test_agentloop_stream_cut_terminates_mid_generation_echo(oml_env, svc):
+    # THE field killer (run 3): gemma loops the ledger INSIDE one
+    # 8192-token generation — step-end checks never get control. The
+    # streaming scan must abort generation and keep the first copy.
+    svc.config.agent.agent_loop = True
+    be = svc.backend()
+    call = {"id": "r1", "function": {"name": "soul_read", "arguments": {}}}
+    ledger = ("## STREAM LEDGER\n" + "\n".join(
+        f"req {(i * 7867) % 983}: done, proven by step {(i * 53) % 91}"
+        for i in range(100)))
+    assert len(ledger) > 2500
+    doubled = ledger + "\nmore prose\n" + ledger  # second copy verbatim later
+    chunks = [doubled[i:i + 700] for i in range(0, len(doubled), 700)]
+    be.script = [
+        [ChatChunk(content="", tool_calls=[call], done=True)],
+        [ChatChunk(content=c) for c in chunks] + [ChatChunk(done=True)],
+        [ChatChunk(content="SHOULD NEVER BE REACHED"), ChatChunk(done=True)],
+    ]
+    rt = make_rt(svc)
+    sess = svc.new_session()
+    events: list = []
+    res = asyncio.run(rt.run_turn(sess, "audit the thing", model="mock-tool-7b",
+                                  on_event=events.append))
+    assert any(e["type"] == "agentloop_echo_break" for e in events)
+    assert res.steps == 2
+    assert "SHOULD NEVER BE REACHED" not in res.text
+    assert res.text.startswith("## STREAM LEDGER")
+    assert len(res.text) < len(doubled)  # cut happened mid-stream
+    assert not AgentRuntime._self_repeats(res.text)  # one clean copy kept
+
+
 def test_agentloop_echo_breaker_stops_identical_repeats(oml_env, svc):
     svc.config.agent.agent_loop = True
     be = svc.backend()

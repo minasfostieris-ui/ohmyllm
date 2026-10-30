@@ -186,6 +186,8 @@ class AgentRuntime:
             first_at: float | None = None
             thinking_seen = False
             finish_reason = ""
+            scan_at = 4000
+            echo_dup: int | None = None
             try:
                 async for chunk in self.backend.stream_chat(
                     model, messages, params,
@@ -206,6 +208,15 @@ class AgentRuntime:
                         first_at = first_at or time.perf_counter()
                         assistant_text += chunk.content
                         emit({"type": "token", "text": chunk.content})
+                        # STREAM echo cut: gemma-class models regurgitate
+                        # the ledger INSIDE one 8192-token generation, so
+                        # step-end checks never get control. Scan while
+                        # streaming; a verbatim repeat aborts generation.
+                        if agent_loop and len(assistant_text) >= scan_at:
+                            echo_dup = self._self_repeats(assistant_text)
+                            if echo_dup is not None:
+                                break
+                            scan_at = len(assistant_text) + 2000
                     if chunk.tool_progress:
                         args_chars = max(args_chars, int(chunk.tool_progress.get("chars") or 0))
                         emit({"type": "tool_stream", "name": chunk.tool_progress.get("name", ""),
@@ -234,6 +245,15 @@ class AgentRuntime:
                              turn_ttft, reasoning_chars, args_chars)
                 return result
             ended = time.perf_counter()
+            if echo_dup is not None:
+                keep = self._clean_final(assistant_text[:echo_dup])
+                emit({"type": "agentloop_echo_break", "steps": step})
+                session.add_message("assistant", keep)
+                result.reasoning = "".join(reasoning_text)[:20000]
+                self._finish(session, result, keep, gen_time, total_tokens, eval_count,
+                             eval_ns, turn_ttft, reasoning_chars, args_chars)
+                emit({"type": "turn_end", **self._result_payload(result, keep)})
+                return result
             if first_at is not None:
                 # decode-only rate: exclude model load, queue and prompt prefill
                 gen_time += ended - first_at
@@ -749,11 +769,12 @@ class AgentRuntime:
         return None
 
     @staticmethod
-    def _self_repeats(text: str, win: int = 300) -> bool:
-        """True when the same `win`-char block occurs twice, non-adjacent.
-        Rolling hash over every position (period-agnostic — sampled windows
-        miss cyclic prose); the exact fingerprint of ledger regurgitation.
-        Honest answers rarely re-emit a verbatim 300-char paragraph."""
+    def _self_repeats(text: str, win: int = 300) -> int | None:
+        """Start index of a verbatim `win`-char block that already occurred
+        earlier (non-overlapping), else None. Rolling hash over every
+        position (period-agnostic — sampled windows miss cyclic prose); the
+        exact fingerprint of ledger regurgitation. Honest answers rarely
+        re-emit a verbatim 300-char paragraph."""
         seen: dict[int, int] = {}
         h = 0
         m = (1 << 61) - 1
@@ -766,9 +787,9 @@ class AgentRuntime:
             if i + 1 >= win:
                 j = seen.get(h)
                 if j is not None and i - j - win + 1 >= win:
-                    return True
+                    return i - win + 1
                 seen.setdefault(h, i - win + 1)
-        return False
+        return None
 
     def _finish(
         self, session: Session, result: TurnResult, text: str, gen_time: float, tokens: int,
