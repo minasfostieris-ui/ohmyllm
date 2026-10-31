@@ -1,7 +1,12 @@
-<img width="4675" height="3750" alt="ohmyllmlogo" src="https://github.com/user-attachments/assets/7ef955f3-97cc-47ca-9208-967fdd7c753b" />
-# OhMyLLM
+<p align="center">
+  <img src="ohmyllmlogo10.webp" alt="OhMyLLM logo" width="480" />
+</p>
 
-[![CI](https://github.com/minasfostieris-ui/ohmyllm/actions/workflows/ci.yml/badge.svg)](https://github.com/minasfostieris-ui/ohmyllm/actions/workflows/ci.yml)
+<h1 align="center">OhMyLLM</h1>
+
+<p align="center">
+  <a href="https://github.com/minasfosteris-ui/ohmyllm/actions/workflows/ci.yml"><img src="https://github.com/minasfosteris-ui/ohmyllm/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+</p>
 
 **A local-first agentic AI platform for Ollama and LM Studio.** A real tool
 loop, a persistent memory you can read as plain Markdown, a permission engine
