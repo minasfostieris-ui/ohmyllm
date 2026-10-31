@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="ohmyllmlogo11_tight.png" alt="OhMyLLM logo" width="2000" />
+  <table align="center" width="1800" border="0" cellpadding="0" cellspacing="0"><tr><td align="center"><img src="ohmyllmlogo11_tight.png" alt="OhMyLLM logo" width="100%" /></td></tr></table>
 </p>
 
 <h1 align="center">OhMyLLM</h1>
