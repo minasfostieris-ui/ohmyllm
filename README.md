@@ -1,3 +1,4 @@
+<img width="4675" height="3750" alt="ohmyllmlogo" src="https://github.com/user-attachments/assets/7ef955f3-97cc-47ca-9208-967fdd7c753b" />
 # OhMyLLM
 
 [![CI](https://github.com/minasfostieris-ui/ohmyllm/actions/workflows/ci.yml/badge.svg)](https://github.com/minasfostieris-ui/ohmyllm/actions/workflows/ci.yml)
