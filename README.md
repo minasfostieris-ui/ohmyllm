@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="ohmyllmlogo10.webp" alt="OhMyLLM logo" width="820" />
+  <img src="ohmyllmlogo10.webp" alt="OhMyLLM logo" width="1200" />
 </p>
 
 <h1 align="center">OhMyLLM</h1>
