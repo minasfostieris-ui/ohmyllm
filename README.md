@@ -10,6 +10,7 @@
 
 
 OFFICIAL WEBSITE: https://ohmyllm.vercel.app
+
 **A local-first agentic AI platform for Ollama and LM Studio.** A real tool
 loop, a persistent memory you can read as plain Markdown, a permission engine
 that never lets the model play god, and three frontends — TUI, CLI, and a
