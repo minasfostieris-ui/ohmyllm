@@ -8,6 +8,8 @@
   <a href="https://github.com/minasfosteris-ui/ohmyllm/actions/workflows/ci.yml"><img src="https://github.com/minasfosteris-ui/ohmyllm/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
+
+[OFFICIAL WEBSITE!]: https://ohmyllm.vercel.app
 **A local-first agentic AI platform for Ollama and LM Studio.** A real tool
 loop, a persistent memory you can read as plain Markdown, a permission engine
 that never lets the model play god, and three frontends — TUI, CLI, and a
