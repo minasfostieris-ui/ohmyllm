@@ -59,9 +59,14 @@ class StatusBar(Static):
         model = str(st.get("model", "—"))[: (34 if w >= 110 else 18)]
         chat = f" · chat {st.get('session', '…')}" if w >= 100 else ""
         mid = f"ctx {ctx}%  {vram}  " if w >= 104 else (f"ctx {ctx}%  " if w >= 70 else "")
+        omode = str(st.get("op_mode", "build"))
+        ochip = {"chat": "[blue]💬 chat[/]", "plan": "[cyan]📋 plan[/]"}.get(
+            omode, "[green]🔨 build[/]")
+        yolo = " [bold red]⚡YOLO[/]" if st.get("yolo") and w >= 60 else ""
         self.update(
             f"[{bstyle}]{dot}[/] {st.get('backend', '?')}  "
             f"[bold]{model}[/]  "
+            f"{ochip}{yolo}  "
             f"[{mstyle}] {mode} [/]  "
             + mid
             + (f"[magenta]{toks:.1f} tok/s[/]  " if toks and w >= 78 else "")

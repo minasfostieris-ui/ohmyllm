@@ -42,6 +42,7 @@ TOOL_CLASSES: dict[str, ToolClass] = {
     "email_send": ToolClass.MAIL,
     "skills_list": ToolClass.STATUS,
     "skills_read": ToolClass.STATUS,
+    "tone_create": ToolClass.STATUS,
     "soul_read": ToolClass.MEMORY_READ,
     "soul_search": ToolClass.MEMORY_READ,
     "soul_append": ToolClass.MEMORY_WRITE,
@@ -132,6 +133,53 @@ class PolicyEngine:
 
     # ------------------------------------------------------------- evaluation
     def evaluate(
+        self,
+        tool: str,
+        args: dict,
+        *,
+        user_requested_memory: bool = False,
+    ) -> Decision:
+        d = self._evaluate(tool, args, user_requested_memory=user_requested_memory)
+        return self._apply_op_mode_and_yolo(tool, args or {}, d)
+
+    def _apply_op_mode_and_yolo(self, tool: str, args: dict, d: Decision) -> Decision:
+        """Operation modes (chat/plan) strip mutation tools entirely; YOLO
+        (one prompt, never persisted) skips approvals — but NOTHING ever
+        runs a catastrophic command, not even in full_access."""
+        if self._is_catastrophic(tool, args) and not self.config.safety.catastrophic_override:
+            return Decision(False, False, 10, (*d.reasons, "catastrophic command — blocked (flip the settings override to allow)"))
+        omode = getattr(self.config.agent, "op_mode", "build")
+        if omode in ("chat", "plan") and d.allowed:
+            cls = classify(tool)
+            if cls in (ToolClass.WRITE, ToolClass.SHELL, ToolClass.MAIL):
+                hint = "/build" if omode == "plan" else "/build or /plan"
+                return Decision(False, False, d.risk,
+                                (*d.reasons, f"{tool} is disabled in {omode} mode — switch with {hint}"))
+        if d.allowed and d.requires_approval and getattr(self.config.agent, "yolo", False):
+            return Decision(True, False, d.risk, (*d.reasons, "YOLO: one-prompt approval bypass"))
+        return d
+
+    _CATASTROPHIC_RX = (
+        r"\brm\s+(-[a-z]*\s+)*-?[a-z]*r[a-z]*f?\s+(/|\$HOME|\*)(\s|$)",
+        r"--no-preserve-root",
+        r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;|fork\s*bomb",
+        r"\bmkfs(\.\w+)?\b",
+        r"\bdd\b[^|;]*\bof=/dev/",
+        r"\b(shutdown|reboot|halt|poweroff)\b",
+        r"\bchmod\s+-R\s+777\s+/(\s|$)",
+        r"\bchown\s+-R\s+[^ ]+\s+/(\s|$)",
+    )
+
+    def _is_catastrophic(self, tool: str, args: dict) -> bool:
+        if tool == "run_command":
+            cmd = str(args.get("command") or "").lower()
+            return any(re.search(rx, cmd) for rx in self._CATASTROPHIC_RX)
+        if tool in ("write_file", "patch_file"):
+            target = str(args.get("path") or "")
+            return bool(re.match(r"^(/etc|/boot|/dev|/sys|/proc|/usr/lib/systemd)(/|$)", target))
+        return False
+
+    def _evaluate(
         self,
         tool: str,
         args: dict,

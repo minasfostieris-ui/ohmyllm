@@ -79,6 +79,7 @@ class AgentRuntime:
         config: Config,
         soul: SoulManager | None,
         skills: Any = None,
+        config_saver: Any = None,
     ) -> None:
         self.backend = backend
         self.registry = registry
@@ -90,6 +91,7 @@ class AgentRuntime:
         self.parser = ToolCallParser()
         self.validator = ToolCallValidator(registry)
         self.skills = skills
+        self.config_saver = config_saver
         self.prompt_builder = PromptBuilder(config, registry, soul, skills=skills,
                                             workspace=policy.workspace)
         self.last_usage: dict[str, Any] = {}
@@ -128,6 +130,7 @@ class AgentRuntime:
             skills=getattr(self, "skills", None),
             status_provider=self._status_provider(model),
             user_requested_memory=user_requested_memory,
+            config_saver=self.config_saver,
         )
         native_pref = self.config.agent.native_tools
         native = native_pref == "force"
@@ -796,6 +799,8 @@ class AgentRuntime:
         eval_count: int = 0, eval_ns: int = 0, ttft: float | None = None, reasoning_chars: int = 0,
         args_chars: int = 0,
     ) -> None:
+        if getattr(self.config.agent, "yolo", False):
+            self.config.agent.yolo = False  # one prompt only; never persisted
         result.text = text
         est_all = max(tokens, (len(text) + reasoning_chars + args_chars) // 4)  # reasoning+args ARE generation
         result.tokens = est_all

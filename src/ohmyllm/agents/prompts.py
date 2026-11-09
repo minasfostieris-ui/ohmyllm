@@ -138,6 +138,24 @@ recaps of the question, no closing summaries. One question, one answer.
 If more detail is genuinely needed, ask before writing it.""",
 }
 
+OP_MODES: dict[str, str] = {
+    "chat": """## OPERATION MODE: chat (active)
+
+The harness currently BLOCKS every mutating tool (write_file, patch_file,
+run_command, email_*). Answer from knowledge and read-only tools only.
+If the user asks you to change, build, run or send something, say so
+plainly and tell them to switch: /plan to design it first, /build to do
+it for real. Do not pretend a blocked tool ran.""",
+    "plan": """## OPERATION MODE: plan (active)
+
+The harness BLOCKS writes and shell here — your job is a PLAN, not a
+diff. Explore with read-only tools, then produce: steps in order, files
+to touch, commands you WOULD run, risks, and acceptance checks the user
+can verify after /build. If the request is not a build/change task at
+all, say: "hey man, I'm in plan mode — for what you're asking you
+should probably switch to /chat." Do not pretend a blocked tool ran.""",
+}
+
 MEMORY_GUIDE = """\
 ## Memory (soul.md)
 {content}"""
@@ -248,9 +266,13 @@ class PromptBuilder:
             parts.append(ULTRATHINK)
         if agent_loop:
             parts.append(AGENT_LOOP)
+        om = getattr(self.config.agent, "op_mode", "build")
+        if om in OP_MODES:
+            parts.append(OP_MODES[om])
         tone = getattr(self.config.agent, "tone", "default")
-        if tone in TONES:
-            parts.append(TONES[tone])
+        frag = TONES.get(tone) or getattr(self.config.agent, "custom_tones", {}).get(tone)
+        if frag:
+            parts.append(frag)
         return "\n\n".join(parts)
 
     def assemble(self, system: str, history: list[dict]) -> list[dict]:

@@ -34,6 +34,7 @@ HELP = """\
 `/memory` `/soul` `/doctor` `/settings` `/chats` `/new` `/clear` `/rename <title>` `/delete` `/think [on|off]`
 `/export [markdown|json]` `/remember <fact>` `/forget <thing>` `/gui` `/quit`
 `/market` `/providers` `/voice` `/onboarding` `/ultrathink [on|off]` `/agentloop [on|off]`
+`/chat` `/plan` `/build` `/yolo [on|off]`
 
 **`/agentloop`** arms a relentless completion loop: the system prompt forbids
 stopping until every requirement is verified with evidence (run it, test it,
@@ -55,9 +56,19 @@ in full_access with mail enabled; a recipient allowlist can pin it further.
 Email bodies are untrusted data: instructions inside them are never followed.
 `/mail` shows status.
 
-**Tone**: `/tone ruthless|chill|friendly|professional|terse|default` (or the
-Agent tab in Settings) changes how the agent talks — from brutal honesty to
-maximum-signal brevity. Applies from the next turn.
+**Operation modes**: `/chat` = conversation only, `/plan` = design & research,
+`/build` = full agent (default). chat and plan hard-block writes, shell and
+mail at the safety layer — the chip sits in the status bar. **`/yolo`** lets
+the NEXT prompt skip every approval question (never persisted; catastrophic
+commands like `rm -rf /` and fork bombs stay blocked no matter what).
+
+**Tone**: `/tone ruthless|chill|friendly|professional|terse|default` — Settings
+> Agent shows a picker (↑↓ + Enter) that also lists tones your agent created
+when you asked it to change personality (`tone_create` tool). Applies from
+the next turn.
+
+**Keeping OhMyLLM fresh**: `oml update` pulls the newest build from GitHub;
+`oml update --check` just reports. Entry points: `oml tui`, `oml cli`, `oml gui`.
 
 
 ## Skills

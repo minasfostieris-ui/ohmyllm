@@ -970,9 +970,9 @@ const SCHEMA = [
   ["default_backend", "backend", "select", ["ollama", "lmstudio", "cloud", "mock"]],
   ["§", "ollama"],
   ["ollama.host", "host", "text"], ["ollama.binary", "binary name", "text"],
-  ["ollama.auto_start", "auto-start server", "bool"], ["ollama.startup_timeout", "startup timeout s", "num"],
+  ["ollama.startup_timeout", "startup timeout s", "num"],
   ["§", "lm studio"],
-  ["lmstudio.base_url", "base URL", "text"], ["lmstudio.auto_start", "auto-start", "bool"],
+  ["lmstudio.base_url", "base URL", "text"],
   ["lmstudio.binary_path", "app path (optional)", "text"],
   ["§", "generation"],
   ["generation.temperature", "temperature", "num"], ["generation.top_p", "top_p", "num"],
@@ -989,6 +989,7 @@ const SCHEMA = [
   ["agent.thinking_visible", "stream live thinking", "bool"],
   ["agent.agent_loop", "relentless agent loop", "bool"],
   ["agent.tone", "tone of voice", "select", ["default", "ruthless", "chill", "friendly", "professional", "terse"]],
+  ["agent.op_mode", "operation mode (chat/plan block writes+shell)", "select", ["build", "plan", "chat"]],
   ["§", "memory"],
   ["memory.enabled", "soul memory enabled", "bool"], ["memory.agent_writes", "agent may write memories", "bool"],
   ["memory.require_explicit_save", "require explicit save intent", "bool"],
@@ -1079,6 +1080,8 @@ function renderHelp() {
   <tr><td><code>/voice</code></td><td>speech-to-text status · hold <kbd>Ctrl+E</kbd> anywhere to talk</td></tr>
   <tr><td><code>/mail</code></td><td>email account status · <code>oml mail setup</code> to connect</td></tr>
   <tr><td><code>/tone</code></td><td>how the AI talks: default · ruthless · chill · friendly · professional · terse</td></tr>
+  <tr><td><code>/chat · /plan · /build</code></td><td>operation mode: talk only / design first (writes+shell blocked) / full agent</td></tr>
+  <tr><td><code>/yolo [on|off]</code></td><td>the next prompt skips approval prompts — catastrophic commands stay blocked either way</td></tr>
   <tr><td><code>/help</code></td><td>this screen</td></tr></table>
   <h3>where do API keys go?</h3>
   <p>Open the <b>Providers</b> tab (left sidebar) → pick OpenRouter / Anthropic / OpenAI / … →
@@ -1104,6 +1107,7 @@ const SLASHES = [
   ["/export", "export chat"], ["/models", "model list"], ["/mode", "permission mode"],
   ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"], ["/mail", "email status"], ["/voice", "voice status"], ["/tone", "how the AI talks"],
   ["/ultrathink", "deep reasoning on/off"], ["/agentloop", "relentless verified-completion loop"], ["/think", "off|low|medium|high|xhigh|max"], ["/skill:", "cast a skill: /skill:<name>"],
+  ["/chat", "chat mode: talk only"], ["/plan", "plan mode: design, no writes"], ["/build", "build mode: full agent"], ["/yolo", "next prompt skips approvals"],
 ];
 $("#input").addEventListener("input", () => {
   autoGrow();
@@ -1241,14 +1245,15 @@ async function handleSlash(text) {
       break;
     }
     case "/tone": {
-      const opts = ["default", "ruthless", "chill", "friendly", "professional", "terse"];
+      const opts = ["default", "ruthless", "chill", "friendly", "professional", "terse"]
+        .concat(Object.keys((state.config && state.config.agent && state.config.agent.custom_tones) || {}));
       const want = (arg || "").toLowerCase();
       if (!want) {
         const cur = (state.config && state.config.agent && state.config.agent.tone) || "default";
         addEvline("note", `tone · current: ${cur} — /tone ${opts.filter((o) => o !== cur).join("|")}`);
         break;
       }
-      if (!opts.includes(want)) { toast(`unknown tone "${want}" — ${opts.join("|")}`, "bad"); break; }
+      if (!opts.includes(want)) { toast(`unknown tone "${want}" — /tone ` + opts.join("|"), "bad"); break; }
       const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
       merged.agent = merged.agent || {};
       merged.agent.tone = want;
@@ -1256,6 +1261,31 @@ async function handleSlash(text) {
       if (r && r.error) { toast(`tone: ${r.error}`, "bad"); break; }
       state.config = r.config;
       toast(`tone → ${want} (from the next turn)`);
+      refreshStatus();
+      break;
+    }
+    case "/chat":
+    case "/plan":
+    case "/build": {
+      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
+      merged.agent = merged.agent || {};
+      merged.agent.op_mode = cmd.slice(1);
+      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
+      if (r && r.error) { toast(`${cmd}: ${r.error}`, "bad"); break; }
+      state.config = r.config;
+      addEvline("note", `mode → ${cmd.slice(1)} · ` + { chat: "conversation only — writes and shell blocked", plan: "planning — writes and shell blocked", build: "full agent" }[cmd.slice(1)]);
+      refreshStatus();
+      break;
+    }
+    case "/yolo": {
+      const want = (arg || "").toLowerCase();
+      const on = want === "on" || (want !== "off" && !(state.config && state.config.agent && state.config.agent.yolo));
+      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
+      merged.agent = merged.agent || {};
+      merged.agent.yolo = on;
+      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
+      if (r && r.error) { toast(`yolo: ${r.error}`, "bad"); break; }
+      toast(on ? "⚡ YOLO armed — the NEXT prompt skips approvals; catastrophic commands stay blocked" : "yolo off — approvals restored");
       refreshStatus();
       break;
     }

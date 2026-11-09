@@ -43,6 +43,10 @@ class ChatScreen(Screen):
         ("/ultrathink", "[on|off]", "deep reasoning: think much longer and harder"),
         ("/agentloop", "[on|off]", "relentless loop: never stop until the result is verified perfect"),
         ("/tone", "[name]", "how the agent talks: default|ruthless|chill|friendly|professional|terse"),
+        ("/chat", "", "chat mode — conversation only, no writes or shell"),
+        ("/plan", "", "plan mode — research and design, no writes or shell"),
+        ("/build", "", "build mode — full agent (default)"),
+        ("/yolo", "[on|off]", "this prompt skips approvals (catastrophic commands stay blocked)"),
         ("/memory", "", "soul.md editor"), ("/soul", "", "soul.md editor"), ("/doctor", "", "diagnostics"),
         ("/settings", "", "all settings"), ("/chats", "", "browse chats"), ("/new", "", "fresh chat"),
         ("/clear", "", "fresh chat"), ("/rename", "<title>", "rename this chat"),
@@ -1084,7 +1088,8 @@ class ChatScreen(Screen):
                 "verified with evidence (bigger step budget + completion audit)"
                 if want == "on" else "agent loop off")
         elif cmd == "tone":
-            opts = ("default", "ruthless", "chill", "friendly", "professional", "terse")
+            opts = tuple(["default", "ruthless", "chill", "friendly", "professional", "terse"]
+                         + sorted(app.svc.config.agent.custom_tones))
             want = arg.lower().strip()
             cur = app.svc.config.agent.tone
             if not want:
@@ -1096,6 +1101,23 @@ class ChatScreen(Screen):
                 app.svc.config.agent.tone = want
                 app.svc.save_config()
                 app.notify(f"tone → {want} — applies from the next turn")
+        elif cmd in ("chat", "plan", "build"):
+            app.svc.config.agent.op_mode = cmd
+            app.svc.save_config()
+            self._push_status()
+            desc = {"chat": "conversation only — writes and shell are blocked",
+                    "plan": "planning — research allowed, writes and shell blocked",
+                    "build": "full agent — tools, writes and shell enabled"}[cmd]
+            self._sysline(f"mode → {cmd} · {desc}", "system")
+        elif cmd == "yolo":
+            cur = bool(getattr(app.svc.config.agent, "yolo", False))
+            want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
+            app.svc.config.agent.yolo = want == "on"
+            self._push_status()
+            app.notify(
+                "⚡ YOLO armed — the NEXT prompt skips approvals; catastrophic "
+                "commands (rm -rf /, fork bombs, disk wipes) stay blocked"
+                if want == "on" else "yolo off — approvals restored")
         elif cmd.startswith("skill:"):
             name = cmd.split(":", 1)[1]
             body = app.svc.skills.read(name)

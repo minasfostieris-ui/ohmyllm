@@ -39,6 +39,11 @@ you ──> ohmyllm ──> agent runtime ──> policy engine ──> tools
   `curl | sh`, …) stay blocked even then unless you flip a config flag.
   Every decision is audited to `~/.ohmyllm/logs/audit.jsonl` with secret
   redaction. → [docs/PERMISSIONS.md](docs/PERMISSIONS.md)
+- **Operation modes** — `/chat` (talk only), `/plan` (research + design, no
+  writes), `/build` (full agent; default). chat/plan hard-block writes, shell
+  and mail at the safety layer, chip visible in the status bar. `/yolo` arms a
+  one-prompt approval bypass — never persisted, and catastrophic commands stay
+  blocked through it regardless of permission mode.
 - **soul.md memory** — the agent's persistent identity/knowledge file. It is
   plain Markdown, yours to edit; automatic backups, changelog, revert,
   similarity-dedup upserts, search/forget. → [docs/MEMORY.md](docs/MEMORY.md)
@@ -82,12 +87,13 @@ Windows: `powershell -File scripts\install.ps1`. Manual:
 
 ```bash
 ohmyllm                 # TUI — first run opens the setup wizard
-ohmyllm chat --plain    # no-frills chat in any terminal
+ohmyllm cli             # no-frills chat in any terminal (`oml tui` = the TUI)
 ohmyllm run "list files here and summarise"   # one-shot agent task
 ohmyllm models          # list models with VRAM fit
 ohmyllm backend ollama --start
 ohmyllm doctor          # 25+ health checks with fixes
 ohmyllm gui             # native window (or browser console)
+ohmyllm update          # pull the newest build from GitHub
 ```
 
 Inside the TUI: `Ctrl+K` command palette, `Ctrl+O` chats, `Ctrl+M` models,
@@ -137,6 +143,13 @@ including native tool calls and thinking blocks.
 
 **🎙 Voice I/O.** **Hold Ctrl+E** in the TUI and talk — release to stop;
 the transcript lands in your input box, ready to edit before sending. OhMyLLM routes to whichever engine + model you actually have: **SenseVoice-Small** (English·한국어·中文·日本語·Cantonese, 254 MB — the multilingual default), **Parakeet TDT 0.6B v3** (best English accuracy), or **Whisper** multilingual ggmls (~99 other languages — add WhisperX for VAD on long recordings). `/voice` shows what OhMyLLM can see on your system. STT runs through whisper.cpp / WhisperX / sensevoice.cpp / parakeet.cpp — install any of them and OhMyLLM finds the binary on PATH. Nothing is claimed as available unless both the runtime and the model exist — and `/onboarding` walks you through the whole choice.
+
+**🎭 Tone of voice.** `/tone ruthless|chill|friendly|professional|terse|default`
+— or Settings ▸ Agent, which opens a picker with a one-line description per
+tone (↑↓ + Enter). Ask the agent to change its own personality ("talk like a
+pirate, but precise") and it authors a new preset with `tone_create`: it lands
+in the picker and in `config.toml` under `agent.custom_tones`, switchable any
+time. Tone only styles replies — it can never touch safety.
 
 **Ctrl+C copies your selection** (it never quits); quitting is Ctrl+Q with
 a confirm. Ctrl+V pastes clipboard images (see Vision paste below).

@@ -86,10 +86,12 @@ class Services:
     @property
     def policy(self) -> PolicyEngine:
         if (not hasattr(self, "_policy") or getattr(self, "_policy_cfg", None) is not self.config
-                or getattr(self, "_policy_ws", None) != self.workspace):
+                or getattr(self, "_policy_ws", None) != self.workspace
+                or getattr(self, "_policy_mode", None) is not self.config.permission_mode):
             self._policy = PolicyEngine(self.config, self.workspace)
             self._policy_cfg = self.config
             self._policy_ws = self.workspace
+            self._policy_mode = self.config.permission_mode
         return self._policy
 
     @property
@@ -137,6 +139,7 @@ class Services:
             config=self.config,
             soul=self.soul,
             skills=self.skills,
+            config_saver=self.save_config,
         )
 
     # ------------------------------------------------------------- actions
@@ -239,4 +242,6 @@ class Services:
             "ctx_pct": round(100 * ctx_used / max(1, ctx_total)),
             "tokens_s": tok_s,
             "updated": time.time(),
+            "op_mode": self.config.agent.op_mode,
+            "yolo": bool(getattr(self.config.agent, "yolo", False)),
         }

@@ -1,4 +1,4 @@
-"""Extra modal screens: per-model settings form."""
+"""Extra modal screens: per-model settings form, tone-of-voice picker."""
 
 from __future__ import annotations
 
@@ -7,7 +7,8 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Input, Label, Static, Switch
+from textual.widgets import Button, Input, Label, OptionList, Static, Switch
+from textual.widgets._option_list import Option
 
 from ...backends.base import ModelInfo
 
@@ -110,3 +111,50 @@ class ModelSettingsModal(ModalScreen[bool]):
 
     def action_cancel(self) -> None:
         self.dismiss(False)
+
+
+_TONE_HELP = [
+    ("default", "plain and direct — no persona"),
+    ("ruthless", "blunt senior engineer: no flattery, cuts waste, tells you when you're wrong"),
+    ("chill", "relaxed and friendly, light humour, still technically exact"),
+    ("friendly", "warm and encouraging, plain-spoken"),
+    ("professional", "formal, measured, business tone"),
+    ("terse", "minimum words: fragments, bullets, zero filler"),
+]
+
+
+class TonePickerModal(ModalScreen[str]):
+    """OMP-style submenu: pick a tone with up/down arrows, Enter arms it, Esc closes."""
+
+    BINDINGS = [Binding("escape", "cancel", "Close", priority=True)]
+    CSS = """
+    TonePickerModal { align: center middle; }
+    #tp-box { width: 78; max-height: 90%; border: round $accent; background: $surface; padding: 1 2; }
+    #tp-list { height: auto; }
+    """
+
+    def __init__(self, current: str, custom: dict[str, str]) -> None:
+        super().__init__()
+        self._current = current
+        self._custom = custom
+
+    def compose(self) -> ComposeResult:
+
+        with Vertical(id="tp-box"):
+            yield Static("[b]tone of voice[/b]  [dim]↑↓ move · Enter pick · Esc close[/dim]")
+            rows = list(_TONE_HELP)
+            for name, frag in sorted(self._custom.items()):
+                first = frag.splitlines()[0] if frag else ""
+                rows.append((name, (first[:60] + "…") if len(first) > 60 else first or "agent-created tone"))
+            opts = []
+            for name, desc in rows:
+                mark = "▸ " if name == self._current else "  "
+                opts.append(Option(f"{mark}[b]{name:<14}[/b][dim]{desc}[/dim]", id=f"tp-{name}"))
+            yield OptionList(*opts, id="tp-list")
+
+    @on(OptionList.OptionSelected)
+    def _picked(self, event) -> None:
+        self.dismiss(str(event.option_id or "").removeprefix("tp-"))
+
+    def action_cancel(self) -> None:
+        self.dismiss("")

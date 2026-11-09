@@ -110,9 +110,6 @@ class SettingsScreen(Screen):
                                   hint="where the ollama API listens")
                 yield from _field("Binary", "st-ollama_binary", cfg.ollama.binary,
                                   hint="path to the ollama executable")
-                yield from _switch("Auto-start server", "st-ollama_autostart",
-                                   cfg.ollama.auto_start,
-                                   hint="start ollama serve when it is not running")
                 yield from _field("Startup timeout (s)", "st-ollama_timeout",
                                   str(cfg.ollama.startup_timeout), number=True,
                                   hint="seconds to wait for the server")
@@ -124,9 +121,6 @@ class SettingsScreen(Screen):
                 yield from _field("App path", "st-lms_binary",
                                   cfg.lmstudio.binary_path or "",
                                   hint="(optional) path to LM Studio, enables lms CLI")
-                yield from _switch("Auto-start server", "st-lms_autostart",
-                                   cfg.lmstudio.auto_start,
-                                   hint="launch LM Studio when it is not running")
 
             # ------------------------------------------------- Generation tab
             with Vertical(id="st-page-generation", classes="st-page"):
@@ -183,7 +177,7 @@ class SettingsScreen(Screen):
                                    cfg.agent.agent_loop,
                                    hint="/agentloop: never stop until the result is verified perfect")
                 yield from _field("Tone of voice", "st-tone", cfg.agent.tone,
-                                  hint="default | ruthless | chill | friendly | professional | terse")
+                                  hint="type a name or press Enter for the picker — ↑↓ choose")
 
             # ---------------------------------------------------- Memory tab
             with Vertical(id="st-page-memory", classes="st-page"):
@@ -220,10 +214,10 @@ class SettingsScreen(Screen):
                                   placeholder="e.g. rg, fd")
                 yield from _field("Always-denied commands", "st-safety_deny",
                                   ", ".join(cfg.safety.command_denylist),
-                                  hint="comma separated")
+                                  hint="comma-separated: rv, mv", placeholder="e.g. rv, mv")
                 yield from _field("Re-allowed sensitive paths", "st-safety_paths",
                                   ", ".join(cfg.safety.allow_sensitive_paths),
-                                  hint="comma separated path prefixes")
+                                  hint="comma-separated: /data, ~/.secrets", placeholder="e.g. /data")
 
             # ----------------------------------------------------- Guard tab
             with Vertical(id="st-page-guard", classes="st-page"):
@@ -384,6 +378,18 @@ class SettingsScreen(Screen):
     def action_save(self) -> None:
         self._save()
 
+    @on(Input.Submitted, "#st-tone")
+    def _open_tone_picker(self) -> None:
+        from .modals import TonePickerModal
+
+        cfg = self.app.svc.config
+
+        def _chosen(name: str) -> None:
+            if name:
+                self.query_one("#st-tone", Input).value = name
+                self.app.notify(f"tone → {name} — ctrl+s to persist")
+        self.app.push_screen(TonePickerModal(cfg.agent.tone, cfg.agent.custom_tones), _chosen)
+
     @on(Button.Pressed, "#st-save")
     def _save(self) -> None:
         errors: list[str] = []
@@ -412,8 +418,9 @@ class SettingsScreen(Screen):
         if nt not in {"auto", "force", "off"}:
             errors.append("st-native_tools: must be auto|force|off")
         tn = q("st-tone").value.strip().lower() or "default"
-        if tn not in {"default", "ruthless", "chill", "friendly", "professional", "terse"}:
-            errors.append("st-tone: must be default | ruthless | chill | friendly | professional | terse")
+        if tn not in {"default", "ruthless", "chill", "friendly", "professional", "terse"} \
+                and tn not in self.app.svc.config.agent.custom_tones:
+            errors.append("st-tone: built-in name or one your agent created with tone_create")
 
         payload: dict = {
             "version": 1,
@@ -424,13 +431,11 @@ class SettingsScreen(Screen):
             "ollama": {
                 "host": q("st-ollama_host").value.strip(),
                 "binary": q("st-ollama_binary").value.strip() or "ollama",
-                "auto_start": s("st-ollama_autostart"),
                 "startup_timeout": num(q("st-ollama_timeout"), float) or 30.0,
                 "default_model": q("st-ollama_default").value.strip() or None,
             },
             "lmstudio": {
                 "base_url": q("st-lms_url").value.strip(),
-                "auto_start": s("st-lms_autostart"),
                 "startup_timeout": 30.0,
                 "default_model": q("st-lms_default").value.strip() or None,
                 "binary_path": q("st-lms_binary").value.strip() or None,

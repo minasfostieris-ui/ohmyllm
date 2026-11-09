@@ -74,6 +74,60 @@ def _launch(plain: bool, workspace: str | None, resume: str | None) -> None:
 
 # ----------------------------------------------------------------- commands
 @app.command()
+def tui(
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Project/workspace directory."),
+    resume: str | None = typer.Option(None, "--resume", help="Resume a chat session id."),
+) -> None:
+    """Open the full TUI (same as plain `oml`)."""
+    _launch(plain=False, workspace=workspace, resume=resume)
+
+
+@app.command()
+def cli(
+    workspace: str | None = typer.Option(None, "--workspace", "-w", help="Project/workspace directory."),
+    resume: str | None = typer.Option(None, "--resume", help="Resume a chat session id."),
+) -> None:
+    """Start the plain line-CLI session (basic terminals, pipes, low TTYS)."""
+    _launch(plain=True, workspace=workspace, resume=resume)
+
+
+@app.command()
+def update(
+    check: bool = typer.Option(False, "--check", help="Report the newest version without installing."),
+) -> None:
+    """Pull the newest OhMyLLM from GitHub and reinstall it in place."""
+    import shutil
+    import subprocess
+
+    src = "git+https://github.com/minasfostieris-ui/ohmyllm.git"
+    if check:
+        try:
+            out = subprocess.run(["git", "ls-remote", src, "HEAD"], capture_output=True, text=True, timeout=30)
+            sha = out.stdout.split()[0][:9] if out.returncode == 0 and out.stdout else "?"
+            console.print(f"[bold]ohmyllm {__version__}[/bold] · GitHub HEAD: {sha}")
+            console.print("[dim]run `oml update` to install it[/dim]")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[red]could not reach GitHub: {exc}[/red]")
+            raise typer.Exit(1) from exc
+        return
+    if shutil.which("uv"):
+        cmd = ["uv", "tool", "install", "--force", src]
+    elif shutil.which("pip"):
+        cmd = [sys.executable or "pip", "install", "--upgrade", "--force-reinstall", src]
+    else:
+        console.print("[red]neither uv nor pip found — install one and retry[/red]")
+        raise typer.Exit(1)
+    console.print(f"[dim]updating from GitHub: {' '.join(cmd)}[/dim]")
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode == 0:
+        console.print("[green]✔ updated.[/green] Next launch runs the new version — run `oml --version` to confirm.")
+    else:
+        err = (proc.stderr or proc.stdout).strip().splitlines()[-3:]
+        console.print("[red]update failed:[/red]\n" + "\n".join(err))
+        raise typer.Exit(1)
+
+
+@app.command()
 def chat(
     message: str | None = typer.Argument(None, help="Optional first message (one-shot when given)."),
     plain: bool = typer.Option(False, "--plain", "-p"),

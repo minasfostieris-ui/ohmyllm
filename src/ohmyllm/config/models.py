@@ -212,8 +212,14 @@ class AgentSettings(BaseModel):
     compact_ratio: float = Field(0.75, gt=0.2, le=0.95, description="compact when est prompt tokens exceed ratio*num_ctx")
     thinking_visible: bool = Field(True, description="stream the model's reasoning live in chat (/think hide, Ctrl+T)")
     agent_loop: bool = Field(False, description="/agentloop: relentless completion — verify everything, never stop early (step floor 24 + one evidence audit)")
-    tone: str = Field("default", pattern="^(default|ruthless|chill|friendly|professional|terse)$",
+    tone: str = Field("default", pattern="^(default|ruthless|chill|friendly|professional|terse|[a-z][a-z0-9_-]{1,32})$",
                       description="/tone: how the agent talks — ruthless, chill, friendly, professional, terse")
+    custom_tones: dict[str, str] = Field(default_factory=dict,
+                                         description="agent-authored tone presets: name -> prompt fragment (tone_create)")
+    op_mode: str = Field("build", pattern="^(chat|plan|build)$",
+                         description="/chat /plan /build: chat+plan block writes and shell; build is full agent")
+    yolo: bool = Field(False, exclude=True,
+                       description="one-prompt guard bypass (never persisted; catastrophic commands stay blocked)")
 
 
 class UiSettings(BaseModel):

@@ -224,6 +224,20 @@ class PlainApp:
             self._delete(arg)
         elif cmd == "export":
             self._export(arg)
+        elif cmd in ("chat", "plan", "build"):
+            self.svc.config.agent.op_mode = cmd
+            self.svc.save_config()
+            desc = {"chat": "conversation only — writes and shell blocked",
+                    "plan": "planning — writes and shell blocked",
+                    "build": "full agent"}[cmd]
+            c.print(f"[bold]mode → {cmd}[/bold] · {desc}")
+        elif cmd == "yolo":
+            cur = bool(getattr(self.svc.config.agent, "yolo", False))
+            want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
+            self.svc.config.agent.yolo = want == "on"
+            c.print("[bold red]⚡ YOLO armed — the NEXT prompt skips approvals; "
+                    "catastrophic commands (rm -rf /, fork bombs) stay blocked[/bold red]"
+                    if want == "on" else "[green]yolo off — approvals restored[/green]")
         elif cmd == "settings":
             # NEVER dump raw config: [cloud] keys would land in terminal
             # scrollback / logs / bug reports. Same masking as the bridge.
@@ -238,7 +252,8 @@ class PlainApp:
             self.svc.save_config()
             c.print(f"[bold]agent loop {'ON — verified completion from the next turn' if want == 'on' else 'off'}[/bold]")
         elif cmd == "tone":
-            opts = ("default", "ruthless", "chill", "friendly", "professional", "terse")
+            opts = tuple(["default", "ruthless", "chill", "friendly", "professional", "terse"]
+                         + sorted(self.svc.config.agent.custom_tones))
             if not arg:
                 c.print(f"tone: {self.svc.config.agent.tone} — /tone " + "|".join(opts))
             elif arg.lower() in opts:
@@ -413,6 +428,7 @@ class PlainApp:
     def _print_help(self) -> None:
         self.console.print(Panel(
             "/help /model /backend /mode /soul /memory [edit|forget …] /doctor /settings /agentloop /tone\n"
+            "/chat /plan /build — operation modes · /yolo — next prompt skips approvals\n"
             "/chats [open N] /new /rename <title> /delete [id] /export [json|markdown] /clear /quit\n"
             "Plain mode uses the SAME permission engine as the TUI — blocked is blocked.",
             title="OhMyLLM plain mode", border_style="cyan",

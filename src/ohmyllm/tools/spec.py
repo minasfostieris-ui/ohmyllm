@@ -34,6 +34,7 @@ class ToolContext:
     skills: Any = None  # SkillManager | None (Any avoids the import cycle)
     status_provider: Callable[[], dict[str, Any]] | None = None
     user_requested_memory: bool = False
+    config_saver: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True)

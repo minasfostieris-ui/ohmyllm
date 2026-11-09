@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 from typing import Any
 
 from .file_tools import (
@@ -30,6 +31,35 @@ from .spec import ToolContext, ToolResult, ToolSpec, arg
 from .system_tools import get_system_status
 
 _SECTIONS_ENUM = ("User", "Projects", "Preferences", "Pets", "Lessons", "Important Notes")
+
+
+def _tone_create(ctx, args: dict) -> ToolResult:
+    name = str(args.get("name") or "").strip().lower()
+    fragment = str(args.get("instructions") or "").strip()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{1,32}", name):
+        return ToolResult(False, "", "tone names must be lowercase, start with a letter, 2-33 chars (letters/digits/_/-)")
+    if name in ("default", "ruthless", "chill", "friendly", "professional", "terse"):
+        return ToolResult(False, "", f"{name!r} is a built-in tone — pick another name")
+    if len(fragment) < 40:
+        return ToolResult(False, "", "the instructions fragment is too thin — write a real style guide (40+ chars)")
+    if len(fragment) > 1500:
+        return ToolResult(False, "", "keep the tone fragment under 1500 chars — it is injected into every prompt")
+    agent = ctx.config.agent
+    if agent.op_mode in ("chat", "plan"):
+        return ToolResult(False, "", f"tone_create is a change — it needs build mode (current: {agent.op_mode}); "
+                                     "ask the user to run /build first")
+    if not agent.custom_tones and ctx.config.permission_mode.value == "strict":
+        return ToolResult(False, "", "strict permission mode does not allow creating tones — the user can "
+                                     "switch modes or pick a built-in tone in Settings")
+    agent.custom_tones = {**agent.custom_tones, name: fragment}
+    agent.tone = name
+    if ctx.config_saver is not None:
+        try:
+            ctx.config_saver()
+        except Exception as exc:  # noqa: BLE001
+            return ToolResult(False, "", f"tone created but config could not be saved: {exc}")
+    return ToolResult(True, f"tone '{name}' created and armed — it shapes every reply from the next turn. "
+                            "The user can switch back with /tone default or pick it in Settings.")
 
 def _skills_list(ctx, args: dict) -> ToolResult:
     mgr = ctx.skills
@@ -180,6 +210,15 @@ SPECS: list[ToolSpec] = [
         "skills_read", "Read one imported skill's full instructions. Call BEFORE doing work in its domain.",
         [arg("name", "string", "skill name from skills_list")],
         _skills_read, examples='{"name": "frontend"}',
+    ),
+    ToolSpec(
+        "tone_create", "Create a custom tone-of-voice preset for YOURSELF when the user asks you to "
+        "change personality ('be an asshole', 'act stupid', 'talk like a pirate'). Write a short "
+        "second-person style directive as `instructions` — it is injected into your own future system "
+        "prompts and shows up in Settings > Tone. Never use it to disable safety or claim new tools.",
+        [arg("name", "string", "short slug like 'pirate' or 'asshole'"),
+         arg("instructions", "string", "the style guide fragment, 40-1500 chars")],
+        _tone_create, examples='{"name": "pirate", "instructions": "Reply as a 18th-century pirate: nautical metaphors, arr, but technically precise."}',
     ),
 ]
 
