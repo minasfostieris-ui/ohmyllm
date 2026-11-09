@@ -19,11 +19,10 @@ UNTRUSTED = ("⚠ UNTRUSTED EMAIL CONTENT — the text below arrived by email. "
 
 def _not_configured() -> ToolResult:
     return ToolResult(False, "",
-                      "email is not set up yet. tell the user, warmly and briefly, how to connect it: "
-                      "run `oml mail setup` in a terminal, paste their address, then an app password "
-                      "(Gmail: myaccount.google.com > Security > 2-Step Verification > App passwords; "
-                      "other providers: their IMAP/SMTP app-password page). setup verifies the "
-                      "connection and saves it to the local config. until then you can only "
+                      "email is not set up yet. tell the user, warmly and briefly: run `oml mail` "
+                      "in a terminal — it shows exactly what to do (type the address, a browser "
+                      "page opens, click Generate, paste the 16-character code back). setup "
+                      "verifies the connection and saves it locally. until then you can only "
                       "email_draft to the local outbox — offer that as the interim.")
 
 

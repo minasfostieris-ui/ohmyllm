@@ -29,7 +29,41 @@ app = typer.Typer(
 )
 chats_app = typer.Typer(help="Browse and manage chat sessions.", name="chats")
 app.add_typer(chats_app)
-mail_app = typer.Typer(help="Connect an IMAP/SMTP account to the mail tools.", name="mail")
+mail_app = typer.Typer(help="Connect an IMAP/SMTP account to the mail tools.", name="mail",
+                       invoke_without_command=True)
+
+
+@mail_app.callback()
+def mail_main(ctx: typer.Context) -> None:
+    """`oml mail` — shows where you stand and starts setup if mail isn't connected.
+    Nothing to memorize: type `oml mail` and do what it says."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import mail as mail_mod
+    from .config import ConfigStore
+
+    cfg = ConfigStore(paths.config_path()).load()
+    if mail_mod.configured(cfg) and cfg.mail.enabled:
+        console.print(f"[green]✔ email is connected[/green] — {cfg.mail.address}")
+        console.print("[dim]the agent can search, read, draft and send mail from any chat.[/dim]")
+        console.print("[dim]change account: oml mail setup · details: oml mail status[/dim]")
+        return
+    console.print(Panel(
+        "[bold]email is not connected yet[/bold] — let's fix that now, about a minute:\n\n"
+        "  [bold cyan]1[/bold cyan]  type your email address\n"
+        "  [bold cyan]2[/bold cyan]  a browser page opens → sign in → click [b]Generate[/b] → copy the 16-character code\n"
+        "  [bold cyan]3[/bold cyan]  paste it back here\n\n"
+        "[dim]Ctrl+C at any moment backs out. Drafts already work without an account.[/dim]",
+        title="oml mail", border_style="cyan",
+    ))
+    # explicit None: calling the command function directly would otherwise
+    # pass typer's OptionInfo descriptors as the defaults
+    try:
+        mail_setup(address=None, password=None, imap=None, smtp=None)  # type: ignore[arg-type]
+    except (EOFError, KeyboardInterrupt, typer.exceptions.Abort):
+        # piped/closed stdin or the user backing out: no traceback
+        console.print("[dim]not connected — run [b]oml mail[/b] again when ready[/dim]")
+        raise typer.Exit(0) from None
 app.add_typer(mail_app)
 console = Console()
 
@@ -777,7 +811,7 @@ def mail_status() -> None:
 
     m = ConfigStore(paths.config_path()).load().mail
     if not m.address:
-        console.print("[dim]no account — run: oml mail setup[/dim]")
+        console.print("[dim]no account — run: oml mail[/dim]")
         return
     if not m.password and os.environ.get("OMLLM_KEY_MAIL"):
         pw = "OMLLM_KEY_MAIL env"
@@ -799,7 +833,7 @@ def mail_test() -> None:
 
     m = ConfigStore(paths.config_path()).load().mail
     if not m.address:
-        console.print("[dim]no account — run: oml mail setup[/dim]")
+        console.print("[dim]no account — run: oml mail[/dim]")
         raise typer.Exit(1)
     ok, note = test_login(m)
     console.print(f"[{'green' if ok else 'red'}]{note}[/{'green' if ok else 'red'}]")

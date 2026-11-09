@@ -89,7 +89,7 @@ def test_draft_rejects_bad_input(tmp_path, monkeypatch):
 def test_send_blocked_without_account(tmp_path):
     cfg = Config(first_run_completed=True, workspace=str(tmp_path))
     res = asyncio.run(mail_tools.mail_send(_ctx(cfg), {"to": "a@b.c", "subject": "s", "body": "b"}))
-    assert not res.ok and "mail setup" in (res.error or "")
+    assert not res.ok and "oml mail" in (res.error or "")
 
 
 def test_send_happy_path(tmp_path, monkeypatch):

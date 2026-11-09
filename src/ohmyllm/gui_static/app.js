@@ -1001,7 +1001,7 @@ const SCHEMA = [
   ["safety.workspace_write_requires_confirmation", "confirm workspace writes", "bool"],
   ["safety.catastrophic_override", "override catastrophic block (dangerous!)", "bool"],
   ["safety.http_fetch_enabled", "network tool enabled", "bool"],
-  ["§", "mail (see: oml mail setup)"],
+  ["§", "mail (see: oml mail)"],
   ["mail.enabled", "mail tools enabled", "bool"],
   ["mail.address", "account address", "text"],
   ["mail.imap_host", "IMAP host", "text"],
@@ -1078,7 +1078,7 @@ function renderHelp() {
   <tr><td><code>/market</code></td><td>models + voice models to download (Market tab)</td></tr>
   <tr><td><code>/providers</code></td><td>connect cloud API keys — Providers tab</td></tr>
   <tr><td><code>/voice</code></td><td>speech-to-text status · hold <kbd>Ctrl+E</kbd> anywhere to talk</td></tr>
-  <tr><td><code>/mail</code></td><td>email account status · <code>oml mail setup</code> to connect</td></tr>
+  <tr><td><code>/mail</code></td><td>email account status · <code>oml mail</code> to connect</td></tr>
   <tr><td><code>/tone</code></td><td>how the AI talks: default · ruthless · chill · friendly · professional · terse</td></tr>
   <tr><td><code>/chat · /plan · /build</code></td><td>operation mode: talk only / design first (writes+shell blocked) / full agent</td></tr>
   <tr><td><code>/yolo [on|off]</code></td><td>the next prompt skips approval prompts — catastrophic commands stay blocked either way</td></tr>
@@ -1187,7 +1187,7 @@ async function handleSlash(text) {
       const m = (c.mail || {});
       addEvline("note", m.address
         ? `mail · ${m.address} · ${m.enabled ? "ready (send asks first outside full_access)" : "disabled — enable in Settings"}`
-        : "mail · no account — run `oml mail setup` in a terminal (drafts work without it)");
+        : "mail · no account — run `oml mail` in a terminal (drafts work without it)");
       break;
     }
     case "/backend": switchView("backend"); break;

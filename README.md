@@ -60,7 +60,7 @@ you ──> ohmyllm ──> agent runtime ──> policy engine ──> tools
   yourself. Plus a **mock backend** — a scripted but fully real agent for
   demos/tests without any model.
   → [docs/BACKENDS.md](docs/BACKENDS.md)
-- **Email** — `oml mail setup` connects an IMAP/SMTP account (Gmail app
+- **Email** — `oml mail` connects an IMAP/SMTP account (Gmail app
   password, Outlook, Fastmail, iCloud, anything). The agent can then
   `email_search`/`email_read` your inbox (bodies fenced as untrusted data —
   instructions inside an email are never followed), `email_draft` to a local

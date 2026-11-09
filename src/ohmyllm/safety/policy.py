@@ -336,7 +336,7 @@ class PolicyEngine:
             return Decision(False, False, 6, (*reasons, f"{mode.value} mode forbids email"))
         if tool in ("email_search", "email_read"):
             if not m.enabled:
-                return Decision(False, False, 6, (*reasons, "email not configured (oml mail setup)"))
+                return Decision(False, False, 6, (*reasons, "email not configured (oml mail)"))
             return Decision(True, False, 5, (*reasons, "mail read: account configured by the user"))
         # email_send
         risk = 7
