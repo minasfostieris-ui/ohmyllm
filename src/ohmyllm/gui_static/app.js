@@ -1114,7 +1114,9 @@ $("#input").addEventListener("input", () => {
   const v = $("#input").value;
   if (v.startsWith("/") && !v.includes("\n")) {
     const m = v.slice(1).split(" ")[0].toLowerCase();
-    const hits = SLASHES.filter((s) => s[0].slice(1).startsWith(m));
+    const hits = SLASHES.filter((s) => s[0].slice(1).startsWith(m))
+      // exact match first: typing /mode must not let Enter accept /models
+      .sort((a, b) => (a[0].slice(1) === m ? 0 : 1) - (b[0].slice(1) === m ? 0 : 1) || a[0].length - b[0].length);
     const hint = $("#slash-hint");
     if (hits.length && hits.length < 9 && m) {
       hint.hidden = false;
@@ -1127,7 +1129,10 @@ $("#input").addEventListener("keydown", (e) => {
   if (e.key === "Escape") { $("#slash-hint").hidden = true; if (state.streaming) post("/api/cancel", {}); }
   if ($("#slash-hint").hidden !== true && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
     const sel = $("#slash-hint .sel");
-    if (sel) { e.preventDefault(); sel.click(); return; }
+    // typed a complete command already? Enter sends it — never "autocorrect"
+    // /mode into /models just because a longer sibling is highlighted
+    const typed = $("#input").value.trim().toLowerCase().split(" ")[0];
+    if (sel && !(e.key === "Enter" && sel.dataset.c === typed)) { e.preventDefault(); sel.click(); return; }
   }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); }
   if (e.key === "ArrowDown" || e.key === "ArrowUp") {

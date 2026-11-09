@@ -142,6 +142,9 @@ class ChatScreen(Screen):
             return
         prefix = v.lower()
         matches = [(c, a, d) for c, a, d in self.SLASH if c.startswith(prefix)]
+        # exact match first: typing /mode must not offer /model (or /models)
+        # as the highlighted row — Enter/Tab would then "autocorrect" it
+        matches.sort(key=lambda t: (t[0] != prefix, len(t[0])))
         if prefix.startswith("/skill:"):
             try:
                 skills = self.app.svc.skills.list()

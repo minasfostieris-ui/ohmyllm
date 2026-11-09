@@ -47,6 +47,37 @@ PROVIDERS: dict[str, tuple[str, int, str, int]] = {
     "me.com": ("imap.mail.me.com", 993, "smtp.mail.me.com", 465),
 }
 
+# where a user generates the app password, per domain family
+APP_PASSWORD_HELP: dict[str, str | None] = {
+    "gmail.com": "Gmail: myaccount.google.com → Security → enable 2-Step Verification, "
+                 "then https://myaccount.google.com/apppasswords → create one (16 chars, "
+                 "spaces don't matter). Your normal login password will NEVER work here.",
+    "googlemail.com": None,
+    "outlook.com": "Outlook/Hotmail: https://outlook.live.com → Settings → Accounts → "
+                   "Sync email → create an app password. (If your account uses Microsoft "
+                   "personal security info: account.microsoft.com/security → "
+                   "Advanced security options → Create a new app password.)",
+    "hotmail.com": None, "live.com": None, "microsoft.com": None,
+    "yahoo.com": "Yahoo: https://login.yahoo.com → Account info → Security → "
+                 "Generate app password → select 'Other mail app'.",
+    "fastmail.com": "Fastmail: https://www.fastmail.com/settings/security/devices → "
+                    "App passwords (IMAP/SMTP app password).",
+    "fastmail.fm": None,
+    "icloud.com": "iCloud: https://account.apple.com → Sign-In and Security → "
+                  "App-Specific Passwords → generate one.",
+    "me.com": None,
+}
+
+
+def app_password_help(domain: str) -> str:
+    dom = (domain or "").strip().lower()
+    for key, help_text in APP_PASSWORD_HELP.items():
+        if help_text is not None and dom == key:
+            return help_text
+    return ("This is an APP password, not your login password — generate one in your "
+            "provider's security settings (search 'app password' there). If your provider "
+            "isn't listed, oml cannot auto-detect its servers either; check its IMAP/SMTP docs.")
+
 ENVELOPE_CAP = 40
 BODY_CAP = 12_000
 

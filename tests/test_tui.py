@@ -431,6 +431,32 @@ async def test_slash_menu_pops_and_completes(oml_env, svc):
 
 
 @pytest.mark.asyncio()
+async def test_slash_mode_not_autocorrected_to_model(oml_env, svc):
+    """Typing the complete command /mode must run /mode — never be
+    'autocorrected' into /model or /models by the highlighted menu row."""
+    from textual.widgets import OptionList
+
+    from ohmyllm.tui.screens.perms import PermsScreen
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        inp = app.screen.query_one("#chat-input")
+        inp.value = "/mode"
+        inp.action_end()
+        await pilot.pause(0.3)
+        menu = app.screen.query_one("#slash-menu", OptionList)
+        assert menu.option_count > 1, "prefix /mode* is ambiguous by design"
+        first = menu.get_option_at_index(0)
+        assert str(first.id) == "/mode", f"exact match must be highlighted first, got {first.id}"
+        await pilot.press("enter")
+        await pilot.pause(0.6)
+        # Enter on a fully-typed command sends it: /mode with no arg opens
+        # the perms screen — it must NOT rewrite the input to /model
+        assert isinstance(app.screen, PermsScreen)
+
+
+@pytest.mark.asyncio()
 async def test_thinking_block_expandable(oml_env, svc):
     from textual.widgets import Collapsible
 

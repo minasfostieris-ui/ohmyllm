@@ -729,9 +729,13 @@ def mail_setup(
         console.print(f"[cyan]{dom}[/cyan] detected — IMAP {ih}:{ip} · SMTP {sh}:{sp}")
     else:
         console.print(f"[yellow]no auto-detection for {dom}[/yellow] — using the hosts above.")
+    if password is None:
+        from .mail import app_password_help
+        console.print(f"[cyan]{app_password_help(dom)}[/cyan]")
+        console.print("[dim]Paste it below (typing is hidden). Press Enter alone to skip and "
+                      "use the OMLLM_KEY_MAIL env var instead.[/dim]")
     pw = password if password is not None else typer.prompt(
-        "App password (NOT your login password — or set OMLLM_KEY_MAIL and press enter)",
-        default="", hide_input=True)
+        "App password", default="", hide_input=True)
     store = paths.config_path()
     cfg = ConfigStore(store).load()
     m = cfg.mail.model_copy(update={
@@ -745,13 +749,11 @@ def mail_setup(
     ok, note = test_login(m)
     if not ok:
         console.print(f"[red]{note}[/red]")
-        if dom == "gmail.com":
-            console.print("[dim]Gmail: enable 2-Step Verification, then create an App Password at "
-                          "https://myaccount.google.com/apppasswords[/dim]")
-        elif "proton" in dom:
+        if "proton" in dom:
             console.print("[dim]Proton Mail needs Proton Bridge running (local IMAP on 127.0.0.1:1143).[/dim]")
         else:
-            console.print("[dim]check the app-password setting for your provider and retry[/dim]")
+            from .mail import app_password_help
+            console.print(f"[dim]{app_password_help(dom)}[/dim]")
         raise typer.Exit(1)
     ConfigStore(store).save(cfg.model_copy(update={"mail": m}))
     console.print(f"[green]✓ {note}[/green] · [green]account saved[/green] — the agent can now "
