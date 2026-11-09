@@ -78,6 +78,27 @@ def app_password_help(domain: str) -> str:
             "provider's security settings (search 'app password' there). If your provider "
             "isn't listed, oml cannot auto-detect its servers either; check its IMAP/SMTP docs.")
 
+# exact page where each provider mints an app password — oml opens it for you
+APP_PASSWORD_URL: dict[str, str | None] = {
+    "gmail.com": "https://myaccount.google.com/apppasswords",
+    "googlemail.com": None,
+    "outlook.com": "https://account.live.com/proofs/AppPassword",
+    "hotmail.com": None, "live.com": None, "microsoft.com": None,
+    "yahoo.com": "https://login.yahoo.com/account/security/app-password",
+    "fastmail.com": "https://www.fastmail.com/settings/security/devices",
+    "fastmail.fm": None,
+    "icloud.com": "https://account.apple.com/sign-in",
+    "me.com": None,
+}
+
+
+def app_password_url(domain: str) -> str | None:
+    dom = (domain or "").strip().lower()
+    for key, url in APP_PASSWORD_URL.items():
+        if url is not None and dom == key:
+            return url
+    return None
+
 ENVELOPE_CAP = 40
 BODY_CAP = 12_000
 

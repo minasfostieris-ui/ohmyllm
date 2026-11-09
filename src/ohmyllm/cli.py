@@ -730,10 +730,20 @@ def mail_setup(
     else:
         console.print(f"[yellow]no auto-detection for {dom}[/yellow] — using the hosts above.")
     if password is None:
-        from .mail import app_password_help
+        from .mail import app_password_help, app_password_url
         console.print(f"[cyan]{app_password_help(dom)}[/cyan]")
-        console.print("[dim]Paste it below (typing is hidden). Press Enter alone to skip and "
-                      "use the OMLLM_KEY_MAIL env var instead.[/dim]")
+        url = app_password_url(dom)
+        if url:
+            import webbrowser
+
+            console.print(f"[dim]opening {url} in your browser…[/dim]")
+            with contextlib.suppress(Exception):
+                webbrowser.open(url)
+            console.print("[dim]Generate one, copy it, paste below (typing is hidden). "
+                          "Enter alone skips and uses the OMLLM_KEY_MAIL env var.[/dim]")
+        else:
+            console.print("[dim]Paste it below (typing is hidden). Press Enter alone to skip and "
+                          "use the OMLLM_KEY_MAIL env var instead.[/dim]")
     pw = password if password is not None else typer.prompt(
         "App password", default="", hide_input=True)
     store = paths.config_path()
