@@ -735,6 +735,19 @@ def _bytes(n: int | None) -> str:
     return human_bytes(n) if n else "?"
 
 
+def _read_secret(label: str) -> str:
+    """Read a secret without echoing — via getpass, which (unlike click's
+    raw-char hidden prompt) lets terminals paste normally. Google codes are
+    shown as 'xxxx xxxx xxxx xxxx'; spaces and dashes are cosmetic."""
+    import getpass
+
+    try:
+        raw = getpass.getpass(f"{label}: ")
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    return raw.strip().replace(" ", "").replace("-", "")
+
+
 @mail_app.command("setup")
 def mail_setup(
     address: str = typer.Option(None, "--address", "-a", help="your email address"),
@@ -763,7 +776,12 @@ def mail_setup(
         console.print(f"[cyan]{dom}[/cyan] detected — IMAP {ih}:{ip} · SMTP {sh}:{sp}")
     else:
         console.print(f"[yellow]no auto-detection for {dom}[/yellow] — using the hosts above.")
-    if password is None:
+    env_pw = os.environ.get("OMLLM_KEY_MAIL")
+    pw = password
+    if pw is None and env_pw:
+        console.print("[dim]using the OMLLM_KEY_MAIL password from your environment[/dim]")
+        pw = env_pw
+    if pw is None:
         from .mail import app_password_help, app_password_url
         console.print(f"[cyan]{app_password_help(dom)}[/cyan]")
         url = app_password_url(dom)
@@ -773,13 +791,17 @@ def mail_setup(
             console.print(f"[dim]opening {url} in your browser…[/dim]")
             with contextlib.suppress(Exception):
                 webbrowser.open(url)
-            console.print("[dim]Generate one, copy it, paste below (typing is hidden). "
-                          "Enter alone skips and uses the OMLLM_KEY_MAIL env var.[/dim]")
-        else:
-            console.print("[dim]Paste it below (typing is hidden). Press Enter alone to skip and "
-                          "use the OMLLM_KEY_MAIL env var instead.[/dim]")
-    pw = password if password is not None else typer.prompt(
-        "App password", default="", hide_input=True)
+        for attempt in (1, 2):
+            console.print("[bold]Paste the 16-character code below and press Enter.[/bold] "
+                          "Nothing shows on screen while you paste — that is normal, "
+                          "it IS being typed. Right-click or Ctrl+Shift+V pastes.")
+            pw = _read_secret("App password")
+            if pw:
+                break
+            console.print("[yellow]empty — nothing was pasted. try once more.[/yellow]"
+                          if attempt == 1 else "[red]still empty — run [b]oml mail[/b] again when ready[/red]")
+        if not pw:
+            raise typer.Exit(1)
     store = paths.config_path()
     cfg = ConfigStore(store).load()
     m = cfg.mail.model_copy(update={
@@ -787,9 +809,6 @@ def mail_setup(
         "imap_host": ih, "imap_port": ip, "smtp_host": sh, "smtp_port": sp,
         "enabled": True,
     })
-    if not pw and not os.environ.get("OMLLM_KEY_MAIL"):
-        console.print("[yellow]no password given and OMLLM_KEY_MAIL is unset — "
-                      "login will fail until one exists[/yellow]")
     ok, note = test_login(m)
     if not ok:
         console.print(f"[red]{note}[/red]")

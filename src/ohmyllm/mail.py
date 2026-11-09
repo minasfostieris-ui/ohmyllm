@@ -49,9 +49,10 @@ PROVIDERS: dict[str, tuple[str, int, str, int]] = {
 
 # where a user generates the app password, per domain family
 APP_PASSWORD_HELP: dict[str, str | None] = {
-    "gmail.com": "Gmail: myaccount.google.com → Security → enable 2-Step Verification, "
-                 "then https://myaccount.google.com/apppasswords → create one (16 chars, "
-                 "spaces don't matter). Your normal login password will NEVER work here.",
+    "gmail.com": "Gmail: open the page below → type any name in the box (e.g. ohmyllm) → "
+                 "click [Generate/Create] → copy the 16-character code. If Google says to turn "
+                 "on 2-Step Verification first, follow its link, then come back. Your normal "
+                 "login password will NEVER work here.",
     "googlemail.com": None,
     "outlook.com": "Outlook/Hotmail: https://outlook.live.com → Settings → Accounts → "
                    "Sync email → create an app password. (If your account uses Microsoft "
