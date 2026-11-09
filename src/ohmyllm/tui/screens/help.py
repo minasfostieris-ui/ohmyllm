@@ -27,6 +27,8 @@ HELP = """\
 | `Ctrl+D` | doctor (diagnostics) |
 | `Ctrl+H` | this help |
 | `Ctrl+X` | cancel the current agent turn |
+| `Ctrl+J` | hide/show the tool dock (tool calls ALWAYS stay in the chat) |
+| `Ctrl+T` | hide/show live thinking |
 | `Ctrl+C` / `Ctrl+Q` | quit (with confirmation) |
 
 ## Chat slash commands

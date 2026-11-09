@@ -61,6 +61,7 @@ class ChatScreen(Screen):
         Binding("down", "slash_next", "", show=False, priority=False),
         Binding("tab", "slash_complete", "", show=False, priority=False),
         Binding("ctrl+t", "toggle_thinking", "hide/show live thinking", priority=True),
+        Binding("ctrl+j", "toggle_tools", "hide/show tool dock", priority=True),
         Binding("ctrl+v", "paste_image", "paste image from clipboard", priority=True),
         Binding("ctrl+e", "talk", "hold to talk (STT)", priority=True),
     ]
@@ -184,6 +185,7 @@ class ChatScreen(Screen):
         self._last_flush = 0.0
         self._turn_model = ""
         self._reasoning = ""
+        self._tool_lines: list[Static] = []
         self._think_md: Markdown | None = None
         self._think_col: Collapsible | None = None
         self._think_hidden: Static | None = None
@@ -282,6 +284,74 @@ class ChatScreen(Screen):
 
     def _think_count(self) -> str:
         return f"💭 thinking · hidden ({len(self._think_buf)} chars) — Ctrl+T to show"
+    def _tool_line(self, ev: dict[str, Any]) -> None:
+        """Chronological transcript line for a tool call. The right dock is an
+        at-a-glance log; the transcript is the record — a call must live in the
+        conversation itself, where it can be read back after the turn."""
+        from rich.text import Text
+
+        t = ev.get("type")
+        line = Text()
+        if t == "tool_plan":
+            line.append("  ⚙ ", style="dim")
+            line.append(str(ev.get("name")), style="bold cyan")
+            if not ev.get("allowed", True):
+                line.append("  blocked", style="bold red")
+            elif ev.get("approval"):
+                line.append("  waiting for approval", style="yellow")
+            else:
+                lv = str(ev.get("level") or "")
+                line.append(f"  {lv}({ev.get('risk', 0)})" if lv else "", style="dim")
+        elif t == "tool_result":
+            name = str(ev.get("name"))
+            secs = ev.get("secs")
+            line.append("  ✓ " if ev.get("ok") else "  ✗ ")
+            line.append(name, style="bold")
+            bits = []
+            if ev.get("denied"):
+                bits.append("denied")
+            if ev.get("blocked"):
+                bits.append("blocked")
+            if secs:
+                bits.append(f"{secs:.1f}s")
+            if not ev.get("ok") and ev.get("error"):
+                bits.append(str(ev["error"])[:80])
+            line.append(f"  {' · '.join(bits)}" if bits else "  ok",
+                        style="dim" if ev.get("ok") else "red")
+        elif t == "error":
+            line.append("  ! ", style="bold red")
+            line.append(str(ev.get("message") or ev.get("error") or "error")[:160], style="red")
+        w = Static(line, classes="msg-tool")
+        self._tool_lines.append(w)
+        if self._mount_hist(w):
+            self._follow()
+
+    def action_toggle_tools(self) -> None:
+        """Ctrl+J: hide/show the right dock; the transcript keeps the record."""
+        ui = self.app.svc.config.ui
+        ui.show_tool_panels = not ui.show_tool_panels
+        self.app.svc.save_config()
+        for p in self.query(ToolPanel):
+            p._set_visible(ui.show_tool_panels and bool(p._lines))
+        self.app.notify(f"tool dock {'shown' if ui.show_tool_panels else 'hidden'} — "
+                        "tool calls always stay in the chat")
+
+    def _mount_hist(self, w: object) -> bool:
+        """Mount a section (tool line, file line, sysline, thinking block) so
+        the transcript stays chronological while a turn is in flight: the
+        live answer widget mounts at the FIRST content token, but in a
+        multi-step turn more sections arrive after it — those mount BEFORE
+        the answer, which always closes the turn."""
+        try:
+            hist = self.query_one("#history", VerticalScroll)
+        except NoMatches:
+            return False
+        anchor = self._stream_md
+        if anchor is not None:
+            hist.mount(w, before=anchor)
+        else:
+            hist.mount(w)
+        return True
 
     def _follow(self, hist: VerticalScroll | None = None, force: bool = False) -> None:
         """Stick to the bottom only while the user is AT the bottom: scrolling
@@ -492,11 +562,7 @@ class ChatScreen(Screen):
         self.app.notify(f"image #{n} attached · {dims[0]}x{dims[1]} — type a prompt + enter")
 
     def _sysline(self, text: str, style: str = "system") -> None:
-        try:
-            hist = self.query_one("#history", VerticalScroll)
-        except NoMatches:
-            return
-        hist.mount(Static(_who("note", text), classes=f"msg-{style}"))
+        self._mount_hist(Static(_who("note", text), classes=f"msg-{style}"))
 
     # ----------------------------------------------------------------- input
     @on(Input.Submitted, "#chat-input")
@@ -620,6 +686,9 @@ class ChatScreen(Screen):
             self._reasoning = ""
             self._think_buf = ""
             self._think_flush = 0.0
+            self._tool_lines = []
+            if not self.app.svc.config.ui.show_tool_panels:
+                panel._set_visible(False)
         if t == "token":
             self._seal_thinking()  # the answer began; tuck the thoughts away
             self._buffer += str(ev.get("text", ""))
@@ -694,6 +763,10 @@ class ChatScreen(Screen):
             pass  # already shown when queued
         elif t in ("tool_plan", "tool_result", "memory_activity", "retry", "error", "thinking"):
             panel.add_event(ev)
+            if t in ("tool_plan", "tool_result"):
+                self._tool_line(ev)
+            elif t == "error" and ev.get("kind") != "backend":
+                self._tool_line(ev)  # backend errors get their own sysline in _run_turn
             if t == "tool_result":
                 # chronological transcript: the file line mounts at the
                 # bottom, so the live thinking block must seal BEFORE it —
@@ -801,7 +874,7 @@ class ChatScreen(Screen):
         body.append("\n".join("│ " + ln for ln in lines), style="bright_white")
         if self._file_live is None:
             self._file_live = Static(body, classes="msg-file-live")
-            hist.mount(self._file_live)
+            self._mount_hist(self._file_live)
         else:
             self._file_live.update(body)
         self._follow(hist)
@@ -834,10 +907,7 @@ class ChatScreen(Screen):
             if f.get("changed"):
                 line.append(f" ~{f['changed']}", style="bold yellow")
             line.append(f" +{f.get('added', 0)}", style="bold green")
-        try:
-            self.query_one("#history", VerticalScroll).mount(Static(line, classes="msg-file"))
-        except NoMatches:
-            return
+        self._mount_hist(Static(line, classes="msg-file"))
 
     def _seal_thinking(self) -> None:
         """Collapse the live thinking block in place: same widget the user has
@@ -866,11 +936,10 @@ class ChatScreen(Screen):
             self._reasoning = ""  # already shown as a block
             return
         if body.strip():
-            self.query_one("#history", VerticalScroll).mount(
+            self._mount_hist(
                 Collapsible(Markdown(body[:4000], classes="msg-system"),
                             title="thinking process", collapsed=True,
-                            collapsed_symbol="+", expanded_symbol="-")
-            )
+                            collapsed_symbol="+", expanded_symbol="-"))
         self._reasoning = ""  # already shown as a block
 
     def _thinking_block(self) -> None:
@@ -878,13 +947,9 @@ class ChatScreen(Screen):
         self._reasoning = ""
         if not text:
             return
-        try:
-            hist = self.query_one("#history", VerticalScroll)
-        except NoMatches:
-            return
         body = Markdown(text[:4000] + ("…" if len(text) > 4000 else ""), classes="msg-system")
-        hist.mount(Collapsible(body, title="thinking process", collapsed=True,
-                            collapsed_symbol="+", expanded_symbol="-"))
+        self._mount_hist(Collapsible(body, title="thinking process", collapsed=True,
+                                      collapsed_symbol="+", expanded_symbol="-"))
 
     def _stats_line(self, ev: dict[str, Any]) -> None:
         try:

@@ -1014,6 +1014,9 @@ const SCHEMA = [
   ["guard.model", "decision model", "text"],
   ["guard.danger_threshold", "danger threshold (0-1)", "num"],
   ["guard.timeout_s", "guard timeout s", "num"],
+  ["§", "interface"],
+  ["ui.show_tool_panels", "tool dock in the TUI (calls always stay in chat)", "bool"],
+  ["ui.confirm_quit", "confirm before quit", "bool"],
 ];
 async function renderSettings() {
   if (!state.config) state.config = await get("/api/config");

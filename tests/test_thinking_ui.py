@@ -125,3 +125,55 @@ async def test_autoscroll_respects_user_scroll_up(oml_env, svc):
             app.dispatch_turn_event({"type": "token", "text": f"tail {i}\n"})
             await pilot.pause(0.05)
         assert hist.scroll_y >= hist.max_scroll_y - 2, "at-bottom users keep following"
+
+
+async def test_tool_calls_land_in_transcript_and_answer_stays_last(oml_env, svc):
+    """The dock was the only place a tool call appeared — invisible after the
+    turn and unhidable. Calls must be transcript citizens; the answer must
+    never be stranded mid-history by later sections."""
+    from textual.containers import VerticalScroll
+    from textual.widgets import Markdown, Static
+
+    from ohmyllm.tui.app import OhMyLLMApp
+
+    app = OhMyLLMApp()
+    async with app.run_test(size=(140, 46)) as pilot:
+        await pilot.pause(0.7)
+        scr = app.screen
+        app.dispatch_turn_event({"type": "turn_start", "model": "m"})
+        await pilot.pause(0.1)
+        app.dispatch_turn_event({"type": "thinking_text", "text": "let me read it "})
+        app.dispatch_turn_event({"type": "tool_plan", "name": "read_file", "level": "read",
+                                 "risk": 1, "allowed": True, "approval": False})
+        app.dispatch_turn_event({"type": "tool_result", "name": "read_file", "ok": True,
+                                 "secs": 0.2})
+        await pilot.pause(0.2)
+        tool_lines = [w for w in scr.query_one("#history", VerticalScroll).children
+                      if isinstance(w, Static) and "read_file" in str(w.render())]
+        assert tool_lines, "tool calls must appear in the transcript"
+        # answer starts streaming, THEN another section mounts — the answer
+        # must be re-pinned to the bottom (the screenshot bug)
+        for i in range(4):
+            app.dispatch_turn_event({"type": "token", "text": f"answer line {i}\n"})
+        await pilot.pause(0.2)
+        app.dispatch_turn_event({"type": "tool_plan", "name": "email_send", "level": "mail",
+                                 "risk": 8, "allowed": True, "approval": True})
+        await pilot.pause(0.2)
+        hist = scr.query_one("#history", VerticalScroll)
+        kids = list(hist.children)
+        answers = [k for k in kids if isinstance(k, Markdown) and "answer line" in str(k.source)]
+        assert len(answers) == 1, "one live answer widget"
+        assert kids[-1] is answers[0], \
+            "live answer must sit at the bottom while sections keep arriving"
+        app.dispatch_turn_event({"type": "turn_end", "ok": True, "text": "answer line 0\n"})
+        await pilot.pause(0.3)
+        # ctrl+J hides the dock and persists the choice (the app runs its own
+        # Services loaded from disk — assert against app.svc, not the fixture)
+        before = app.svc.config.ui.show_tool_panels
+        scr.action_toggle_tools()
+        await pilot.pause(0.2)
+        assert app.svc.config.ui.show_tool_panels is not before
+        from ohmyllm.config import ConfigStore
+        assert ConfigStore().load().ui.show_tool_panels is app.svc.config.ui.show_tool_panels
+        scr.action_toggle_tools()
+        await pilot.pause(0.2)

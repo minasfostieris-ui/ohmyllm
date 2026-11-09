@@ -243,6 +243,9 @@ class SettingsScreen(Screen):
                 yield from _switch("Confirm before quit", "st-confirm_quit",
                                    cfg.ui.confirm_quit,
                                    hint="ask before Ctrl+Q leaves")
+                yield from _switch("Tool dock on the right", "st-tool_dock",
+                                   cfg.ui.show_tool_panels,
+                                   hint="live activity panel — tool calls always stay in the chat (Ctrl+J toggles)")
                 yield Horizontal(Label("[b]Theme[/b]", classes="st-k"),
                                  Static("[dim]highlight to preview live · Save keeps it[/dim]",
                                         classes="st-inline-hint"), classes="st-row2")
@@ -484,7 +487,8 @@ class SettingsScreen(Screen):
                 "model": q("st-guard_model").value.strip() or "clef-flash",
                 "danger_threshold": num(q("st-guard_thr"), float),
             },
-            "ui": {"confirm_quit": s("st-confirm_quit"), "theme": self._selected_theme()},
+            "ui": {"confirm_quit": s("st-confirm_quit"), "show_tool_panels": s("st-tool_dock"),
+                   "theme": self._selected_theme()},
             "model_settings": self.app.svc.config.model_settings,
             # mail is configured by `oml mail setup`, not this screen — carry
             # it through so saving settings never wipes the account
