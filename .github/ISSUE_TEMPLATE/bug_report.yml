@@ -1,0 +1,63 @@
+name: Bug report
+description: Something misbehaves — a crash, a wrong answer, a stuck turn
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. OhMyLLM runs on your hardware with your model,
+        so the more context, the faster the fix.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      placeholder: Tell us what you expected vs what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. oml (TUI), backend LM Studio, model gemma-3n-e4b
+        2. type /agentloop on
+        3. ask for a three-file website
+    validations:
+      required: true
+  - type: dropdown
+    id: frontend
+    attributes:
+      label: Frontend
+      options: [TUI, plain CLI, GUI (browser), GUI (Tauri), CLI command]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: oml version
+      description: output of `oml --version`
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: OS + GPU/VRAM, backend (Ollama/LM Studio/cloud) and model
+      placeholder: |
+        CachyOS (Arch), RTX 4070 12 GiB
+        LM Studio 0.3.x, gemma-3n-e4b-it, ctx 16384
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: |
+        ~/.ohmyllm/logs/ — paste the tail of the last lines around the failure.
+        NEVER paste your config.toml or anything that looks like a key.
+      render: shell
+  - type: checkboxes
+    id: terms
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed any secrets, personal data and email bodies from this report
+          required: true

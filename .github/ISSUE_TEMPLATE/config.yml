@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or help
+    url: https://github.com/minasfostieris-ui/ohmyllm/discussions/categories/q-a
+    about: How do I… — ask in Discussions, answers stay searchable.
+  - name: Feature idea
+    url: https://github.com/minasfostieris-ui/ohmyllm/discussions/categories/ideas
+    about: Propose and discuss before anyone builds it.
+  - name: Security vulnerability
+    url: https://github.com/minasfostieris-ui/ohmyllm/security/advisories/new
+    about: Private report — please do not open a public issue.
