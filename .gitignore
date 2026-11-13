@@ -11,12 +11,23 @@ build/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.validation/
 
 # Rust / Tauri
 gui/src-tauri/target/
 
-# Runtime artifacts (never commit user state)
+# Runtime artifacts and credential-bearing files (never package or commit)
 .ohmyllm/
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+*credentials*.json
+secrets*.json
+*token*.json
 
 # Editors / OS
 .idea/

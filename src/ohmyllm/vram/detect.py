@@ -11,6 +11,8 @@ import threading
 import time
 from dataclasses import dataclass
 
+from ..secureio import sanitized_environment, trusted_executable
+
 
 @dataclass(frozen=True)
 class GPUInfo:
@@ -30,6 +32,7 @@ def _run(argv: list[str], timeout: float = 6.0) -> str | None:
         out = subprocess.run(
             argv, capture_output=True, text=True, timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            env=sanitized_environment(),
         )
         return out.stdout if out.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
@@ -37,9 +40,9 @@ def _run(argv: list[str], timeout: float = 6.0) -> str | None:
 
 
 def _which(name: str) -> str | None:
-    from shutil import which
-
-    return which(name) or (f"/opt/rocm/bin/{name}" if os.path.exists(f"/opt/rocm/bin/{name}") else None)
+    trusted = trusted_executable(name)
+    rocm = f"/opt/rocm/bin/{name}"
+    return trusted or (rocm if os.path.isfile(rocm) and os.access(rocm, os.X_OK) else None)
 
 
 def _nvidia() -> list[GPUInfo]:

@@ -7,10 +7,18 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ..safety.redact import redact_value
+from ..secureio import atomic_write, private_mkdir
 from .store import Session, SessionStore
 
 
+def _redacted_session(sess: Session) -> Session:
+    """Return a shape-preserving redacted snapshot for every export format."""
+    return Session.from_dict(redact_value(sess.to_dict()))
+
+
 def to_markdown(sess: Session) -> str:
+    sess = _redacted_session(sess)
     created = datetime.fromtimestamp(sess.created_at, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
     updated = datetime.fromtimestamp(sess.updated_at, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
     lines = [
@@ -60,7 +68,7 @@ def to_markdown(sess: Session) -> str:
 
 
 def to_json(sess: Session) -> str:
-    return json.dumps(sess.to_dict(), ensure_ascii=False, indent=2)
+    return json.dumps(redact_value(sess.to_dict()), ensure_ascii=False, indent=2)
 
 
 def export(store: SessionStore, sess: Session, fmt: str = "markdown", dest: Path | None = None) -> Path:
@@ -74,10 +82,12 @@ def export(store: SessionStore, sess: Session, fmt: str = "markdown", dest: Path
     else:
         raise ValueError(f"unknown export format: {fmt}")
     if dest is None:
-        store.exports.mkdir(parents=True, exist_ok=True)
+        private_mkdir(store.exports)
         dest = store.exports / f"{sess.id}-{slug}{suffix}"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content, encoding="utf-8")
+    dest = Path(dest)
+    if dest.is_symlink():
+        raise ValueError("export destination must not be a symlink")
+    atomic_write(dest, content, mode=0o600)
     if str(dest) not in sess.exported_paths:
         sess.exported_paths.append(str(dest))
         store.save(sess)

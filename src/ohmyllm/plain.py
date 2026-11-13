@@ -22,6 +22,7 @@ from .backends import StartResult
 from .config import BackendName, PermissionMode
 from .core import Services
 from .doctor import run_checks, summarize
+from .secureio import editor_argv, sanitized_environment
 from .sessions import make_title
 
 
@@ -345,11 +346,20 @@ class PlainApp:
 
     async def _memory(self, arg: str) -> None:
         if arg == "edit":
-            import os
+            import subprocess
 
-            editor = os.environ.get("EDITOR", "vi")
-            code = await asyncio.to_thread(os.system, f'{editor} "{self.svc.soul.path}"')
-            if code == 0:
+            try:
+                completed = await asyncio.to_thread(
+                    subprocess.run,
+                    editor_argv(self.svc.soul.path),
+                    cwd=self.svc.soul.path.parent,
+                    env=sanitized_environment(),
+                    check=False,
+                )
+            except (OSError, ValueError) as exc:
+                self.console.print(f"[red]could not launch editor: {exc}[/red]")
+                return
+            if completed.returncode == 0:
                 self.console.print("[green]soul.md saved[/green]")
             return
         if arg.startswith("forget "):

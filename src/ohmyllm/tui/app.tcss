@@ -45,6 +45,10 @@ VerticalScroll, DataTable, OptionList, TextArea, ScrollView, Log {
 /* ---------- chat ---------- */
 #chat-root { width: 100%; height: 1fr; }
 #chat-left { width: 1fr; height: 100%; overflow: hidden; }
+#history { height: 1fr; }
+#jump-latest { height: 1; min-height: 1; border: none; width: 1fr; background: $tint; color: $ring; }
+.compact-chat #tool-panel, .compact-chat #panel-sep { display: none; }
+.compact-chat #slash-band { max-height: 8; }
 
 .turn-stats { color: $text-muted; padding: 0 2 1 2; }
 #chats-filters { height: 3; }

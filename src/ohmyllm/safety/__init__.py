@@ -15,7 +15,7 @@ from .policy import (
     classify,
     describe,
 )
-from .redact import contains_secrets, redact_secrets
+from .redact import contains_secrets, redact_secrets, redact_value
 from .risk import CommandRisk, RiskScorer, level_for
 
 __all__ = [
@@ -39,4 +39,5 @@ __all__ = [
     "format_event",
     "level_for",
     "redact_secrets",
+    "redact_value",
 ]

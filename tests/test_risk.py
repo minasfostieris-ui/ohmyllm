@@ -1,4 +1,5 @@
 from ohmyllm.safety import RiskScorer, contains_secrets, redact_secrets
+from ohmyllm.safety.redact import redact_value
 
 
 def make():
@@ -58,3 +59,19 @@ def test_pem_redaction():
     blob = "-----BEGIN RSA PRIVATE KEY-----\nAAAABBBBCCCC\n-----END RSA PRIVATE KEY-----"
     out = redact_secrets(blob)
     assert "AAAABBBBCCCC" not in out and "REDACTED" in out
+
+
+def test_structured_url_and_token_redaction():
+    value = {
+        "headers": {"authorization": "Bearer abcdefghijklmnop"},
+        "nested": [
+            {"access_token": "token-abcdefghijklmnop"},
+            "https://username:password@example.com/path",
+            "AKIAABCDEFGHIJKLMNOP",
+            "eyJabcdefghij.abcdefghij.abcdef",
+        ],
+    }
+    redacted = str(redact_value(value))
+    for secret in ("abcdefghijklmnop", "username:password", "AKIAABCDEFGHIJKLMNOP", "eyJabcdefghij"):
+        assert secret not in redacted
+    assert "REDACTED" in redacted

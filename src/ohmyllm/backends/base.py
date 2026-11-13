@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 
 from ..config.models import BackendName, Config, GenerationSettings
+from ..secureio import url_is_loopback
 from ..vram.estimator import VramEstimate, estimate_vram, model_size_and_quant_from_name
 
 #: Model name fragments that are known to handle OpenAI-style tool calling well.
@@ -189,6 +190,12 @@ class BaseBackend(ABC):
 
     # ------------------------------------------------------------- helpers
     def _client(self, base_url: str, timeout: float | httpx.Timeout = 30.0, **kw: Any) -> httpx.AsyncClient:
+        # Recheck live opt-in at every client creation, not only backend construction.
+        if not self.config.safety.allow_remote_backends and not url_is_loopback(base_url):
+            raise BackendError(f"remote backend endpoint requires safety.allow_remote_backends: {base_url}")
+        # Backend traffic may never inherit proxies or follow redirects, even if a caller asks.
+        kw["trust_env"] = False
+        kw["follow_redirects"] = False
         return httpx.AsyncClient(
             base_url=base_url,
             timeout=timeout,

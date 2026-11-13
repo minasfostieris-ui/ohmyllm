@@ -68,7 +68,7 @@ async def mail_read(ctx: ToolContext, args: dict) -> ToolResult:
     return ToolResult(True, UNTRUSTED + "\n\n".join(chunks))
 
 
-def mail_draft_preview(args: dict) -> str:
+def mail_draft_preview(args: dict, ctx: ToolContext | None = None) -> str:
     to = str(args.get("to") or "?")
     subject = str(args.get("subject") or "")
     body = str(args.get("body") or "")
@@ -94,7 +94,7 @@ async def mail_draft(ctx: ToolContext, args: dict) -> ToolResult:
     return ToolResult(True, note)
 
 
-def mail_send_preview(args: dict) -> str:
+def mail_send_preview(args: dict, ctx: ToolContext | None = None) -> str:
     to = str(args.get("to") or "?")
     subject = str(args.get("subject") or "")
     body = str(args.get("body") or "")

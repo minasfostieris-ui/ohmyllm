@@ -165,6 +165,7 @@ class OhMyLLMApp(App[None]):
         self.turn_active = False
         self.turn_text = ""
         self.turn_thinking = ""
+        self.active_runtime: Any = None  # live AgentRuntime while a turn runs (/steer)
 
     def get_theme_variable_defaults(self) -> dict[str, str]:
         """Fallbacks for the frame variables app.tcss relies on. Every theme
@@ -311,7 +312,9 @@ class OhMyLLMApp(App[None]):
                 elif backend_name == "ollama":
                     import httpx
                     url = self.svc.config.ollama.host.rstrip("/")
-                    async with httpx.AsyncClient(timeout=30.0) as c:
+                    async with httpx.AsyncClient(
+                        timeout=30.0, trust_env=False, follow_redirects=False,
+                    ) as c:
                         await c.post(url + "/api/generate", json={"model": model, "keep_alive": 0})
                     self._notice(f"{model} unloaded — new settings apply on your next message")
             except Exception as exc:  # noqa: BLE001

@@ -57,6 +57,55 @@ def test_import_requires_skill_md(tmp_path):
         mgr.import_path(tmp_path / "empty")
 
 
+@pytest.mark.parametrize("name", [".", "..", "CON", ".hidden", "../escape"])
+def test_import_rejects_reserved_or_escaping_destinations(tmp_path, name):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: unsafe destination test\n---\n# Test\n"
+    )
+    manager = SkillManager(tmp_path / "skills")
+    with pytest.raises(ValueError, match="unsafe skill destination"):
+        manager.import_path(source)
+
+
+def test_import_rejects_symlinked_destination(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text(SKILL_A)
+    root = tmp_path / "skills"
+    root.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (root / "frontend").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="unsafe skill destination"):
+        SkillManager(root).import_path(source)
+    assert list(outside.iterdir()) == []
+
+
+def test_import_rejects_symlinked_child_source(tmp_path):
+    parent = tmp_path / "sources"
+    parent.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "SKILL.md").write_text(SKILL_A)
+    (parent / "linked-skill").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="source contains a symlink"):
+        SkillManager(tmp_path / "skills").import_path(parent)
+
+
+def test_skill_reads_are_bounded(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "SKILL.md").write_text(SKILL_A + "x" * 200_000)
+    manager = SkillManager(tmp_path / "skills")
+    manager.import_path(source)
+    text = manager.read("frontend", max_chars=100)
+    assert text is not None and len(text) < 140 and text.endswith("[truncated]")
+
+
 def test_tools_list_and_read(oml_env, svc):
     from ohmyllm.tools.spec import ToolContext
 

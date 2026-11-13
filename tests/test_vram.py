@@ -21,6 +21,19 @@ NVIDIA GeForce RTX 3080, 10240, 512
 """
 
 
+def test_hardware_probe_uses_sanitized_environment(monkeypatch):
+    captured: dict = {}
+
+    def fake_run(argv, **kwargs):
+        captured.update(kwargs)
+        return D.subprocess.CompletedProcess(argv, 0, "ok", "")
+
+    monkeypatch.setenv("VRAM_API_TOKEN", "must-not-leak")
+    monkeypatch.setattr(D.subprocess, "run", fake_run)
+    assert D._run(["/usr/bin/probe"]) == "ok"
+    assert "VRAM_API_TOKEN" not in captured["env"]
+
+
 def test_rocm_parse(monkeypatch):
     monkeypatch.setattr(D, "_which", lambda n: "/opt/rocm/bin/rocm-smi")
     monkeypatch.setattr(D, "_run", lambda argv, timeout=6.0: ROCM_FIXTURE)

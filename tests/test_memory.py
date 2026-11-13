@@ -1,4 +1,6 @@
 
+from pathlib import Path
+
 import pytest
 
 from ohmyllm.memory import SOUL_TEMPLATE, SoulError, SoulManager, SoulSecretError
@@ -102,19 +104,70 @@ def test_changelog_records(soul):
     assert "gamma" in rec["text"]
 
 
+def test_recent_reads_only_a_bounded_changelog_tail(soul, monkeypatch):
+    soul.changelog.write_bytes(b"discard\n" * 40_000 + b'{"action":"tail"}\n')
+    original_read_bytes = Path.read_bytes
+
+    def reject_unbounded_read(path):
+        if path == soul.changelog:
+            raise AssertionError("recent() read the complete changelog")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", reject_unbounded_read)
+    assert soul.recent(1) == [{"action": "tail"}]
+
+
 def test_backup_written_before_each_edit(soul):
     soul.ensure()
     soul.append("User", "x")
     assert len(soul.backups()) >= 1
 
 
-def test_edit_via_write_keeps_markdown(soul):
+def test_backup_ids_are_confined_and_symlinks_are_rejected(soul, tmp_path):
+    soul.ensure()
+    soul.append("User", "safe fact")
+    backup = soul.backups()[0]
+    outside = tmp_path / backup.name
+    outside.write_text("attacker controlled")
+
+    with pytest.raises(SoulError):
+        soul.revert(str(outside))
+    backup.unlink()
+    backup.symlink_to(outside)
+    assert soul.backups() == []
+    with pytest.raises(SoulError):
+        soul.revert(backup.name)
+
+
+def test_soul_state_is_private_and_zero_recent_is_empty(soul):
+    import os
+    import stat
+
+    soul.ensure()
+    soul.append("User", "private fact")
+    assert soul.recent(0) == []
+    if os.name == "posix":
+        assert stat.S_IMODE(soul.path.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(soul.path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(soul.changelog.stat().st_mode) == 0o600
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in soul.backups())
+
+
+def test_edit_via_write_is_backed_up_atomic_and_private(soul):
+    import os
+    import stat
+
     soul.ensure()
     soul.append("Preferences", "prefers tabs over spaces")
     text = soul.read()
     assert "- " in text and "## Preferences" in text
-    # malformed manual state tolerated
-    soul.path.write_text("nonsense without sections", encoding="utf-8")
+    before = len(soul.backups())
+
+    # Whole-file UI edits must use the manager's safe write path.
+    soul.write("nonsense without sections")
     assert soul.entries() == []
+    assert len(soul.backups()) == before + 1
+    if os.name == "posix":
+        assert stat.S_IMODE(soul.path.stat().st_mode) == 0o600
     with pytest.raises(SoulError):
         soul.revert("no-such-file.md")

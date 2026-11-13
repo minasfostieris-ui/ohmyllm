@@ -1,10 +1,38 @@
-# Patch notes
+# Changelog
 
-Format: newest first. Every push appends here.
+All notable changes to OhMyLLM are documented here. Format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
+[Semantic Versioning](https://semver.org/). Newest first.
 
-## Unreleased
+## [0.1.1] - 2026-11-13
+
+### Security
+- **Deny-floor glob normalization** (`safety/normalize.py`): deny globs are normalized and matched against the real command shape, including chains, subshells, `eval`, `env`, and `xargs` wrapper-flag unwrapping. Invalid deny rules fail closed instead of silently disabling the floor.
+- **Context-ref secret parity**: `@file`/`@folder`/`@diff`/`@staged`/`@git` references pass the same secret redaction as typed input, including `@git` paths.
+- **Git seam hardening**: sanitized environment and argv construction for git invocations, with bounded output capture.
+- **Bridge hardening**: per-route request body caps, approval race fix, and an additive `stale` flag on `/api/state` (existing fields unchanged).
+- **CLI `--mode` grant invalidation**: switching modes invalidates stale approval grants.
+- **Corrupt-trash restore safety**: restoring a session with corrupt trash no longer destroys data.
 
 ### Added
+- `safety.deny` glob list — a hard deny floor matched before allowlists and SAFE_COMMANDS.
+- Context references: `@file`, `@folder`, `@diff`, `@staged`, `@git`.
+- FTS5 session search — CLI and API.
+- `oml state` and `/api/state` — agent machine state (idle/working/blocked/done/error) with staleness detection.
+- `/steer` — bounded interjection queue for steering a running turn.
+- `skills_read` references — skills load full instructions on demand.
+
+### Changed
+- **GUI rewrite**: OpenCode×Qoder dark design, bottom-middle composer, single approval cards, no empty agent bubbles; headless verification via `scripts/gui_headless_check.py`.
+- Docs: new `docs/USE-CASES.md`; `docs/PERMISSIONS.md` updated for the deny floor and mode grants.
+
+### Verified
+- Integration gate: 862 passed / 0 failed under guarded isolation (`scripts/verify_isolated.py`); 5 subprocess-dependent tests are standing exclusions of that harness, not skipped failures.
+- GUI headless check: 39/39. mypy and ruff clean; TUI smoke green at 80x24, 100x30, 140x46.
+
+### Earlier in this cycle
+
+#### Added
 - **Tool calls live in the conversation now — and the dock is hideable.** Tool activity used to exist only in the fixed right panel: gone after the turn, impossible to dismiss, and the transcript showed a final answer with no record of what was actually run. Every `tool_plan`/`tool_result` now writes a chronological line into the chat (⚙ plan · ✓/✗ result · risk · seconds · denied/blocked), the file lines stay, and **Ctrl+J** hides or shows the right dock (persisted in Settings → `ui.show_tool_panels`).
 - **The answer no longer strands mid-screen.** In multi-step turns the answer widget mounted at the FIRST content token, so later thinking sections and tool lines piled up UNDER it — the "two thinking spaces at the bottom" that made turns read backwards. Every section that arrives after the answer started streaming now mounts before it: thinking → tools → answer, chronologically, and the answer always closes the turn.
 - **`oml mail` is the whole instruction** — type it and the terminal says everything: connected → one green line saying so; not connected → a three-step panel (type address · browser opens, click Generate · paste the code) and setup starts itself right there. No subcommand to remember, no docs to read; Ctrl+C or a closed stdin backs out with a clean line, never a traceback. Every pointer in the app (mail tools, policy reasons, help screens, GUI, README) now says `oml mail`.
@@ -22,7 +50,7 @@ Format: newest first. Every push appends here.
 - **`/agentloop [on|off]`** — relentless verified-completion mode with a one-shot completion audit per turn; now also available in plain mode.
 - **Agentloop VERDICT GATE + ECHO BREAKER** — field-tested three times on LM Studio `gemma-4-e4b-uncensored` (Ember & Oak website task): the loop wrote all three files but stopped early and, post-audit, degenerated into a 30+ minute echo loop regurgitating its evidence ledger — every step one copy starting at a random offset of the previous, truncated by max_tokens, so neither identical prefixes nor within-copy duplication catch it. Now: a looped turn may only finish when its answer cites a tool it actually ran this turn (uncited "all done" answers bounce back up to twice); the breaker flags cross-step OVERLAP (this reply's opening already inside the previous reply), exact repeats, and self-duplicated replies — two detections end the turn, keeping the ledger as the final answer; audit/gate/step-limit prompts now demand the ledger ONCE and the forced final pass is hard-capped at 1200 tokens so a wedged model cannot stream forever. TUI and plain mode surface gate/break as status lines. Rotating-, growing- and identical-ledger regressions are covered by tests replaying the exact field shapes.
 
-### Fixed
+#### Fixed
 - **`/mode` no longer autocorrects to `/model`.** The slash menu highlighted the first declaration-order match, so typing the complete command `/mode` and pressing Enter accepted the highlighted sibling (`/model`, `/models` in the GUI) instead of running what you typed. Exact matches now sort first in both the TUI menu and the GUI hint list, and Enter on a fully-typed command sends it outright — completion only ever fills prefixes.
 - **`oml mail setup` teaches before it asks.** The app-password prompt now prints the exact generation path for your provider (Gmail/Outlook/Yahoo/Fastmail/iCloud, with the real settings URLs) BEFORE waiting for input — the old flow explained everything only after you failed.
 - **Settings no longer offers what the safety story forbids.** The "Auto-start server" switches are gone from the TUI Ollama/LM Studio tabs and the GUI settings — oml never spawns your local servers unless you edit config.toml yourself; the toggles contradicted the banner that says exactly that. Spawning stays available only where it is explicit: `oml backend <name> --start`, `oml run`, the wizard.
@@ -35,6 +63,6 @@ Format: newest first. Every push appends here.
 - Parakeet market entry switched to ggml-org `ggml-*.bin` (the installed whisper-cpp CLI cannot read handy-computer GGUFs); family-aware STT file matching.
 - TUI input: long single-line text no longer replaced by a horizontal scrollbar; send button centered; market download progress docked and cancellable with esc.
 
-## v0.1.0
+## [0.1.0]
 
 Local-first agentic AI platform: TUI + GUI + bridge, permission engine, optional Clef-Flash danger guard.

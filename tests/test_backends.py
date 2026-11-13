@@ -5,7 +5,8 @@ import httpx
 import pytest
 
 from ohmyllm.backends import LMStudioBackend, OllamaBackend, make_backend
-from ohmyllm.config import Config
+from ohmyllm.backends.base import BackendError
+from ohmyllm.config import BackendName, Config
 
 
 def ollama_transport(routes: dict) -> httpx.MockTransport:
@@ -28,6 +29,34 @@ TAGS = {"models": [
     {"name": "tiny:1b", "model": "tiny:1b", "size": 900_000_000,
      "details": {"quantization_level": "Q4_0", "parameter_size": "1B"}},
 ]}
+
+
+def test_release_model_disables_proxy_and_redirect_inheritance(svc, monkeypatch):
+    import asyncio
+
+    captured: dict = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return None
+
+    svc.config.default_backend = BackendName.OLLAMA
+    monkeypatch.setattr(svc, "current_model", lambda: "model")
+    monkeypatch.setattr(svc, "backend", lambda _name=None: OllamaBackend(svc.config))
+    monkeypatch.setattr(httpx, "AsyncClient", FakeClient)
+
+    asyncio.run(svc.release_model())
+    assert captured["trust_env"] is False
+    assert captured["follow_redirects"] is False
 
 
 def test_ollama_health_and_tags():
@@ -103,11 +132,11 @@ def test_ollama_pull_progress():
     assert seen[-1][0] == "success"
 
 
-def test_default_config_never_autospawns_servers():
+def test_default_config_never_autospawns_servers(monkeypatch):
     """Starting oml must not launch LM Studio/Ollama behind the user's back:
     both auto_start flags default false, the probe helper agrees, and
     ensure_running on a dead-but-installed Ollama declines to spawn."""
-    import shutil
+    from ohmyllm.backends import ollama
 
     cfg = Config()
     assert cfg.ollama.auto_start is False
@@ -119,13 +148,11 @@ def test_default_config_never_autospawns_servers():
     assert svc.may_autostart("lmstudio") is False
 
     calls: list = []
-    real_popen = asyncio.create_subprocess_exec
 
     async def spy(*args, **kwargs):  # noqa: ANN002, ANN003
         calls.append(args)
         raise AssertionError("subprocess launched despite auto_start=false")
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(shutil, "which", lambda x: "/usr/bin/ollama")
+    monkeypatch.setattr(ollama, "trusted_executable", lambda *a, **k: "/usr/bin/ollama")
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spy)
     be = OllamaBackend(cfg, transport=ollama_transport({
         "GET /api/version": httpx.Response(500),
@@ -134,8 +161,6 @@ def test_default_config_never_autospawns_servers():
     assert res.ok is False
     assert "Auto-start is disabled" in res.message
     assert calls == []
-    monkeypatch.undo()
-    assert real_popen is asyncio.create_subprocess_exec
 
 
 def test_ollama_ensure_running_when_live():
@@ -150,7 +175,7 @@ def test_ollama_ensure_running_when_live():
 
 def test_ollama_missing_binary_instructions(monkeypatch):
     cfg = Config()
-    monkeypatch.setattr("ohmyllm.backends.ollama.shutil.which", lambda x: None)
+    monkeypatch.setattr("ohmyllm.backends.ollama.trusted_executable", lambda value: None)
     be = OllamaBackend(cfg, transport=ollama_transport({"GET /api/version": httpx.Response(500)}))
 
     res = asyncio.run(be.ensure_running())
@@ -449,11 +474,14 @@ def test_lmstudio_loads_with_gpu_offload_flags(monkeypatch):
     import subprocess
 
     seen: list[list[str]] = []
+    child_env: dict = {}
 
-    def fake_run(cmd, *a, **k):
+    def fake_run(cmd, *args, **kwargs):
         seen.append([str(c) for c in cmd])
+        child_env.update(kwargs.get("env") or {})
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
+    monkeypatch.setenv("OMLLM_BACKEND_TOKEN", "must-not-leak")
     monkeypatch.setattr(subprocess, "run", fake_run)
     be = LMStudioBackend(Config(), transport=httpx.MockTransport(lambda r: httpx.Response(404)))
     monkeypatch.setattr(be, "lms_cli", lambda: "/usr/bin/lms")
@@ -468,6 +496,42 @@ def test_lmstudio_loads_with_gpu_offload_flags(monkeypatch):
     args = seen[0]
     assert "--gpu" in args and "max" in args, f"missing full GPU offload: {args}"
     assert "--context-length" in args, f"missing context override: {args}"
+    assert "OMLLM_BACKEND_TOKEN" not in child_env
+
+
+def test_remote_backends_require_explicit_opt_in(oml_env, svc):
+    svc.config.ollama.host = "http://models.example.test:11434"
+    with pytest.raises(ValueError, match="allow_remote_backends"):
+        svc.backend("ollama")
+    svc.config.safety.allow_remote_backends = True
+    assert isinstance(svc.backend("ollama"), OllamaBackend)
+
+
+def test_remote_client_creation_rechecks_revoked_opt_in():
+    config = Config()
+    config.safety.allow_remote_backends = True
+    backend = make_backend("ollama", config)
+    config.safety.allow_remote_backends = False
+
+    with pytest.raises(BackendError, match="allow_remote_backends"):
+        backend._client("http://203.0.113.1:11434")
+
+
+def test_backend_clients_ignore_proxies_and_refuse_redirect_overrides(monkeypatch):
+    captured = {}
+    sentinel = object()
+
+    def fake_client(*args, **kwargs):
+        captured.update(kwargs)
+        return sentinel
+
+    monkeypatch.setattr(httpx, "AsyncClient", fake_client)
+    backend = make_backend("mock", Config())
+    assert backend._client(
+        "http://127.0.0.1:1", trust_env=True, follow_redirects=True,
+    ) is sentinel
+    assert captured["trust_env"] is False
+    assert captured["follow_redirects"] is False
 
 
 def test_ollama_unloads_previous_model_on_switch():

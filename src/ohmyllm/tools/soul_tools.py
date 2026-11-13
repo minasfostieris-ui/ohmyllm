@@ -28,10 +28,13 @@ def soul_append(ctx: ToolContext, args: dict) -> ToolResult:
     if ctx.soul is None:
         return ToolResult(False, "", "memory is unavailable")
     try:
+        # Model tool input can never override credential detection.
+        ctx.check_cancelled()
         res = ctx.soul.append(
             str(args.get("section") or "Important Notes"),
             str(args.get("text") or ""),
-            force=bool(args.get("force")),
+            force=False,
+            commit_check=ctx.check_cancelled,
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the model as tool error
         return ToolResult(False, "", str(exc))
@@ -43,10 +46,13 @@ def soul_upsert(ctx: ToolContext, args: dict) -> ToolResult:
     if ctx.soul is None:
         return ToolResult(False, "", "memory is unavailable")
     try:
+        # Explicit user interfaces may use SoulManager directly; the model may not force.
+        ctx.check_cancelled()
         res = ctx.soul.upsert(
             str(args.get("section") or "Important Notes"),
             str(args.get("text") or ""),
-            force=bool(args.get("force")),
+            force=False,
+            commit_check=ctx.check_cancelled,
         )
     except Exception as exc:  # noqa: BLE001
         return ToolResult(False, "", str(exc))
@@ -59,10 +65,12 @@ def soul_upsert(ctx: ToolContext, args: dict) -> ToolResult:
 def soul_forget(ctx: ToolContext, args: dict) -> ToolResult:
     if ctx.soul is None:
         return ToolResult(False, "", "memory is unavailable")
+    ctx.check_cancelled()
     res = ctx.soul.forget(
         str(args.get("query") or ""),
         section=str(args["section"]) if args.get("section") else None,
         index=int(args["index"]) if args.get("index") is not None else None,
+        commit_check=ctx.check_cancelled,
     )
     if res["action"] == "not_found":
         return ToolResult(False, "", f"no memory matched {res['query']!r} — use soul_search first")

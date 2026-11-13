@@ -483,7 +483,8 @@ async def test_gui_slash_launches_bridge(oml_env, svc, monkeypatch):
         calls["args"] = list(args)
         if "--port-file" in args:
             pf = pathlib.Path(args[args.index("--port-file") + 1])
-            pf.write_text("54321 tok123")
+            pf.write_text('{"version":1,"port":54321,"token":"0123456789abcdef0123456789abcdef","pid":999999}')
+            pf.chmod(0o600)
 
         class P:
             pid = 999999
@@ -510,10 +511,8 @@ async def test_gui_slash_launches_bridge(oml_env, svc, monkeypatch):
         args = calls.get("args", [])
         bridge = "ohmyllm.bridge" in args
         assert bridge, f"web bridge never launched: {args}"
-        # the TUI surfaces the URL via ~/.ohmyllm/gui-web.url (notify + file)
-        import ohmyllm.paths as P
-        got = (P.global_home() / "gui-web.url")
-        assert got.is_file() and got.read_text().startswith("http://127.0.0.1:54321/?t="), "url file missing"
+        assert calls["url"] == "http://127.0.0.1:54321/#token=0123456789abcdef0123456789abcdef"
+        assert not (oml_env["home"] / "gui-web.url").exists(), "token-bearing URL was persisted"
 
 
 @pytest.mark.asyncio()

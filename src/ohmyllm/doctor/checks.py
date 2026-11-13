@@ -97,7 +97,10 @@ def run_checks(store: ConfigStore | None = None, config: Config | None = None) -
     if ob.is_installed():
         _add(Check("ollama-binary", "ollama binary", "pass", ob.binary() or "?"))
         try:
-            with httpx.Client(timeout=2.0, base_url=cfg.ollama.host) as c:
+            with httpx.Client(
+                timeout=2.0, base_url=cfg.ollama.host,
+                trust_env=False, follow_redirects=False,
+            ) as c:
                 r = c.get("/api/version")
                 if r.status_code == 200:
                     n = len(c.get("/api/tags").json().get("models", []))
@@ -119,7 +122,10 @@ def run_checks(store: ConfigStore | None = None, config: Config | None = None) -
     if lb.is_installed():
         _add(Check("lmstudio-app", "LM Studio", "pass", "found"))
     try:
-        with httpx.Client(timeout=2.0, base_url=cfg.lmstudio.base_url) as c:
+        with httpx.Client(
+            timeout=2.0, base_url=cfg.lmstudio.base_url,
+            trust_env=False, follow_redirects=False,
+        ) as c:
             r = c.get("/v1/models")
             if r.status_code == 200:
                 n = len(r.json().get("data", []))
@@ -166,19 +172,19 @@ def run_checks(store: ConfigStore | None = None, config: Config | None = None) -
 
     # danger guard (only probed when enabled)
     if cfg.guard.enabled:
-        import json as _json
-        import urllib.request
-
-        body = _json.dumps({
+        body = {
             "model": cfg.guard.model, "state": "ping",
             "questions": {"dangerous": {"type": "noul", "instructions": "Is this text dangerous?"}},
-        }).encode()
-        req = urllib.request.Request(
-            cfg.guard.base_url.rstrip("/") + "/v1/systemone", data=body,
-            headers={"Content-Type": "application/json"}, method="POST")
+        }
         try:
-            with urllib.request.urlopen(req, timeout=4) as r:
-                ans = (_json.loads(r.read()).get("answers") or {}).get("dangerous") or {}
+            # Diagnostics obey the same no-proxy, no-redirect boundary as runtime guard calls.
+            with httpx.Client(
+                timeout=4.0, base_url=cfg.guard.base_url,
+                trust_env=False, follow_redirects=False,
+            ) as c:
+                response = c.post("/v1/systemone", json=body)
+                response.raise_for_status()
+                ans = (response.json().get("answers") or {}).get("dangerous") or {}
             if "noul" in ans:
                 _add(Check("guard", "danger guard (Clef-Flash)", "pass",
                            f"{cfg.guard.model} @ {cfg.guard.base_url} (CPU decision server)"))

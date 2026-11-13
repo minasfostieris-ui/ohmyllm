@@ -6,13 +6,17 @@ never change it. This module only decides; execution lives in tools/runtime.
 
 from __future__ import annotations
 
+import fnmatch
 import re
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
+from .. import paths
 from ..config.models import Config, PermissionMode
+from ..secureio import UnsafePathError, file_identity, is_environment_file, is_within, resolve_path
 from .modes import SAFE_COMMANDS, SUBCOMMAND_ALLOWLIST
+from .normalize import command_variants
 from .risk import RiskScorer, _basename, level_for
 
 
@@ -75,6 +79,49 @@ def classify(tool: str) -> ToolClass:
     return TOOL_CLASSES.get(tool, ToolClass.OTHER)
 
 
+# Shared sensitive-path predicate: PolicyEngine.is_sensitive AND the @-reference
+# expander (agents/context_refs) must agree on what counts as secret material.
+_SENSITIVE_RX = (
+    r"[/\\]\.ssh([/\\]|$)", r"\.gnupg([/\\]|$)", r"[/\\]\.aws([/\\]|$)",
+    r"[/\\]\.azure([/\\]|$)", r"[/\\]\.gcloud([/\\]|$)", r"[/\\]\.config[/\\]gh([/\\]|$)",
+    r"keyring", r"keychain", r"\.netrc($|[^-\w])", r"id_rsa", r"\.pem($|\b)", r"\.key($|\b)",
+    r"\.git-credentials($|[^-\w])",
+    r"[/\\]\.(bash|zsh|sh|python)_history($|[^-\w])",
+    r"\.mozilla([/\\]|$)", r"google-chrome([/\\]|$)", r"[/\\]chromium([/\\]|$)",
+    r"firefox([/\\]|$)", r"microsoft[/\\]credentials", r"windows[/\\]system32",
+)
+
+
+def is_sensitive_path(
+    raw: str | Path,
+    *,
+    workspace: Path,
+    allow_sensitive_paths: tuple[str, ...] | list[str] = (),
+) -> bool:
+    """Config-free sensitive predicate shared by policy and context refs.
+
+    Callers without a config (e.g. @-reference expansion) pass no allowlist,
+    which is fail-closed: nothing is re-allowed implicitly.
+    """
+    workspace = Path(workspace).expanduser().resolve(strict=False)
+    p = resolve_path(raw, base=workspace, reject_symlinks=False)
+    lowered = str(p).lower()
+    if is_within(p, paths.global_home()) or is_within(p, workspace / ".ohmyllm"):
+        return True
+    for configured in allow_sensitive_paths:
+        if not configured:
+            continue
+        try:
+            boundary = resolve_path(configured, base=workspace, reject_symlinks=False)
+        except (OSError, ValueError):
+            continue
+        if is_within(p, boundary):
+            return False
+    if is_environment_file(p):
+        return True
+    return any(re.search(r, lowered) for r in _SENSITIVE_RX)
+
+
 @dataclass
 class PolicyEngine:
     """Workspace-confined sandbox + mode gates + risk scoring."""
@@ -92,11 +139,7 @@ class PolicyEngine:
 
     # ------------------------------------------------------------------ paths
     def within_workspace(self, raw: str | Path) -> bool:
-        p = self._abs(raw)
-        try:
-            return p == self.workspace or p.is_relative_to(self.workspace)
-        except (ValueError, OSError):
-            return False
+        return is_within(self._abs(raw), self.workspace)
 
     def is_system(self, raw: str | Path) -> bool:
         """OS-owned locations: never writable by the agent, in any mode."""
@@ -111,25 +154,28 @@ class PolicyEngine:
         return any(re.search(r, p) for r in rx)
 
     def is_sensitive(self, raw: str | Path) -> bool:
-        p = self._abs(raw)
-        lowered = str(p).lower()
-        if any(g and lowered.startswith(g.lower()) for g in self.config.safety.allow_sensitive_paths):
-            return False  # explicitly re-allowed
-        rx = (
-            r"[/\\]\.ssh([/\\]|$)", r"\.gnupg([/\\]|$)", r"[/\\]\.aws([/\\]|$)",
-            r"[/\\]\.azure([/\\]|$)", r"[/\\]\.gcloud([/\\]|$)", r"[/\\]\.config[/\\]gh([/\\]|$)",
-            r"keyring", r"keychain", r"\.netrc($|[^-\w])", r"id_rsa", r"\.pem($|\b)", r"\.key($|\b)",
-            r"[/\\]\.(bash|zsh|sh|python)_history($|[^-\w])",
-            r"\.mozilla([/\\]|$)", r"google-chrome([/\\]|$)", r"[/\\]chromium([/\\]|$)",
-            r"firefox([/\\]|$)", r"microsoft[/\\]credentials", r"windows[/\\]system32",
+        return is_sensitive_path(
+            raw, workspace=self.workspace,
+            allow_sensitive_paths=self.config.safety.allow_sensitive_paths,
         )
-        return any(re.search(r, lowered) for r in rx)
 
     def _abs(self, raw: str | Path) -> Path:
-        p = Path(str(raw)).expanduser()
-        if not p.is_absolute():
-            p = self.workspace / p
-        return p.resolve(strict=False)
+        return resolve_path(raw, base=self.workspace, reject_symlinks=False)
+
+    def prepare_args(self, tool: str, args: dict) -> dict:
+        """Canonicalize path identities before policy, preview, and approval."""
+        prepared = dict(args or {})
+        path_key = next((k for k in ("path", "file", "directory", "dir") if prepared.get(k)), None)
+        try:
+            if path_key and classify(tool) in (ToolClass.READ, ToolClass.WRITE):
+                prepared[path_key] = str(resolve_path(prepared[path_key], base=self.workspace))
+                if classify(tool) is ToolClass.WRITE:
+                    prepared["__target_identity"] = file_identity(Path(prepared[path_key]))
+            if classify(tool) is ToolClass.SHELL:
+                prepared["cwd"] = str(resolve_path(prepared.get("cwd") or self.workspace, base=self.workspace))
+        except (UnsafePathError, OSError, ValueError) as exc:
+            prepared["__path_error"] = str(exc)
+        return prepared
 
     # ------------------------------------------------------------- evaluation
     def evaluate(
@@ -139,8 +185,45 @@ class PolicyEngine:
         *,
         user_requested_memory: bool = False,
     ) -> Decision:
+        if tool == "run_command":
+            floor = self._deny_floor(args or {})
+            if floor is not None:
+                return floor
         d = self._evaluate(tool, args, user_requested_memory=user_requested_memory)
         return self._apply_op_mode_and_yolo(tool, args or {}, d)
+
+    def _deny_floor(self, args: dict) -> Decision | None:
+        """``safety.deny`` globs are a hard floor: evaluated BEFORE the
+        SAFE_COMMANDS allowlist and BEFORE any yolo/full_access shortcut, in
+        every permission mode. Matching runs over deobfuscated command
+        variants (chaining, quotes, escapes, $()/backticks, sh -c, xargs).
+        An invalid rule entry (non-string or empty) fails closed and denies
+        run_command entirely. The matched rule is named in the decision
+        reason, which flows into the audit log."""
+        rules = self.config.safety.deny
+        if not rules:
+            return None
+        for rule in rules:
+            if not isinstance(rule, str) or not rule.strip():
+                return Decision(
+                    False, False, 10,
+                    ("safety.deny contains an invalid rule (non-string or empty) — "
+                     "run_command denied entirely (fail-closed)",),
+                )
+        command = args.get("command")
+        if not isinstance(command, str) or not command.strip():
+            return None
+        variants = command_variants(command)
+        for rule in rules:
+            needle = rule.strip()
+            lowered = needle.casefold()
+            for variant in variants:
+                if fnmatch.fnmatchcase(variant, needle) or fnmatch.fnmatchcase(variant.casefold(), lowered):
+                    return Decision(
+                        False, False, 10,
+                        (f"safety.deny rule {needle!r} matched — denied in every mode",),
+                    )
+        return None
 
     def _apply_op_mode_and_yolo(self, tool: str, args: dict, d: Decision) -> Decision:
         """Operation modes (chat/plan) strip mutation tools entirely; YOLO
@@ -155,7 +238,8 @@ class PolicyEngine:
                 hint = "/build" if omode == "plan" else "/build or /plan"
                 return Decision(False, False, d.risk,
                                 (*d.reasons, f"{tool} is disabled in {omode} mode — switch with {hint}"))
-        if d.allowed and d.requires_approval and getattr(self.config.agent, "yolo", False):
+        if (d.allowed and d.requires_approval and getattr(self.config.agent, "yolo", False)
+                and classify(tool) not in (ToolClass.SHELL, ToolClass.NET, ToolClass.MAIL)):
             return Decision(True, False, d.risk, (*d.reasons, "YOLO: one-prompt approval bypass"))
         return d
 
@@ -190,6 +274,8 @@ class PolicyEngine:
         cls = classify(tool)
         args = args or {}
         reasons: list[str] = [f"mode={mode.value}"]
+        if args.get("__path_error"):
+            return Decision(False, False, 8, (*reasons, str(args["__path_error"])))
         risk = 0
 
         if cls is ToolClass.OTHER:
@@ -243,7 +329,7 @@ class PolicyEngine:
                 if self.is_system(target) and not self._explicitly_allows(target):
                     return Decision(False, False, max(risk, 9), (*reasons, f"{target!r} is a system location"))
                 if not self.within_workspace(target):
-                    return Decision(True, True, max(risk, 6), (*reasons, "write outside workspace"))
+                    return Decision(False, False, max(risk, 6), (*reasons, "write outside workspace"))
                 needs = self.config.safety.workspace_write_requires_confirmation
                 return Decision(True, needs, risk, (*reasons, "workspace write"))
             if mode is PermissionMode.DANGEROUS:
@@ -289,13 +375,13 @@ class PolicyEngine:
                     return Decision(True, True, max(risk, 6), (*reasons, "output redirect outside the workspace"))
                 if not self.within_workspace(cwd):
                     return Decision(False, False, risk, (*reasons, "cwd outside workspace"))
-                return Decision(True, crisk.score >= 4, risk, tuple(reasons))
+                return Decision(True, True, risk, (*reasons, "fresh one-shot shell approval required"))
             if mode is PermissionMode.DANGEROUS:
                 if crisk.catastrophic:
                     return Decision(True, True, risk, (*reasons, "catastrophic: explicit approval required"))
                 if not self.within_workspace(cwd):
                     return Decision(True, True, risk, (*reasons, "cwd outside workspace"))
-                return Decision(True, crisk.score >= 3, risk, tuple(reasons))
+                return Decision(True, True, risk, (*reasons, "fresh one-shot shell approval required"))
             # full_access
             if crisk.catastrophic and not self.config.safety.catastrophic_override:
                 return Decision(False, False, risk, (*reasons, "catastrophic command blocked (settings override)"))
@@ -303,20 +389,15 @@ class PolicyEngine:
 
         if cls is ToolClass.NET:
             risk = 6
-            enabled = self.config.safety.http_fetch_enabled
+            if not self.config.safety.http_fetch_enabled:
+                return Decision(False, False, risk, (*reasons, "http_fetch is disabled"))
+            if not self.config.safety.http_fetch_allowlist:
+                return Decision(False, False, risk, (*reasons, "http_fetch requires an explicit host allowlist"))
             if mode in (PermissionMode.STRICT, PermissionMode.SAFE):
                 return Decision(False, False, risk, (*reasons, f"{mode.value} mode forbids network"))
-            if mode is PermissionMode.SANDBOXED:
-                if not enabled:
-                    return Decision(False, False, risk, (*reasons, "network disabled by default in sandboxed mode"))
-                return Decision(True, True, risk, (*reasons, "http_fetch enabled: approval required"))
-            if mode is PermissionMode.DANGEROUS:
-                return Decision(True, True, risk, (*reasons, "network access needs explicit approval"))
-            # full_access
-            if not enabled and not self.config.safety.catastrophic_override:
-                # full access still honors the http_fetch kill switch
-                return Decision(True, True, risk, (*reasons, "http_fetch disabled: approval required"))
-            return Decision(True, False, risk, tuple(reasons))
+            if mode is PermissionMode.FULL_ACCESS:
+                return Decision(True, False, risk, tuple(reasons))
+            return Decision(True, True, risk, (*reasons, "network access needs explicit approval"))
         if cls is ToolClass.MAIL:
             return self._evaluate_mail(mode, tool, args, reasons)
 
@@ -354,8 +435,17 @@ class PolicyEngine:
 
     # --------------------------------------------------------------- helpers
     def _explicitly_allows(self, target: str | Path) -> bool:
-        low = str(self._abs(target)).lower()
-        return any(g and low.startswith(g.lower()) for g in self.config.safety.allow_sensitive_paths)
+        path = self._abs(target)
+        for configured in self.config.safety.allow_sensitive_paths:
+            if not configured:
+                continue
+            try:
+                boundary = resolve_path(configured, base=self.workspace, reject_symlinks=False)
+            except (OSError, ValueError):
+                continue
+            if is_within(path, boundary):
+                return True
+        return False
 
     def _redirect_outside(self, cmd: str) -> bool:
         for m in re.finditer(r">>?\s*['\"]?([^\s'\"|&;]+)", cmd):

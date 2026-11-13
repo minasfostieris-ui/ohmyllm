@@ -20,6 +20,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from .secureio import sanitized_environment
+
 MARKER = "# >>> ohmyllm PATH >>>"
 END_MARKER = "# <<< ohmyllm PATH <<<"
 NAMES = ("ohmyllm", "omllm", "oml", "OMLLM", "OML")
@@ -162,11 +164,18 @@ def append_to_profile(directories: list[Path] | None = None) -> list[str]:
     elif _is_windows():
         for d in dirs:
             try:
+                # Pass the directory as data, never interpolate it into PowerShell code.
+                script = (
+                    "$d=$env:OMLLM_ADD_PATH; "
+                    "$p=[Environment]::GetEnvironmentVariable('Path','User'); "
+                    "if (($p -split ';') -notcontains $d) "
+                    "{ [Environment]::SetEnvironmentVariable('Path', $d + ';' + $p, 'User') }"
+                )
                 subprocess.run(
-                    ["powershell", "-NoProfile", "-Command",
-                     f"$p=[Environment]::GetEnvironmentVariable('Path','User'); "
-                     f"if ($p -notlike '*{d}*') [Environment]::SetEnvironmentVariable('Path', '{d};' + $p, 'User')"],
-                    check=False, timeout=20,
+                    ["powershell", "-NoProfile", "-Command", script],
+                    check=False,
+                    timeout=20,
+                    env=sanitized_environment({"OMLLM_ADD_PATH": d}),
                 )
                 written.append(f"user PATH += {d}")
             except OSError:

@@ -12,7 +12,6 @@ import json
 import os
 import platform
 import re
-import shutil
 import subprocess
 import time
 from collections.abc import AsyncIterator
@@ -22,6 +21,7 @@ from typing import Any
 import httpx
 
 from ..config.models import BackendName, GenerationSettings
+from ..secureio import sanitized_environment, trusted_executable, url_is_loopback
 from .base import BackendError, BaseBackend, ChatChunk, ModelInfo, StartResult
 
 SERVER_INSTRUCTIONS = [
@@ -62,7 +62,7 @@ class LMStudioBackend(BaseBackend):
                 if p.exists():
                     return p
         else:
-            which = shutil.which("lm-studio") or shutil.which("lmstudio")
+            which = trusted_executable("lm-studio") or trusted_executable("lmstudio")
             if which:
                 return Path(which)
             for home in (Path.home() / "Applications", Path.home()):
@@ -72,11 +72,11 @@ class LMStudioBackend(BaseBackend):
         return None
 
     def lms_cli(self) -> str | None:
-        found = shutil.which("lms")
+        found = trusted_executable("lms")
         if found:
             return found
         cand = Path.home() / ".lmstudio" / "bin" / ("lms.exe" if os.name == "nt" else "lms")
-        return str(cand) if cand.exists() else None
+        return trusted_executable(str(cand))
 
     def is_installed(self) -> bool:
         return self._app_candidate() is not None or self.lms_cli() is not None
@@ -108,6 +108,12 @@ class LMStudioBackend(BaseBackend):
         app = self._app_candidate()
         if not self.config.lmstudio.auto_start:
             return StartResult(ok=False, message="Auto-start disabled in settings.", instructions=SERVER_INSTRUCTIONS)
+        if not url_is_loopback(self.config.lmstudio.base_url):
+            return StartResult(
+                ok=False,
+                message="Automatic LM Studio startup is restricted to a loopback endpoint.",
+                instructions=["Start the remote server explicitly and enable remote backends in settings."],
+            )
         if not cli and not app:
             return StartResult(
                 ok=False,
@@ -115,7 +121,12 @@ class LMStudioBackend(BaseBackend):
                 instructions=["Install it from https://lmstudio.ai (macOS/Windows/Linux)", *SERVER_INSTRUCTIONS],
             )
         launched = False
-        popen_kw: dict[str, Any] = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "stdin": subprocess.DEVNULL}
+        popen_kw: dict[str, Any] = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "stdin": subprocess.DEVNULL,
+            "env": sanitized_environment(),
+        }
         if os.name == "posix":
             popen_kw["start_new_session"] = True
         else:
@@ -124,7 +135,10 @@ class LMStudioBackend(BaseBackend):
             if cli:
                 subprocess.Popen([cli, "server", "start"], **popen_kw)  # noqa: S603
             elif platform.system() == "Darwin":
-                subprocess.Popen(["open", str(app)], **popen_kw)  # noqa: S603
+                opener = trusted_executable("open")
+                if opener is None:
+                    raise OSError("trusted 'open' executable not found")
+                subprocess.Popen([opener, str(app)], **popen_kw)  # noqa: S603
             else:
                 subprocess.Popen([str(app)], **popen_kw)  # noqa: S603
             launched = True
@@ -224,7 +238,7 @@ class LMStudioBackend(BaseBackend):
         try:
             proc = await asyncio.to_thread(
                 subprocess.run, [cli, "ls", "--json"],
-                capture_output=True, text=True, timeout=6,
+                capture_output=True, text=True, timeout=6, env=sanitized_environment(),
             )
             rows = _json.loads(proc.stdout or "[]")
         except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -293,7 +307,7 @@ class LMStudioBackend(BaseBackend):
             try:
                 proc = await asyncio.to_thread(
                     subprocess.run, [cli, "unload", model],
-                    capture_output=True, text=True, timeout=60,
+                    capture_output=True, text=True, timeout=60, env=sanitized_environment(),
                 )
                 return proc.returncode == 0
             except (OSError, subprocess.SubprocessError):
@@ -333,6 +347,7 @@ class LMStudioBackend(BaseBackend):
                 args += ["--context-length", str(gen.num_ctx)]
             proc = await asyncio.to_thread(
                 subprocess.run, args, capture_output=True, text=True, timeout=600,
+                env=sanitized_environment(),
             )
             if proc.returncode == 0:
                 loaded_via_cli = True
@@ -368,7 +383,7 @@ class LMStudioBackend(BaseBackend):
                 import subprocess
                 proc = await asyncio.to_thread(
                     subprocess.run, [cli, "load", model],
-                    capture_output=True, text=True, timeout=600,
+                    capture_output=True, text=True, timeout=600, env=sanitized_environment(),
                 )
                 if proc.returncode != 0:
                     raise BackendError(

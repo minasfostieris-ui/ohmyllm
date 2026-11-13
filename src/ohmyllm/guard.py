@@ -69,7 +69,9 @@ async def assess(cfg: GuardSettings, name: str, args: dict[str, Any]) -> GuardVe
         },
     }
     try:
-        async with httpx.AsyncClient(timeout=cfg.timeout_s) as c:
+        async with httpx.AsyncClient(
+            timeout=cfg.timeout_s, trust_env=False, follow_redirects=False,
+        ) as c:
             resp = await c.post(cfg.base_url.rstrip("/") + "/v1/systemone", json=body)
             if resp.status_code != 200:
                 return GuardVerdict(False, error=f"HTTP {resp.status_code}: {resp.text[:120]}")

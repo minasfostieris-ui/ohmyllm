@@ -1,9 +1,13 @@
+import pytest
+from pydantic import ValidationError
+
 from ohmyllm.config import (
     BackendName,
     Config,
     ConfigStore,
     GenerationSettings,
     PermissionMode,
+    deep_merge,
     tomlio,
 )
 
@@ -45,13 +49,17 @@ def test_toml_roundtrip(oml_env):
     assert other.temperature == 0.21
 
 
-def test_corrupt_config_degrades_with_problems(oml_env):
+def test_corrupt_config_fails_closed_without_overwriting_evidence(oml_env):
     p = oml_env["home"] / "config.toml"
-    p.write_text("this is not [ toml at all", encoding="utf-8")
+    evidence = "this is not [ toml at all"
+    p.write_text(evidence, encoding="utf-8")
     store = ConfigStore(p)
     cfg = store.load()
-    assert cfg.permission_mode is PermissionMode.SANDBOXED
+    assert cfg.permission_mode is PermissionMode.STRICT
+    assert cfg.memory.agent_writes is False
+    assert cfg.safety.http_fetch_enabled is False
     assert store.last_problems
+    assert p.read_text() == evidence
 
 
 def test_invalid_values_partial_repair(oml_env):
@@ -61,6 +69,66 @@ def test_invalid_values_partial_repair(oml_env):
     cfg = store.load()
     assert cfg.generation.temperature == 0.5  # valid section kept
     assert store.last_problems  # invalid mode reported
+
+
+def test_deep_merge_preserves_nested_security_siblings():
+    base = Config().model_dump(mode="json")
+    merged = deep_merge(base, {"generation": {"temperature": 0.2}})
+    assert merged["generation"]["temperature"] == 0.2
+    assert merged["generation"]["top_p"] == base["generation"]["top_p"]
+    assert merged["safety"] == base["safety"]
+
+
+def test_security_change_advances_generation_and_retires_live_runtime(svc):
+    runtime = svc.runtime()
+    original = svc.config
+    old_generation = original.policy_generation
+    updated = original.model_copy(deep=True)
+    updated.safety.workspace_write_requires_confirmation = not updated.safety.workspace_write_requires_confirmation
+    svc.apply_config(updated)
+    assert svc.config is original
+    assert runtime.config is original
+    assert runtime._retired is True
+    assert runtime.config.safety.workspace_write_requires_confirmation == updated.safety.workspace_write_requires_confirmation
+    assert svc.config.policy_generation == old_generation + 1
+    assert svc.runtime()._retired is False
+
+
+def test_nested_config_is_strict_for_types_extras_and_nonfinite_numbers():
+    with pytest.raises(ValidationError):
+        Config.model_validate({"generation": {"top_k": True}})
+    with pytest.raises(ValidationError):
+        Config.model_validate({"safety": {"unknown_control": True}})
+    with pytest.raises(ValidationError):
+        Config.model_validate({"ollama": {"startup_timeout": float("inf")}})
+
+
+def test_config_path_symlinks_and_nonregular_files_fail_closed(tmp_path):
+    target = tmp_path / "target.toml"
+    target.write_text('permission_mode = "full_access"\n')
+    linked = tmp_path / "config.toml"
+    linked.symlink_to(target)
+    symlinked = ConfigStore(linked).load()
+    assert symlinked.permission_mode is PermissionMode.STRICT
+    assert symlinked.safety.allow_remote_backends is False
+
+    directory = tmp_path / "config-dir"
+    directory.mkdir()
+    nonregular = ConfigStore(directory).load()
+    assert nonregular.permission_mode is PermissionMode.STRICT
+    assert nonregular.memory.agent_writes is False
+
+
+def test_persisted_full_access_is_deactivated_and_invalidated(oml_env):
+    from ohmyllm.core import Services
+
+    store = ConfigStore(oml_env["home"] / "config.toml")
+    cfg = Config(permission_mode=PermissionMode.FULL_ACCESS, policy_generation=7)
+    store.save(cfg)
+    svc = Services.boot(workspace=oml_env["ws"])
+    assert svc.config.permission_mode is PermissionMode.DANGEROUS
+    assert svc.config.policy_generation == 8
+    assert any("fresh process-local confirmation" in item for item in svc.config_store.last_problems)
 
 
 def test_emitter_edge_cases():

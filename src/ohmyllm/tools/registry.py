@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+import threading
+from dataclasses import replace
 from typing import Any
 
 from .file_tools import (
@@ -76,7 +78,11 @@ def _skills_read(ctx, args: dict) -> ToolResult:
     if mgr is None:
         return ToolResult(False, "", "skills are unavailable")
     name = str(args.get("name") or "")
-    text = mgr.read(name)
+    raw_path = args.get("path")
+    try:
+        text = mgr.read(name, path=str(raw_path) if raw_path is not None else None)
+    except ValueError as exc:
+        return ToolResult(False, "", str(exc))
     if text is None:
         avail = ", ".join(s.name for s in mgr.list()[:15])
         return ToolResult(False, "", f"no skill named {name!r}. available: {avail or 'none'}")
@@ -96,15 +102,13 @@ SPECS: list[ToolSpec] = [
     ToolSpec(
         "soul_append", "Append a concise durable memory (facts, preferences, projects, pets). Never store secrets.",
         [arg("section", "string", "target section", required=False, enum=_SECTIONS_ENUM, default="Important Notes"),
-         arg("text", "string", "one-sentence memory, third person, factual"),
-         arg("force", "boolean", "only when the user explicitly asked to store a secret", required=False)],
+         arg("text", "string", "one-sentence memory, third person, factual")],
         soul_append, examples='{"section": "User", "text": "The user is named Minas."}',
     ),
     ToolSpec(
         "soul_upsert", "Save a memory, updating a similar existing entry instead of duplicating it.",
         [arg("section", "string", "target section", required=False, enum=_SECTIONS_ENUM, default="Projects"),
-         arg("text", "string", "one-sentence memory"),
-         arg("force", "boolean", "explicit-secret consent", required=False)],
+         arg("text", "string", "one-sentence memory")],
         soul_upsert, examples='{"section": "Projects", "text": "User is working on a CLI project called OhMyLLM."}',
     ),
     ToolSpec(
@@ -207,8 +211,9 @@ SPECS: list[ToolSpec] = [
         _skills_list, examples="{}",
     ),
     ToolSpec(
-        "skills_read", "Read one imported skill's full instructions. Call BEFORE doing work in its domain.",
-        [arg("name", "string", "skill name from skills_list")],
+        "skills_read", "Read one imported skill's full instructions (or a bundled reference file via path). Call BEFORE doing work in its domain.",
+        [arg("name", "string", "skill name from skills_list"),
+         arg("path", "string", "optional relative file inside the skill dir, e.g. references/api.md", required=False)],
         _skills_read, examples='{"name": "frontend"}',
     ),
     ToolSpec(
@@ -255,11 +260,11 @@ class ToolRegistry:
             for s in self._specs.values()
         ]
 
-    def preview(self, name: str, args: dict[str, Any]) -> str:
+    def preview(self, name: str, args: dict[str, Any], ctx: ToolContext | None = None) -> str:
         spec = self._specs.get(name)
         if spec and spec.preview:
             try:
-                return spec.preview(args)
+                return spec.preview(args, ctx)
             except Exception as exc:  # noqa: BLE001 - preview is best-effort
                 return f"(preview failed: {exc})"
         try:
@@ -271,11 +276,18 @@ class ToolRegistry:
         spec = self._specs.get(name)
         if spec is None:
             return ToolResult(False, "", f"unknown tool {name!r}")
+        cancel_event = threading.Event()
+        execution_ctx = replace(ctx, cancel_event=cancel_event)
         try:
-            result = spec.handler(ctx, args)
+            if inspect.iscoroutinefunction(spec.handler):
+                result = await spec.handler(execution_ctx, args)
+            else:
+                # The worker gets a cooperative token checked at every commit boundary.
+                result = await asyncio.to_thread(spec.handler, execution_ctx, args)
             if inspect.isawaitable(result):
                 result = await result
         except asyncio.CancelledError:
+            cancel_event.set()
             raise
         except Exception as exc:  # noqa: BLE001 - tool crash becomes a tool error
             return ToolResult(False, "", f"tool {name} crashed: {type(exc).__name__}: {exc}")

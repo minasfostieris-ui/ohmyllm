@@ -1,4 +1,7 @@
-"""Throwaway headless TUI smoke: boot → wizard OR chat → message → memory → screens."""
+"""Throwaway headless TUI smoke: boot → wizard OR chat → message → memory → screens.
+
+Usage: python scripts/tui_smoke.py [WxH]   (default 140x46; e.g. 80x24, 100x30)
+"""
 
 import asyncio
 import os
@@ -6,6 +9,23 @@ import sys
 import tempfile
 
 sys.path.insert(0, "src")
+
+
+def _parse_size(argv: list[str]) -> tuple[int, int]:
+    """Optional positional WxH terminal size; default keeps legacy behavior."""
+    if len(argv) < 2:
+        return (140, 46)
+    try:
+        w, h = argv[1].lower().split("x", 1)
+        size = (int(w), int(h))
+    except ValueError:
+        raise SystemExit(f"usage: tui_smoke.py [WxH] — bad size {argv[1]!r}") from None
+    if size[0] < 20 or size[1] < 10:
+        raise SystemExit(f"size {argv[1]} too small — minimum 20x10")
+    return size
+
+
+SIZE = _parse_size(sys.argv)
 
 tmp = tempfile.mkdtemp(prefix="omllm-tui-")
 os.environ["OMLLM_HOME"] = tmp
@@ -24,7 +44,7 @@ async def test_wizard() -> None:
     cfg = Config()  # first_run_completed False
     ConfigStore(paths.config_path()).save(cfg)
     app = OhMyLLMApp()
-    async with app.run_test(size=(140, 46)) as pilot:
+    async with app.run_test(size=SIZE) as pilot:
         await pilot.pause(0.6)
         from ohmyllm.tui.screens.wizard import WizardScreen
         assert isinstance(app.screen, WizardScreen), type(app.screen)
@@ -51,7 +71,7 @@ async def test_chat_and_screens() -> None:
     store = ConfigStore(paths.config_path())
     store.save(cfg)
     app = OhMyLLMApp()
-    async with app.run_test(size=(140, 46)) as pilot:
+    async with app.run_test(size=SIZE) as pilot:
         await pilot.pause(0.8)
         from ohmyllm.tui.screens.chat import ChatScreen
         assert isinstance(app.screen, ChatScreen), type(app.screen)
@@ -110,4 +130,4 @@ async def main() -> None:
 
 
 asyncio.run(main())
-print("TUI-OK")
+print(f"TUI-OK {SIZE[0]}x{SIZE[1]}")
