@@ -8,8 +8,16 @@ runner = CliRunner()
 
 
 def test_version_and_init(oml_env):
+    import re
+    from pathlib import Path
+
+    import ohmyllm
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    expected = re.search(r'^version = "([^"]+)"', pyproject.read_text(), re.M).group(1)
+    assert ohmyllm.__version__ == expected
     r = runner.invoke(app, ["--version"])
-    assert r.exit_code == 0 and "0.1.0" in r.output
+    assert r.exit_code == 0 and expected in r.output
     r2 = runner.invoke(app, ["init", "--backend", "mock"])
     assert r2.exit_code == 0
     from ohmyllm import paths

@@ -754,17 +754,21 @@ def skills_cmd(
 
 @app.command()
 def gui(
-    browser: bool = typer.Option(False, "--browser", "-b", help="Force the web-browser console instead of the native window."),
+    web: bool = typer.Option(False, "--web", help="Open the loopback console in a web browser (explicit opt-in)."),
+    browser: bool = typer.Option(False, "--browser", "-b", help="Deprecated alias for --web."),
     stop: bool = typer.Option(False, "--stop", help="Close the background web console."),
     no_open: bool = typer.Option(False, "--no-open", help="Print the console URL but do not launch anything."),
     port: int = typer.Option(0, "--port", help="Pin the loopback bridge port (0 = random)."),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace root for this session."),
 ) -> None:
-    """Open the OhMyLLM console: native Tauri window when available, browser otherwise.
+    """Open the OhMyLLM console: the native app by default, never a browser.
 
-    Both modes run the exact same engine — the loopback bridge reuses Services,
-    the policy engine and the approval flow, bound to 127.0.0.1 with a
-    per-process token.
+    The native Tauri window owns its loopback bridge. Without a native
+    binary the bridge still starts in the background and its loopback URL
+    is printed; a browser opens only on the explicit `--web` opt-in.
+    Both modes run the exact same engine — the loopback bridge reuses
+    Services, the policy engine and the approval flow, bound to 127.0.0.1
+    with a per-process token.
     """
     import subprocess
     import time
@@ -779,73 +783,57 @@ def gui(
             except (ValueError, OSError):
                 console.print("[dim]web console was not running[/dim]")
             stopf.unlink(missing_ok=True)
+            (paths.global_home() / "gui-web.discovery").unlink(missing_ok=True)
         else:
             console.print("[dim]no web console running[/dim]")
         return
 
     env = _bridge_environment(workspace)
+    want_web = web or browser
 
-    native = None
-    if not browser:
-        cand = []
-        if v := env.get("OMLLM_GUI_BIN"):
-            cand.append(Path(v))
-        here = Path(__file__).resolve()
-        for base in here.parents:
-            cand.append(base / "gui" / "src-tauri" / "target" / "release" / "ohmyllm-gui")
-            if (base / ".git").exists():
-                break
-        cand.append(Path.home() / ".local" / "bin" / "ohmyllm-gui")
-        if executable := trusted_executable("ohmyllm-gui"):
-            cand.insert(0, Path(executable))
-        native = next((c for c in cand if c.is_file()), None)
-
+    native = None if want_web else _resolve_native_binary(env)
     if native is not None:
-        # app boots in the background; the CLI stays free and prints the
-        # optional localhost web console
+        # App first: the native shell starts (or attaches to) its own bridge.
+        # No second bridge here and never an unsolicited browser window.
+        stopf = paths.global_home() / "gui-web.pid"
+        discf = paths.global_home() / "gui-web.discovery"
+        if stopf.is_file() and discf.is_file():
+            # A background console is already serving: hand its private
+            # discovery to the shell so it attaches instead of stacking.
+            with contextlib.suppress(ValueError, OSError):
+                os.kill(int(stopf.read_text().strip()), 0)
+                read_bridge_discovery(Path(discf.read_text().strip()))
+                env["OMLLM_BRIDGE_DISCOVERY"] = discf.read_text().strip()
         subprocess.Popen([str(native)], env=env, start_new_session=True)
         console.print(f"[green]native console launching in the background[/green] [dim]({native})[/dim]")
-        stopf = paths.global_home() / "gui-web.pid"
-        if stopf.is_file():
-            try:
-                import os as _os
-                _os.kill(int(stopf.read_text().strip()), 0)
-                console.print("[dim]web console already running — `oml gui --stop` closes it[/dim]")
-                return
-            except (ValueError, OSError):
-                pass
-        launch_dir, wport = _new_bridge_discovery("native-web-")
-        wargs = [sys.executable, "-m", "ohmyllm.bridge", "--port-file", str(wport)]
-        wchild = subprocess.Popen(wargs, env=env, start_new_session=True,
-                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        atomic_write(stopf, str(wchild.pid))
+        console.print("[dim]prefer a browser? `oml gui --web` · `oml gui --stop` closes a background web console[/dim]")
+        return
+
+    stopf = paths.global_home() / "gui-web.pid"
+    discf = paths.global_home() / "gui-web.discovery"
+    if want_web and not no_open and stopf.is_file() and discf.is_file():
+        # Reuse the running background console instead of stacking bridges.
         try:
-            deadline0 = time.time() + 8
-            while time.time() < deadline0:
-                if wport.is_file():
-                    a, t = read_bridge_discovery(wport)
-                    url = f"http://127.0.0.1:{a}/#token={t}"
-                    webbrowser.open(url)
-                    console.print(f"[bold]web console (optional)[/bold] opened at http://127.0.0.1:{a}/")
-                    console.print("[dim]loopback only · token handed to the browser only · `oml gui --stop` closes it[/dim]")
-                    return
-                time.sleep(0.1)
-            console.print("[dim]web console did not come up in 8s — the native window still works[/dim]")
+            os.kill(int(stopf.read_text().strip()), 0)
+            actual, token = read_bridge_discovery(Path(discf.read_text().strip()))
+            webbrowser.open(f"http://127.0.0.1:{actual}/#token={token}")
+            console.print(f"[bold]web console[/bold] opened at http://127.0.0.1:{actual}/ [dim](already running)[/dim]")
             return
-        finally:
-            _cleanup_bridge_discovery(launch_dir, wport)
+        except (ValueError, OSError):
+            pass  # stale pid or discovery: start a fresh console below
 
-    if not browser:
-        console.print("[yellow]Native window not built yet — falling back to the browser console.[/yellow]")
-        console.print("[dim]To get the native app: install Tauri prerequisites, then "
-                      "run `cargo build --release` inside `gui/src-tauri` (or set OMLLM_GUI_BIN).[/dim]")
-
-    launch_dir, port_file = _new_bridge_discovery("browser-")
+    launch_dir, port_file = _new_bridge_discovery("web-" if want_web else "console-")
     args = [sys.executable, "-m", "ohmyllm.bridge"]
     if port:
         args += ["--port", str(port)]
     args += ["--port-file", str(port_file)]
-    child = subprocess.Popen(args, env=env)
+    background = not want_web
+    child = subprocess.Popen(
+        args, env=env, start_new_session=background,
+        stdout=subprocess.DEVNULL if background else None,
+        stderr=subprocess.DEVNULL if background else None,
+    )
+    kept = False
     try:
         deadline = time.time() + 15
         while time.time() < deadline:
@@ -862,6 +850,15 @@ def gui(
             raise typer.Exit(1)
         base_url = f"http://127.0.0.1:{actual}/"
         url = f"{base_url}#token={token}"
+        if background:
+            atomic_write(stopf, str(child.pid))
+            atomic_write(discf, str(port_file))
+            kept = True
+            console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → {base_url}\n"
+                                f"[dim]native app not installed · loopback only · `oml gui --web` opens it in a browser · `oml gui --stop` closes it[/dim]",
+                                border_style="dim"))
+            console.print("[dim]to get the native app: build `gui/src-tauri` (cargo build --release) or set OMLLM_GUI_BIN.[/dim]")
+            return
         console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → {base_url}\n"
                             f"[dim]loopback only · capability token is never printed · Ctrl+C closes the session[/dim]",
                             border_style="dim"))
@@ -874,11 +871,12 @@ def gui(
     except KeyboardInterrupt:
         console.print("[dim]closing console…[/dim]")
     finally:
-        if child.poll() is None:
-            child.terminate()
-            with contextlib.suppress(subprocess.TimeoutExpired):
-                child.wait(timeout=4)
-        _cleanup_bridge_discovery(launch_dir, port_file)
+        if not kept:
+            if child.poll() is None:
+                child.terminate()
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    child.wait(timeout=4)
+            _cleanup_bridge_discovery(launch_dir, port_file)
 
 
 # ------------------------------------------------------------------ helpers
@@ -905,6 +903,23 @@ def _cleanup_bridge_discovery(launch_dir: Path, discovery: Path) -> None:
         discovery.unlink()
     with contextlib.suppress(OSError):
         launch_dir.rmdir()
+
+
+def _resolve_native_binary(env: dict[str, str]) -> Path | None:
+    """App-first native shell resolution: override, shipped binary, repo build, PATH."""
+    cand: list[Path] = []
+    if v := env.get("OMLLM_GUI_BIN"):
+        cand.append(Path(v))
+    cand.append(Path(__file__).resolve().parent / "gui_bin" / "ohmyllm-gui")
+    here = Path(__file__).resolve()
+    for base in here.parents:
+        cand.append(base / "gui" / "src-tauri" / "target" / "release" / "ohmyllm-gui")
+        if (base / ".git").exists():
+            break
+    cand.append(Path.home() / ".local" / "bin" / "ohmyllm-gui")
+    if executable := trusted_executable("ohmyllm-gui"):
+        cand.append(Path(executable))
+    return next((c for c in cand if c.is_file() and os.access(c, os.X_OK)), None)
 
 
 async def _health(be) -> tuple[bool, dict]:

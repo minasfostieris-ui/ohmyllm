@@ -1,0 +1,3 @@
+include src/ohmyllm/gui_bin/ohmyllm-gui
+recursive-include src/ohmyllm/gui_static *.html *.css *.js
+recursive-include src/ohmyllm/tui *.tcss

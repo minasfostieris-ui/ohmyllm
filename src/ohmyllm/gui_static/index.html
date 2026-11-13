@@ -21,7 +21,9 @@
     <span class="brand-glyph" aria-hidden="true">
       <svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2.4"/><circle cx="16" cy="16" r="4.5" fill="currentColor"/></svg>
     </span>
-    <nav class="tabs" id="tabs" aria-label="Open chats"></nav>
+    <span class="tabs-wrap" id="tabs-wrap">
+      <nav class="tabs" id="tabs" aria-label="Open chats"></nav>
+    </span>
     <button class="icon-btn" id="btn-new" type="button" aria-label="New chat" title="New chat (Ctrl+N)">
       <svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
     </button>
@@ -29,36 +31,55 @@
     <span class="conn" id="conn-dot" role="status" aria-label="Bridge connection" title="bridge connection"></span>
     <button class="badge" id="ctx-badge" type="button" aria-label="Context window usage" title="context usage">◍ —</button>
     <button class="badge mode" id="chip-mode" type="button" aria-label="Permission mode" title="Permission mode (Ctrl+P)">⦿ —</button>
-    <span class="menu-wrap">
-      <button class="icon-btn" id="btn-menu" type="button" aria-label="Console views" aria-haspopup="true" aria-expanded="false" title="Console views">
-        <svg viewBox="0 0 16 16"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>
-      </button>
-      <div class="menu" id="view-menu" role="menu" hidden>
-        <button role="menuitem" data-view="chat">Chat</button>
-        <button role="menuitem" data-view="models">Models <kbd>⌃M</kbd></button>
-        <button role="menuitem" data-view="providers">Providers</button>
-        <button role="menuitem" data-view="market">Market</button>
-        <button role="menuitem" data-view="backend">Backend <kbd>⌃B</kbd></button>
-        <button role="menuitem" data-view="memory">Memory · soul.md <kbd>⌃S</kbd></button>
-        <button role="menuitem" data-view="doctor">Doctor <kbd>⌃D</kbd></button>
-        <button role="menuitem" data-view="settings">Settings <kbd>⌃G</kbd></button>
-        <button role="menuitem" data-view="help">Help &amp; keys <kbd>⌃H</kbd></button>
-        <div class="menu-sep"></div>
-        <button role="menuitem" id="menu-palette">Command palette <kbd>⌃K</kbd></button>
-        <p class="menu-ver" id="version"></p>
-      </div>
-    </span>
     <button class="icon-btn" id="btn-sidebar" type="button" aria-label="Toggle chats sidebar" aria-pressed="true" title="Toggle chats sidebar">
       <svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10 2.5v11" stroke="currentColor" stroke-width="1.4"/></svg>
     </button>
   </header>
 
   <div class="body">
+    <nav class="rail" id="rail" aria-label="Console views">
+      <div class="rail-views">
+        <button class="rail-btn" type="button" data-view="chat" title="Chat" aria-label="Chat">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z"/></svg><span class="rail-lbl">Chat</span>
+        </button>
+        <button class="rail-btn" type="button" data-view="models" title="Models (Ctrl+M)" aria-label="Models">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.8 14 5v6l-6 3.2L2 11V5z"/><path d="M2 5l6 3 6-3M8 8v6.2"/></svg><span class="rail-lbl">Models</span><kbd>⌃M</kbd>
+        </button>
+        <button class="rail-btn" type="button" data-view="providers" title="Providers" aria-label="Providers">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2v4M10 2v4M4.5 6h7v3a3.5 3.5 0 0 1-7 0zM8 12.5V14"/></svg><span class="rail-lbl">Providers</span>
+        </button>
+        <button class="rail-btn" type="button" data-view="market" title="Market" aria-label="Market">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 5.5 4 2.5h8l1.5 3zM3 5.5v8h10v-8M6.5 13.5v-4h3v4"/></svg><span class="rail-lbl">Market</span>
+        </button>
+        <button class="rail-btn" type="button" data-view="backend" title="Backend (Ctrl+B)" aria-label="Backend">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><rect x="2.5" y="2.5" width="11" height="4.5" rx="1"/><rect x="2.5" y="9" width="11" height="4.5" rx="1"/><path d="M5 4.75h.01M5 11.25h.01"/></svg><span class="rail-lbl">Backend</span><kbd>⌃B</kbd>
+        </button>
+        <button class="rail-btn" type="button" data-view="memory" title="Memory · soul.md (Ctrl+S)" aria-label="Memory, soul.md">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 2.5h7l3 3v8H3zM10 2.5v3h3M5.5 8h5M5.5 10.5h5"/></svg><span class="rail-lbl">Memory</span><kbd>⌃S</kbd>
+        </button>
+        <button class="rail-btn" type="button" data-view="doctor" title="Doctor (Ctrl+D)" aria-label="Doctor">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2.5v11M2.5 8h11"/><circle cx="8" cy="8" r="5.5"/></svg><span class="rail-lbl">Doctor</span><kbd>⌃D</kbd>
+        </button>
+        <button class="rail-btn" type="button" data-view="settings" title="Settings (Ctrl+G)" aria-label="Settings">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6 11 5M5 11l-1.4 1.4"/></svg><span class="rail-lbl">Settings</span><kbd>⌃G</kbd>
+        </button>
+        <button class="rail-btn" type="button" data-view="help" title="Help &amp; keys (Ctrl+H)" aria-label="Help and keys">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M6.4 6.4a1.7 1.7 0 1 1 2.3 1.6c-.5.2-.7.6-.7 1.1M8 11.4h.01"/></svg><span class="rail-lbl">Help &amp; keys</span><kbd>⌃H</kbd>
+        </button>
+      </div>
+      <div class="rail-foot">
+        <button class="rail-btn" type="button" id="rail-palette" title="Command palette (Ctrl+K)" aria-label="Command palette">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 5.5h5v5h-5zM5.5 5.5a2 2 0 1 0-2 2M10.5 5.5a2 2 0 1 1 2 2M5.5 10.5a2 2 0 1 0 2 2M10.5 10.5a2 2 0 1 1-2 2"/></svg><span class="rail-lbl">Palette</span><kbd>⌃K</kbd>
+        </button>
+        <p class="rail-ver" id="version"></p>
+      </div>
+    </nav>
     <main class="main" id="main">
       <section class="view view-chat" id="view-chat">
         <div class="stream" id="stream" role="log" aria-live="polite"></div>
         <div class="stream-foot">
           <button class="btn small" id="jump-latest" type="button" hidden>↓ Latest</button>
+          <span id="run-verb" class="run-verb" role="status" aria-label="Agent activity" hidden></span>
           <span id="run-state" role="status">Connecting…</span>
         </div>
         <div class="composer-wrap">
@@ -84,16 +105,11 @@
                   <button role="menuitem" id="plus-skills">/skill: <span>cast a skill…</span></button>
                 </div>
               </span>
-              <select id="sel-opmode" class="sel" aria-label="Operation mode" title="Operation mode: chat / plan / build">
-                <option value="chat">chat</option><option value="plan">plan</option><option value="build">build</option>
-              </select>
-              <select id="sel-backend" class="sel" aria-label="Backend" title="Backend"></select>
+              <om-listbox id="sel-opmode" class="dd" aria-label="Operation mode" title="Operation mode: chat / plan / build"></om-listbox>
+              <om-listbox id="sel-backend" class="dd" aria-label="Backend" title="Backend"></om-listbox>
               <span class="sel-sep" aria-hidden="true">/</span>
-              <select id="sel-model" class="sel wide" aria-label="Model" title="Model"></select>
-              <select id="sel-effort" class="sel" aria-label="Reasoning effort" title="Reasoning effort">
-                <option value="off">off</option><option value="low">low</option><option value="medium">medium</option>
-                <option value="high">high</option><option value="xhigh">xhigh</option><option value="max">max</option>
-              </select>
+              <om-listbox id="sel-model" class="dd wide" aria-label="Model" title="Model"></om-listbox>
+              <om-listbox id="sel-effort" class="dd" aria-label="Reasoning effort" title="Reasoning effort"></om-listbox>
               <span class="spacer"></span>
               <button type="button" class="stop-btn" id="cancel" hidden aria-label="Stop the current turn" title="Stop (Esc)">
                 <svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor"/></svg>
@@ -109,14 +125,9 @@
       <section class="view panel" id="view-models" hidden>
         <div class="toolbar">
           <input type="search" id="model-search" placeholder="Filter models…" aria-label="Filter models" />
-          <select id="model-backend" aria-label="Model backend filter"></select>
+          <om-listbox id="model-backend" class="dd" aria-label="Model backend filter"></om-listbox>
           <label class="inline-label" for="model-sort">sort</label>
-          <select id="model-sort" aria-label="Sort models">
-            <option value="name">name</option><option value="size">size</option>
-            <option value="params">parameters</option><option value="quant">quant</option>
-            <option value="family">family</option><option value="thinking">thinking</option>
-            <option value="vision">vision</option>
-          </select>
+          <om-listbox id="model-sort" class="dd" aria-label="Sort models"></om-listbox>
           <span class="spacer"></span>
           <button class="btn small" id="models-refresh" type="button">Refresh</button>
           <button class="btn small" id="models-pull" type="button">Pull (Ollama)</button>

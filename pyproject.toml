@@ -52,7 +52,8 @@ OML = "ohmyllm.cli:app_entry"
 include-package-data = true
 
 [tool.setuptools.package-data]
-ohmyllm = ["gui_static/*.html", "gui_static/*.css", "gui_static/*.js"]
+# gui_bin ships the native Tauri shell so installed packages are app-first.
+ohmyllm = ["gui_static/*.html", "gui_static/*.css", "gui_static/*.js", "gui_bin/ohmyllm-gui"]
 "ohmyllm.tui" = ["*.tcss"]
 
 [tool.setuptools.packages.find]

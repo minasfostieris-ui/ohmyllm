@@ -18,6 +18,10 @@ use tauri::{Manager, RunEvent, Url};
 
 struct BridgeHandle(Mutex<Option<Child>>);
 
+/// Whether this process owns the bridge child. An attached bridge belongs
+/// to its launcher (the CLI) and must survive closing this window.
+struct BridgeOwned(bool);
+
 struct LaunchArtifacts {
     dir: PathBuf,
     discovery: PathBuf,
@@ -94,11 +98,19 @@ const DISCOVERY_MAX_BYTES: u64 = 4096;
 
 fn pick_python() -> PathBuf {
     if let Ok(p) = std::env::var("OMLLM_PYTHON") {
-        return PathBuf::from(p);
+        let cand = PathBuf::from(p);
+        if cand.is_file() {
+            return cand;
+        }
     }
-    // If the packaged binary sits next to a venv install (…/bin/ohmyllm),
-    // prefer that interpreter so `ohmyllm gui` always finds the package.
+    // The shipped binary lives inside the installing venv
+    // (<venv>/lib/python3.X/site-packages/ohmyllm/gui_bin/): walk up to that
+    // venv's interpreter so uv-tool/pipx installs never fall back to a
+    // system python that cannot import ohmyllm (the old splash stall).
     if let Ok(exe) = std::env::current_exe() {
+        if let Some(py) = venv_python_near(&exe) {
+            return py;
+        }
         if let Some(dir) = exe.parent() {
             for cand in [dir.join("python3"), dir.join("python")] {
                 if cand.exists() {
@@ -124,6 +136,22 @@ fn pick_python() -> PathBuf {
         }
     }
     PathBuf::from("python3")
+}
+
+/// Find the interpreter of the venv that installed this executable, marked
+/// by `pyvenv.cfg` so a bare system directory never masquerades as a venv.
+fn venv_python_near(exe: &Path) -> Option<PathBuf> {
+    for base in exe.ancestors().skip(1) {
+        if base.join("pyvenv.cfg").is_file() {
+            for cand in [base.join("bin/python3"), base.join("bin/python")] {
+                if cand.is_file() {
+                    return Some(cand);
+                }
+            }
+            return None;
+        }
+    }
+    None
 }
 
 fn parse_discovery(info: &str) -> Result<(u16, String, u32), String> {
@@ -313,7 +341,10 @@ fn spawn_bridge() -> Result<(Child, u16, String), String> {
             Err(error) => break Err(error),
         }
         if let Some(status) = child.child_mut().try_wait().ok().flatten() {
-            break Err(format!("bridge exited early ({status}) — is ohmyllm installed? try: pipx install ohmyllm or run `ohmyllm doctor`"));
+            break Err(format!(
+                "bridge exited early ({status}) using {} — is ohmyllm installed for that interpreter? try: pipx install ohmyllm or run `ohmyllm doctor`",
+                python.display()
+            ));
         }
         if Instant::now() > deadline {
             break Err("bridge did not come up within 15s".into());
@@ -324,13 +355,73 @@ fn spawn_bridge() -> Result<(Child, u16, String), String> {
     Ok((child.into_inner(), port, token))
 }
 
+/// Attach to a bridge another launcher (the CLI) already started, using the
+/// same owner-private discovery contract the headless checker uses. Keeps
+/// exactly one bridge per console instead of stacking a second one.
+fn attach_bridge_from_env() -> Result<Option<(u16, String)>, String> {
+    let raw = match std::env::var("OMLLM_BRIDGE_DISCOVERY") {
+        Ok(value) if !value.is_empty() => value,
+        _ => return Ok(None),
+    };
+    attach_from_path(&PathBuf::from(raw)).map(Some)
+}
+
+fn attach_from_path(path: &Path) -> Result<(u16, String), String> {
+    let dir = path
+        .parent()
+        .ok_or("bridge discovery has no parent directory")?
+        .to_path_buf();
+    let raw = read_private_discovery(path, &dir)?.ok_or("bridge discovery file is missing")?;
+    let (port, token, pid) = parse_discovery(&raw)?;
+    if !pid_alive(pid) {
+        return Err(format!("bridge process {pid} is not running"));
+    }
+    Ok((port, token))
+}
+
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    unsafe {
+        // kill(-1, 0) probes *every* process and always succeeds: reject
+        // pids that would wrap negative before asking the kernel.
+        pid <= i32::MAX as u32 && kill(pid as i32, 0) == 0
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
+fn percent_encode(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 fn main() {
-    let (child, port, token) = match spawn_bridge() {
-        Ok(v) => v,
+    let mut splash_error = String::new();
+    let (child, port, token, owned) = match attach_bridge_from_env() {
+        Ok(Some((port, token))) => (None, port, token, false),
+        Ok(None) => match spawn_bridge() {
+            Ok((child, port, token)) => (Some(child), port, token, true),
+            Err(msg) => {
+                eprintln!("ohmyllm-gui: {msg}");
+                splash_error = msg;
+                (None, 0, String::new(), true)
+            }
+        },
         Err(msg) => {
             eprintln!("ohmyllm-gui: {msg}");
-            // Still open the window: its bundled page explains the fix.
-            (silent_child(), 0, String::new())
+            splash_error = msg;
+            (None, 0, String::new(), true)
         }
     };
 
@@ -340,13 +431,24 @@ fn main() {
     let token_run = token.clone();
 
     tauri::Builder::default()
-        .manage(BridgeHandle(Mutex::new(Some(child))))
+        .manage(BridgeHandle(Mutex::new(child)))
+        .manage(BridgeOwned(owned))
         .setup(move |app| {
-            if port > 0 {
-                let url = Url::parse(&format!("http://127.0.0.1:{port}/#token={token}"))
-                    .map_err(|e| format!("bad bridge url: {e}"))?;
-                if let Some(win) = app.get_webview_window("main") {
+            if let Some(win) = app.get_webview_window("main") {
+                if port > 0 {
+                    let url = Url::parse(&format!("http://127.0.0.1:{port}/#token={token}"))
+                        .map_err(|e| format!("bad bridge url: {e}"))?;
                     let _ = win.navigate(url);
+                } else if !splash_error.is_empty() {
+                    // Surface the real failure on the splash instead of an
+                    // endless "starting the local bridge…" spinner.
+                    if let Ok(mut url) = win.url() {
+                        url.set_query(Some(&format!(
+                            "bridge_error={}",
+                            percent_encode(&splash_error)
+                        )));
+                        let _ = win.navigate(url);
+                    }
                 }
             }
             Ok(())
@@ -356,6 +458,13 @@ fn main() {
         .run(move |app_handle, event| {
             match event {
                 RunEvent::Exit | RunEvent::ExitRequested { .. } => {
+                    let owned = app_handle
+                        .try_state::<BridgeOwned>()
+                        .map(|s| s.0)
+                        .unwrap_or(true);
+                    if !owned {
+                        return; // attached bridge belongs to its launcher
+                    }
                     if port > 0 {
                         // ask the bridge to eject the model + stop cleanly
                         shutdown_bridge(port, &token_run);
@@ -390,28 +499,6 @@ fn shutdown_bridge(port: u16, token: &str) {
         let mut buf = [0u8; 16];
         let _ = s.read(&mut buf);
     }
-}
-
-/// A trivial short-lived process handle used when the bridge could not
-/// start, so the shutdown path stays uniform.
-fn silent_child() -> Child {
-    #[cfg(windows)]
-    let mut cmd = {
-        let mut c = Command::new("cmd");
-        c.args(["/C", "exit"]);
-        c
-    };
-    #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = Command::new("sleep");
-        c.arg("0");
-        c
-    };
-    cmd.env_clear()
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("trivial child")
 }
 
 #[cfg(test)]
@@ -464,6 +551,68 @@ mod tests {
         assert!(read_private_discovery(&path, &dir).is_err());
         fs::remove_file(path).expect("remove test discovery");
         fs::remove_dir(dir).expect("remove test launch directory");
+    }
+
+    #[test]
+    fn percent_encode_escapes_query_payload() {
+        assert_eq!(
+            percent_encode("bridge exited early (1)"),
+            "bridge%20exited%20early%20%281%29"
+        );
+    }
+
+    #[test]
+    fn attach_accepts_live_private_discovery_and_rejects_dead_pid() {
+        let dir = launch_dir();
+        let path = dir.join("bridge.json");
+        let token = "0123456789abcdef0123456789abcdef";
+        let live = format!(
+            "{{\"version\":1,\"port\":1234,\"token\":\"{token}\",\"pid\":{}}}",
+            std::process::id()
+        );
+        fs::write(&path, live).expect("write live discovery");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .expect("protect discovery");
+        }
+        let (port, got) = attach_from_path(&path).expect("attach to live bridge");
+        assert_eq!(port, 1234);
+        assert_eq!(got, token);
+        let dead = format!(
+            "{{\"version\":1,\"port\":1234,\"token\":\"{token}\",\"pid\":{}}}",
+            u32::MAX
+        );
+        fs::write(&path, dead).expect("write dead-pid discovery");
+        assert!(attach_from_path(&path).is_err());
+        fs::remove_file(&path).expect("remove test discovery");
+        fs::remove_dir(&dir).expect("remove test launch directory");
+    }
+
+    #[test]
+    fn attach_rejects_missing_discovery() {
+        let dir = launch_dir();
+        assert!(attach_from_path(&dir.join("bridge.json")).is_err());
+        fs::remove_dir(&dir).expect("remove test launch directory");
+    }
+
+    #[test]
+    fn venv_python_near_finds_installing_interpreter() {
+        let root = launch_dir();
+        let venv = root.join("venv");
+        let bin = venv.join("bin");
+        fs::create_dir_all(&bin).expect("create venv bin");
+        let py = bin.join("python3");
+        fs::write(&py, "").expect("create venv python");
+        fs::write(venv.join("pyvenv.cfg"), "").expect("mark venv root");
+        let gui_bin = venv.join("lib/python3.13/site-packages/ohmyllm/gui_bin");
+        fs::create_dir_all(&gui_bin).expect("create shipped binary dir");
+        let exe = gui_bin.join("ohmyllm-gui");
+        fs::write(&exe, "").expect("create shipped binary");
+        assert_eq!(venv_python_near(&exe), Some(py));
+        assert_eq!(venv_python_near(&root.join("bare")), None);
+        fs::remove_dir_all(&root).expect("remove test tree");
     }
 
     #[cfg(unix)]

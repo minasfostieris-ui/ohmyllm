@@ -25,16 +25,23 @@
     <div id="err" class="hide">
       <p>Could not reach the OhMyLLM bridge. Start the GUI through the CLI:</p>
       <p><code>ohmyllm gui</code></p>
+      <p class="hint" id="detail"></p>
       <p class="hint">If the Python package lives in a virtualenv, point the shell at it first: <code>OMLLM_PYTHON=/path/to/.venv/bin/python</code></p>
     </div>
   </div>
   <script>
-    setTimeout(() => {
+    const fail = (detail) => {
       document.getElementById("dot").style.background = "#e07a6a";
       document.getElementById("dot").style.animation = "none";
       document.getElementById("msg").classList.add("hide");
       document.getElementById("err").classList.remove("hide");
-    }, 12000);
+      if (detail) document.getElementById("detail").textContent = detail;
+    };
+    // The native shell hands the real launch failure over as a query param
+    // so the splash explains itself immediately instead of spinning 12s.
+    const bridgeError = new URLSearchParams(location.search).get("bridge_error");
+    if (bridgeError) fail(bridgeError);
+    else setTimeout(() => fail(""), 12000);
   </script>
 </body>
 </html>

@@ -34,7 +34,7 @@ from pathlib import Path
 RT = Path(__file__).resolve().parents[1]
 VALIDATION = RT / ".validation"
 CHROMIUM = "/usr/bin/chromium"
-WIDTHS = {"narrow": 420, "laptop": 1280, "desktop": 1720}
+WIDTHS = {"narrow": 420, "laptop": 1280, "desktop": 1720, "wide": 2560}
 
 # --------------------------------------------------------------------------
 # Isolation MUST happen before any ohmyllm import (paths caches env at import).
@@ -246,7 +246,7 @@ def dismiss_stray_modals(page) -> None:
 # --------------------------------------------------------------------------
 # Full interaction flows (laptop width).
 # --------------------------------------------------------------------------
-def flows_laptop(page) -> None:
+def flows_laptop(page, client) -> None:
     def f_boot():
         wait_boot(page)
         check("boot: bridge connected, run-state Ready", True)
@@ -313,6 +313,9 @@ def flows_laptop(page) -> None:
         check("one-shot allow: tool ran and turn completed",
               page.eval_on_selector_all("#stream .tool-entry", "e => e.length") >= 1
               and "Done" in assistant_text(page))
+        # task #30: the live THINK/step row must never render a bare `undefined`
+        check("no 'undefined' in transcript after a tool turn",
+              "undefined" not in page.text_content("#stream"))
 
     def f_approval_deny():
         send(page, "run ls")
@@ -328,11 +331,31 @@ def flows_laptop(page) -> None:
     def f_steer():
         send(page, "slow steer window")
         page.wait_for_selector("#cancel:not([hidden])", timeout=15_000)
+        # task #30: a playful rotating verb chip runs alongside the real step
+        # info for the whole busy window, independent of thinking events
+        page.wait_for_selector("#run-verb:not([hidden])", timeout=5_000)
+        check("live turn: verb chip visible", page.is_visible("#run-verb"))
+        verbs = {page.text_content("#run-verb")}
         send(page, "focus on the tests please")
         page.wait_for_selector("#steer-chip:not([hidden])", timeout=10_000)
         check("steer chip shown while turn busy",
               "steer queued" in page.text_content("#steer-chip"))
+        # the slow reply streams ~6s and the verb window is 3.5s, so a live
+        # turn must surface at least two distinct verbs
+        deadline = time.time() + 9
+        while time.time() < deadline and len(verbs) < 2:
+            page.wait_for_timeout(400)
+            if page.is_visible("#run-verb"):
+                verbs.add(page.text_content("#run-verb"))
+            if page.evaluate("() => document.getElementById('cancel').hidden"):
+                break
+        check("verb rotates during a live turn", len(verbs) >= 2)
+        check("verb chip never reads 'undefined'",
+              all("undefined" not in v for v in verbs))
+        check("no 'undefined' in transcript mid-turn",
+              "undefined" not in page.text_content("#stream"))
         wait_ready(page)
+        check("verb chip hidden when idle", page.is_hidden("#run-verb"))
 
     def f_draft_switch():
         # the app guards new-chat/switch while a turn streams (ported UX) —
@@ -403,10 +426,9 @@ def flows_laptop(page) -> None:
         page.keyboard.press("Control+h")
         page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
         check("clean editor navigates without warning", True)
-        # back to chat through the real view menu (no state hacks)
-        page.click("#btn-menu")
-        page.wait_for_selector("#view-menu:not([hidden])", timeout=5000)
-        page.click("#view-menu [data-view='chat']")
+        # back to chat through the persistent left rail (task #29 replaced
+        # the old top-bar view menu with the rail — same real navigation)
+        page.click("#rail [data-view='chat']")
         page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
 
     def f_focus_trap():
@@ -423,11 +445,272 @@ def flows_laptop(page) -> None:
         check("Escape closes modal and restores focus to opener",
               page.evaluate("() => document.activeElement && document.activeElement.id") == "chip-mode")
 
+    # ---------------- task #29: themed controls, rail, palette, market ----
+    def f_listbox():
+        check("zero native <select> elements anywhere",
+              page.evaluate("() => document.querySelectorAll('select').length") == 0)
+        page.wait_for_timeout(300)  # let any prior-flow settling finish
+        rect_js = ("() => { const r = document.getElementById('composer').getBoundingClientRect();"
+                   " return [r.left, r.top, r.width, r.height]; }")
+        before = page.evaluate(rect_js)
+        page.click("#sel-model .dd-btn")
+        page.wait_for_selector("#sel-model .dd-pop:not([hidden])", timeout=5_000)
+        after = page.evaluate(rect_js)
+        delta = max(abs(a - b) for a, b in zip(before, after, strict=True))
+        # the popup is out-of-flow (absolute), so opening it must not move the
+        # composer; a real in-flow popup would shift it by tens of px
+        abs_pos = page.evaluate(
+            "() => getComputedStyle(document.querySelector('#sel-model .dd-pop')).position") == "absolute"
+        print(f"PROBE dropdown layout: delta={delta:.3f}px popupAbsolute={abs_pos}", flush=True)
+        check("dropdown opens without layout shift", abs_pos and delta <= 1.0)
+        check("composer dropdown flips up (stays on screen)",
+              page.evaluate("() => document.getElementById('sel-model').classList.contains('up')"))
+        check("listbox ARIA: combobox + listbox + options",
+              page.evaluate("""() => {
+                  const b = document.querySelector('#sel-model .dd-btn');
+                  const p = document.querySelector('#sel-model .dd-pop');
+                  return b.getAttribute('role') === 'combobox'
+                      && b.getAttribute('aria-expanded') === 'true'
+                      && p.getAttribute('role') === 'listbox'
+                      && p.querySelectorAll('[role="option"]').length >= 3;
+              }"""))
+        opts = page.evaluate("() => document.getElementById('sel-model').options.map(o => o.value)")
+        check("model options populated from the backend", "mock-tool-7b" in opts)
+        orig = page.evaluate("() => document.getElementById('sel-model').value")
+        page.keyboard.type("mock-t", delay=60)
+        page.keyboard.press("Enter")
+        page.wait_for_function("() => document.getElementById('sel-model').value === 'mock-tool-7b'", timeout=5_000)
+        check("type-ahead + Enter selects a model", True)
+        page.wait_for_function("() => state.status && state.status.model === 'mock-tool-7b'", timeout=10_000)
+        check("selection propagates to the bridge", True)
+        check("popup closes after selection",
+              page.evaluate("() => document.querySelector('#sel-model .dd-pop').hidden"))
+        page.click("#sel-model .dd-btn")
+        page.wait_for_selector("#sel-model .dd-pop:not([hidden])", timeout=5_000)
+        page.keyboard.type(orig, delay=40)
+        page.keyboard.press("Enter")
+        page.wait_for_function("(m) => state.status && state.status.model === m", arg=orig, timeout=10_000)
+        check("original model restored via type-ahead", True)
+        ev = page.evaluate("() => document.getElementById('sel-effort').value")
+        page.click("#sel-effort .dd-btn")
+        page.wait_for_selector("#sel-effort .dd-pop:not([hidden])", timeout=5_000)
+        page.keyboard.press("Escape")
+        check("Escape closes the popup, value unchanged",
+              page.evaluate("() => document.querySelector('#sel-effort .dd-pop').hidden")
+              and page.evaluate("() => document.getElementById('sel-effort').value") == ev)
+
+    def f_rail():
+        check("rail: 9 view buttons + palette shortcut",
+              page.evaluate("() => document.querySelectorAll('#rail .rail-btn[data-view]').length") == 9
+              and page.is_visible("#rail-palette"))
+        ok = True
+        for v in ["models", "providers", "market", "backend", "memory", "doctor", "settings", "help", "chat"]:
+            page.click(f"#rail [data-view='{v}']")
+            page.wait_for_selector(f"#view-{v}:not([hidden])", timeout=10_000)
+            ok = ok and page.evaluate(
+                "(v) => document.querySelector(`#rail [data-view='${v}']`).classList.contains('active')", v)
+        check("rail switches all 9 views, active state follows", ok)
+
+    def f_palette_rows():
+        page.click("#rail-palette")
+        page.wait_for_selector("#palette-modal:not([hidden])", timeout=5_000)
+        page.wait_for_selector("#palette-list li", timeout=5_000)
+        n = page.eval_on_selector_all("#palette-list li", "els => els.length")
+        check("palette lists the full command set (>= 20 rows)", n >= 20)
+        bad = page.evaluate("""() => Array.from(document.querySelectorAll('#palette-list li'))
+            .filter(li => li.scrollHeight > (parseFloat(getComputedStyle(li).lineHeight) || 20) * 1.5)
+            .map(li => li.textContent.slice(0, 40))""")
+        check("every palette row stays single-line", not bad)
+        page.fill("#palette-input", "/help")
+        page.wait_for_timeout(250)
+        check("the '/help' row no longer wraps to two lines",
+              page.evaluate("""() => {
+                  const li = document.querySelector('#palette-list li');
+                  return !!li && li.scrollHeight <= (parseFloat(getComputedStyle(li).lineHeight) || 20) * 1.5;
+              }"""))
+        page.keyboard.press("Escape")
+        page.wait_for_selector("#palette-modal", state="hidden", timeout=5_000)
+
+    def f_market_cards():
+        page.click("#rail [data-view='market']")
+        page.wait_for_selector("#view-market:not([hidden])", timeout=10_000)
+        page.wait_for_selector(".market-card", timeout=15_000)
+        spreads = page.evaluate("""() => {
+            const byRow = {};
+            for (const c of document.querySelectorAll('.market-card')) {
+                const r = c.getBoundingClientRect();
+                const k = Math.round(r.top);
+                (byRow[k] = byRow[k] || []).push(r.height);
+            }
+            return Object.values(byRow).map(hs => Math.max(...hs) - Math.min(...hs));
+        }""")
+        check("market: equal card heights within each row",
+              bool(spreads) and all(d <= 1 for d in spreads))
+        # ellipsis is visual only (scrollWidth still reports full text width),
+        # so pin the computed clipping style plus the fit inside the card
+        repos = page.evaluate("""() => Array.from(document.querySelectorAll('.mc-repo')).map(e => {
+            const cs = getComputedStyle(e);
+            const card = e.closest('.market-card').getBoundingClientRect();
+            const r = e.getBoundingClientRect();
+            return {
+                clipped: cs.overflow === 'hidden' && cs.textOverflow === 'ellipsis' && cs.whiteSpace === 'nowrap',
+                fits: r.right <= card.right + 1 && r.left >= card.left - 1,
+                titled: !!e.getAttribute('title')
+            };
+        })""")
+        check("market: repo paths ellipsized within cards, all titled",
+              bool(repos) and all(r["clipped"] and r["fits"] and r["titled"] for r in repos))
+        page.click("#rail [data-view='chat']")
+        page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+
+    def f_settings_controls():
+        page.keyboard.press("Control+g")
+        page.wait_for_selector("#view-settings:not([hidden])", timeout=10_000)
+        page.wait_for_selector("#set-generation-temperature", timeout=10_000)
+        check("number inputs suppress native spinners (appearance: textfield)",
+              page.evaluate("() => getComputedStyle(document.getElementById('set-generation-temperature')).appearance") == "textfield")
+        check("temperature is wrapped in a themed stepper",
+              page.evaluate("() => { const w = document.getElementById('set-generation-temperature').closest('.stepper');"
+                            " return !!w && w.querySelectorAll('button').length === 2; }"))
+        v0 = float(page.input_value("#set-generation-temperature"))
+        page.click(".stepper:has(#set-generation-temperature) button:last-child")
+        v1 = float(page.input_value("#set-generation-temperature"))
+        check("stepper '+' increments by the step (0.1)", abs(v1 - v0 - 0.1) < 1e-9)
+        page.click(".stepper:has(#set-generation-temperature) button:first-child")
+        v2 = float(page.input_value("#set-generation-temperature"))
+        check("stepper '−' decrements back", abs(v2 - v0) < 1e-9)
+        tog = "#set-generation-streaming"
+        check("toggle checkbox is themed (appearance: none)",
+              page.evaluate("() => getComputedStyle(document.querySelector('#set-generation-streaming')).appearance") == "none")
+        c0 = page.is_checked(tog)
+        page.click(tog)
+        check("toggle flips on click", page.is_checked(tog) != c0)
+        page.click(tog)
+        check("toggle flips back", page.is_checked(tog) == c0)
+        check("settings enums are om-listbox, not native selects",
+              page.evaluate("() => document.getElementById('set-generation-effort').tagName.toLowerCase()") == "om-listbox")
+        e0 = page.evaluate("() => document.getElementById('set-generation-effort').value")
+        page.focus("#set-generation-effort .dd-btn")
+        page.keyboard.press("End")
+        page.wait_for_selector("#set-generation-effort .dd-pop:not([hidden])", timeout=5_000)
+        page.keyboard.press("Enter")
+        page.wait_for_function("() => document.getElementById('set-generation-effort').value === 'max'", timeout=5_000)
+        check("listbox End+Enter selects the last option", True)
+        page.click("#set-generation-effort .dd-btn")
+        page.wait_for_selector("#set-generation-effort .dd-pop:not([hidden])", timeout=5_000)
+        page.keyboard.type(e0, delay=40)
+        page.keyboard.press("Enter")
+        page.wait_for_function("(v) => document.getElementById('set-generation-effort').value === v", arg=e0, timeout=5_000)
+        check("effort restored, settings clean again", page.evaluate("() => !state.settingsDirty"))
+        w = page.evaluate("""() => {
+            const p = document.getElementById('view-settings'), m = document.getElementById('main');
+            const cs = getComputedStyle(p);
+            return {inner: p.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), main: m.clientWidth};
+        }""")
+        print(f"PROBE settings width @1280: inner={w['inner']:.0f}px main={w['main']:.0f}px"
+              f" ({100 * w['inner'] / w['main']:.1f}%)", flush=True)
+        check("settings content spans >= 90% of main width", w["inner"] >= 0.9 * w["main"])
+        page.keyboard.press("Control+h")
+        page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
+        check("clean settings navigate without a warning", True)
+
+    # ---------------- task #30: tab overflow + per-tab close --------------
+    def f_tabs():
+        ids = []
+        for _ in range(7):
+            r = client.post("/api/chats", {"first_message": ""})
+            ids.append(r["id"])
+        page.evaluate("async () => { await renderSidebar(); }")
+        for sid in ids:
+            page.evaluate("async (sid) => { await openChat(sid); }", sid)
+        page.wait_for_function("(n) => document.querySelectorAll('#tabs .tab').length >= n",
+                               arg=len(ids) + 1, timeout=10_000)
+        # jump to the strip start so the right-edge fade + wheel are testable
+        page.evaluate("() => document.querySelector('#tabs .tab')"
+                      ".scrollIntoView({inline:'nearest',block:'nearest',behavior:'instant'})")
+        geo = page.evaluate("""() => {
+            const t = document.getElementById('tabs'), w = document.getElementById('tabs-wrap');
+            const n = document.getElementById('btn-new');
+            return {sw: t.scrollWidth, cw: t.clientWidth, canR: w.classList.contains('can-r'),
+                    newLeft: n.getBoundingClientRect().left, wrapRight: w.getBoundingClientRect().right,
+                    newW: n.getBoundingClientRect().width};
+        }""")
+        check("tab strip overflows and scrolls horizontally", geo["sw"] > geo["cw"] + 1)
+        check("overflow edge fade advertises hidden tabs", geo["canR"])
+        check("'+' new-chat stays pinned and visible right of the strip",
+              geo["newW"] > 0 and geo["newLeft"] >= geo["wrapRight"] - 1)
+        sl0 = page.evaluate("() => document.getElementById('tabs').scrollLeft")
+        page.hover("#tabs")
+        page.mouse.wheel(0, 240)
+        page.wait_for_timeout(450)
+        sl1 = page.evaluate("() => document.getElementById('tabs').scrollLeft")
+        check("vertical wheel scrolls the strip horizontally", sl1 > sl0)
+        # activating a far-away chat scrolls its tab into view
+        page.click("#sb-list .sb-row:has-text('quartz') .title", position={"x": 8, "y": 8})
+        page.wait_for_function("""() => {
+            const a = document.querySelector('#tabs .tab.active');
+            if (!a) return false;
+            const t = document.getElementById('tabs').getBoundingClientRect();
+            const r = a.getBoundingClientRect();
+            return r.left >= t.left - 1 && r.right <= t.right + 1;
+        }""", timeout=5_000)
+        check("activating a chat scrolls its tab into view", True)
+        reach = page.evaluate("""() => {
+            const t = document.getElementById('tabs'), tr = t.getBoundingClientRect();
+            return Array.from(t.querySelectorAll('.tab')).every(el => {
+                el.scrollIntoView({inline: 'nearest', block: 'nearest', behavior: 'instant'});
+                const r = el.getBoundingClientRect();
+                return r.left >= tr.left - 1 && r.right <= tr.right + 1;
+            });
+        }""")
+        check("no tab is unreachable (every tab scrolls into view)", reach)
+        # × close on an inactive tab: the tab goes, the session stays
+        n0 = page.evaluate("() => state.openTabs.length")
+        v1 = ids[0]
+        sel1 = f"#tabs .tab[data-sid='{v1}']"
+        page.evaluate("(s) => document.querySelector(s)"
+                      ".scrollIntoView({inline:'nearest',block:'nearest',behavior:'instant'})", sel1)
+        page.hover(sel1)
+        page.click(f"{sel1} .tab-close")
+        page.wait_for_function("(sid) => !state.openTabs.includes(sid)", arg=v1, timeout=5_000)
+        check("× closes the tab (count drops by one)",
+              page.evaluate("() => state.openTabs.length") == n0 - 1)
+        chats_after = client.get("/api/chats").get("chats", [])
+        check("closed tab's session remains in Chats (bridge + sidebar)",
+              any(c["id"] == v1 for c in chats_after)
+              and page.evaluate("(sid) => state.chats.some(c => c.id === sid)", v1))
+        # middle-click closes too
+        v2 = ids[1]
+        sel2 = f"#tabs .tab[data-sid='{v2}']"
+        page.evaluate("(s) => document.querySelector(s)"
+                      ".scrollIntoView({inline:'nearest',block:'nearest',behavior:'instant'})", sel2)
+        page.click(sel2, button="middle")
+        page.wait_for_function("(sid) => !state.openTabs.includes(sid)", arg=v2, timeout=5_000)
+        check("middle-click closes a tab", True)
+        # closing the ACTIVE tab activates a neighbor
+        act = page.evaluate("() => state.session")
+        sela = f"#tabs .tab[data-sid='{act}']"
+        page.evaluate("(s) => document.querySelector(s)"
+                      ".scrollIntoView({inline:'nearest',block:'nearest',behavior:'instant'})", sela)
+        page.hover(sela)
+        page.click(f"{sela} .tab-close")
+        page.wait_for_function("(sid) => !state.openTabs.includes(sid) && state.session !== sid && state.session !== null",
+                               arg=act, timeout=10_000)
+        check("closing the active tab activates a neighbor",
+              page.evaluate("() => state.openTabs.includes(state.session)"))
+        # leave a populated chat active for the capture pass
+        qid = page.evaluate("() => (state.chats.find(c => (c.title || '').includes('quartz')) || {}).id")
+        if qid:
+            page.evaluate("async (sid) => { await openChat(sid); }", qid)
+
     for name, fn in [
         ("boot", f_boot), ("ime", f_ime), ("hints", f_hints), ("stream", f_stream),
         ("approval-allow", f_approval_allow), ("approval-deny", f_approval_deny),
         ("steer", f_steer), ("draft-switch", f_draft_switch), ("draft-reject", f_draft_reject),
         ("search", f_search), ("dirty-settings", f_dirty_settings), ("focus-trap", f_focus_trap),
+        ("listbox", f_listbox), ("rail", f_rail), ("palette-rows", f_palette_rows),
+        ("market-cards", f_market_cards), ("settings-controls", f_settings_controls),
+        ("tabs", f_tabs),
     ]:
         dismiss_stray_modals(page)
         flow(name, fn)
@@ -461,9 +744,44 @@ def flows_responsive(page, width: int) -> None:
             page.wait_for_timeout(200)
         else:
             check(f"{width}px: sidebar visible by default", page.is_visible("#sidebar"))
+        # task #29: persistent left rail (icon-only collapse on narrow)
+        check(f"{width}px: rail present with all 9 views",
+              page.evaluate("() => document.querySelectorAll('#rail .rail-btn[data-view]').length") == 9)
+        if width <= 900:
+            check(f"{width}px: rail collapses to icon-only",
+                  page.evaluate("() => getComputedStyle(document.querySelector('#rail .rail-lbl')).display") == "none")
+        else:
+            check(f"{width}px: rail shows icon + label",
+                  page.evaluate("() => getComputedStyle(document.querySelector('#rail .rail-lbl')).display") != "none")
+        # non-chat views use the full main width (fluid, capped at 1800px)
+        page.click("#rail [data-view='settings']")
+        page.wait_for_selector("#view-settings:not([hidden])", timeout=10_000)
+        page.wait_for_selector("#set-generation-temperature", timeout=10_000)
+        w = page.evaluate("""() => {
+            const p = document.getElementById('view-settings'), m = document.getElementById('main');
+            const cs = getComputedStyle(p);
+            return {inner: p.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight),
+                    main: m.clientWidth, panel: p.clientWidth};
+        }""")
+        print(f"PROBE {width}px settings width: inner={w['inner']:.0f} main={w['main']:.0f} panel={w['panel']:.0f}", flush=True)
+        if width == 1720:
+            check(f"{width}px: settings spans >= 90% of main width", w["inner"] >= 0.9 * w["main"])
+        if width >= 2560:
+            check(f"{width}px: panel width capped at ~1800px", w["panel"] <= 1801)
+        page.click("#rail [data-view='chat']")
+        page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
         check(f"{width}px: no horizontal overflow",
               page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth + 1"))
     flow(f"responsive-{width}", f)
+
+
+# content gates for the per-view capture pass (task #29/#30)
+VIEW_READY = {
+    "models": "() => document.querySelectorAll('#models-table tbody tr').length > 0",
+    "market": "() => document.querySelectorAll('.market-card').length > 0",
+    "settings": "() => !!document.getElementById('set-generation-temperature')",
+    "help": "() => !!document.querySelector('#help-body table')",
+}
 
 
 def main() -> int:
@@ -478,7 +796,8 @@ def main() -> int:
 
     VALIDATION.mkdir(parents=True, exist_ok=True)
     client, stop, th = boot_bridge()
-    shot = {"narrow": "gui-narrow.png", "laptop": "gui-laptop.png", "desktop": "gui-desktop.png"}
+    shot = {"narrow": "gui-narrow.png", "laptop": "gui-laptop.png",
+            "desktop": "gui-desktop.png", "wide": "gui-wide.png"}
     contexts = []
     try:
         # Seed a searchable session; it becomes the bridge's active session.
@@ -492,7 +811,7 @@ def main() -> int:
                     ctx, page = open_gui(pw, client.port, client.token, width)
                     contexts.append(ctx)
                     if label == "laptop":
-                        flows_laptop(page)
+                        flows_laptop(page, client)
                     else:
                         flows_responsive(page, width)
                     dismiss_stray_modals(page)
@@ -518,6 +837,19 @@ def main() -> int:
                     page.screenshot(path=str(VALIDATION / shot[label]), full_page=False)
                     check(f"screenshot saved: .validation/{shot[label]}",
                           (VALIDATION / shot[label]).exists())
+                    # capture pass: every key view at every width (chat above
+                    # keeps its legacy name; the rest are gui-{label}-{view})
+                    for v in ["models", "market", "settings", "help"]:
+                        page.click(f"#rail [data-view='{v}']")
+                        page.wait_for_selector(f"#view-{v}:not([hidden])", timeout=10_000)
+                        page.wait_for_function(VIEW_READY[v], timeout=20_000)
+                        page.wait_for_timeout(450)
+                        page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+                        name = f"gui-{label}-{v}.png"
+                        page.screenshot(path=str(VALIDATION / name), full_page=False)
+                        check(f"screenshot saved: .validation/{name}", (VALIDATION / name).exists())
+                    page.click("#rail [data-view='chat']")
+                    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
                 except Exception as exc:  # noqa: BLE001
                     check(f"{label} width run (no exception: {type(exc).__name__}: {str(exc)[:600]})", False)
                 finally:
