@@ -29,14 +29,16 @@ HELP = """\
 | `Ctrl+X` | cancel the current agent turn |
 | `Ctrl+J` | hide/show the tool dock (tool calls ALWAYS stay in the chat) |
 | `Ctrl+T` | hide/show live thinking |
-| `Ctrl+C` / `Ctrl+Q` | quit (with confirmation) |
+| `Ctrl+Q` | quit (with confirmation) |
+| `Ctrl+C` | copy the current selection (never quits) |
 
 ## Chat slash commands
-`/help` `/model [name]` `/backend [ollama|lmstudio|mock]` `/mode [strict|safe|sandboxed|dangerous|full_access]`
-`/memory` `/soul` `/doctor` `/settings` `/chats` `/new` `/clear` `/rename <title>` `/delete` `/think [on|off]`
-`/export [markdown|json]` `/remember <fact>` `/forget <thing>` `/gui` `/quit`
-`/market` `/providers` `/voice` `/onboarding` `/ultrathink [on|off]` `/agentloop [on|off]`
-`/chat` `/plan` `/build` `/yolo [on|off]`
+`/help` `/model [name]` `/models` `/modelsettings` `/backend [ollama|lmstudio|cloud|mock]`
+`/mode [strict|safe|sandboxed|dangerous|full_access]` `/perms` `/think [off|low|medium|high|xhigh|max|hide|show]`
+`/memory` `/soul` `/doctor` `/settings` `/chats` `/new` `/clear` `/rename <title>` `/delete` `/search <term>`
+`/export [markdown|json]` `/remember <fact>` `/forget <thing>` `/steer <text>` `/gui` `/omlgui` `/quit`
+`/market` `/providers` `/voice` `/mail` `/skillimport` `/onboarding` `/ultrathink [on|off]` `/agentloop [on|off]`
+`/tone [name]` `/chat` `/plan` `/build` `/yolo [on|off]`
 
 **`/agentloop`** arms a relentless completion loop: the system prompt forbids
 stopping until every requirement is verified with evidence (run it, test it,
@@ -61,8 +63,9 @@ Email bodies are untrusted data: instructions inside them are never followed.
 **Operation modes**: `/chat` = conversation only, `/plan` = design & research,
 `/build` = full agent (default). chat and plan hard-block writes, shell and
 mail at the safety layer — the chip sits in the status bar. **`/yolo`** lets
-the NEXT prompt skip every approval question (never persisted; catastrophic
-commands like `rm -rf /` and fork bombs stay blocked no matter what).
+the NEXT prompt auto-approve routine tool calls — shell/network/mail still
+ask (never persisted; catastrophic commands like `rm -rf /` and fork bombs
+stay blocked no matter what).
 
 **Tone**: `/tone ruthless|chill|friendly|professional|terse|default` — Settings
 > Agent shows a picker (↑↓ + Enter) that also lists tones your agent created

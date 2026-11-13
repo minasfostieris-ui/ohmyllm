@@ -16,7 +16,7 @@ from .. import paths
 from ..config.models import Config, PermissionMode
 from ..secureio import UnsafePathError, file_identity, is_environment_file, is_within, resolve_path
 from .modes import SAFE_COMMANDS, SUBCOMMAND_ALLOWLIST
-from .normalize import command_variants
+from .normalize import command_variants, normalize_command
 from .risk import RiskScorer, _basename, level_for
 
 
@@ -29,6 +29,7 @@ class ToolClass(StrEnum):
     MEMORY_WRITE = "memory_write"
     STATUS = "status"
     MAIL = "mail"
+    CONFIG = "config"
     OTHER = "other"
 
 
@@ -46,7 +47,7 @@ TOOL_CLASSES: dict[str, ToolClass] = {
     "email_send": ToolClass.MAIL,
     "skills_list": ToolClass.STATUS,
     "skills_read": ToolClass.STATUS,
-    "tone_create": ToolClass.STATUS,
+    "tone_create": ToolClass.CONFIG,
     "soul_read": ToolClass.MEMORY_READ,
     "soul_search": ToolClass.MEMORY_READ,
     "soul_append": ToolClass.MEMORY_WRITE,
@@ -89,6 +90,9 @@ _SENSITIVE_RX = (
     r"[/\\]\.(bash|zsh|sh|python)_history($|[^-\w])",
     r"\.mozilla([/\\]|$)", r"google-chrome([/\\]|$)", r"[/\\]chromium([/\\]|$)",
     r"firefox([/\\]|$)", r"microsoft[/\\]credentials", r"windows[/\\]system32",
+    # package-manager / registry credentials and git hook config (M2)
+    r"[/\\]\.npmrc($|[^-\w])", r"[/\\]\.pypirc($|[^-\w])",
+    r"[/\\]\.docker[/\\]config\.json($|[^-\w])", r"[/\\]\.git[/\\]config($|[^-\w])",
 )
 
 
@@ -239,7 +243,7 @@ class PolicyEngine:
                 return Decision(False, False, d.risk,
                                 (*d.reasons, f"{tool} is disabled in {omode} mode — switch with {hint}"))
         if (d.allowed and d.requires_approval and getattr(self.config.agent, "yolo", False)
-                and classify(tool) not in (ToolClass.SHELL, ToolClass.NET, ToolClass.MAIL)):
+                and classify(tool) not in (ToolClass.SHELL, ToolClass.NET, ToolClass.MAIL, ToolClass.CONFIG)):
             return Decision(True, False, d.risk, (*d.reasons, "YOLO: one-prompt approval bypass"))
         return d
 
@@ -252,12 +256,22 @@ class PolicyEngine:
         r"\b(shutdown|reboot|halt|poweroff)\b",
         r"\bchmod\s+-R\s+777\s+/(\s|$)",
         r"\bchown\s+-R\s+[^ ]+\s+/(\s|$)",
+        r"\bfind\b[^|;]*\s-delete(\s|$)",
+        r"\bfind\b[^|;]*\s-exec\s+rm\b",
+        r"\bfind\b[^|;]*\s-execdir\s+rm\b",
     )
 
     def _is_catastrophic(self, tool: str, args: dict) -> bool:
         if tool == "run_command":
-            cmd = str(args.get("command") or "").lower()
-            return any(re.search(rx, cmd) for rx in self._CATASTROPHIC_RX)
+            # Match over deobfuscated variants (semantic flags, ${VAR},
+            # ANSI-C quoting, chains, wrappers) — spelling must not dodge
+            # the catastrophic gate (C1/C2/H1).
+            cmd = str(args.get("command") or "")
+            return any(
+                re.search(rx, variant.lower())
+                for variant in command_variants(cmd)
+                for rx in self._CATASTROPHIC_RX
+            )
         if tool in ("write_file", "patch_file"):
             target = str(args.get("path") or "")
             return bool(re.match(r"^(/etc|/boot|/dev|/sys|/proc|/usr/lib/systemd)(/|$)", target))
@@ -283,6 +297,16 @@ class PolicyEngine:
 
         if cls is ToolClass.STATUS:
             return Decision(True, False, 0, tuple(reasons))
+
+        if cls is ToolClass.CONFIG:
+            # tone_create persists a system-prompt fragment: strict forbids
+            # it outright; every other mode requires explicit approval and
+            # YOLO can never bypass it (H3).
+            if mode is PermissionMode.STRICT:
+                return Decision(False, False, 5,
+                                (*reasons, "strict mode forbids tone_create (persisted prompt change)"))
+            return Decision(True, True, 5,
+                            (*reasons, "tone_create persists a system-prompt change — approval required"))
 
         if cls in (ToolClass.MEMORY_READ, ToolClass.MEMORY_WRITE):
             if not self.config.memory.enabled:
@@ -360,7 +384,11 @@ class PolicyEngine:
             reasons.extend(crisk.reasons)
             if mode is PermissionMode.SANDBOXED:
                 allowed = SAFE_COMMANDS | {c.lower() for c in self.config.safety.command_allowlist_extra}
-                base = _basename(cmd.strip().split()[0] if cmd.strip() else "")
+                stripped = cmd.strip()
+                if stripped.startswith("$"):
+                    return Decision(False, False, max(risk, 6),
+                                    (*reasons, "variable-indirect executable cannot be verified in the sandbox"))
+                base = _basename(stripped.split()[0] if stripped else "")
                 if base not in allowed:
                     return Decision(False, False, risk, (*reasons, f"{base!r} is not on the sandbox allowlist"))
                 subs = SUBCOMMAND_ALLOWLIST.get(base)
@@ -369,10 +397,22 @@ class PolicyEngine:
                     return Decision(False, False, risk, (*reasons, f"{base} {second} is not on the sandbox allowlist"))
                 if crisk.catastrophic or crisk.score >= 6:
                     return Decision(False, False, risk, (*reasons, "too dangerous for the sandbox allowlist"))
+                norm = normalize_command(cmd)
+                if base == "git" and re.search(r"\bgit\s+config\b", norm) and re.search(
+                        r"\b(core\.fsmonitor|core\.hookspath|core\.sshcommand|core\.editor|core\.pager|alias\.)", norm):
+                    return Decision(False, False, max(risk, 8),
+                                    (*reasons, "git config hook/exec injection is not allowed in the sandbox"))
                 if self._redirect_system(cmd):
                     return Decision(False, False, max(risk, 9), (*reasons, "output redirect into a system location"))
                 if self._redirect_outside(cmd):
                     return Decision(True, True, max(risk, 6), (*reasons, "output redirect outside the workspace"))
+                for tgt in self._inline_write_targets(cmd):
+                    if self.is_system(tgt) and not self._explicitly_allows(tgt):
+                        return Decision(False, False, max(risk, 9),
+                                        (*reasons, f"in-place write to system location {tgt!r}"))
+                    if not self.within_workspace(tgt):
+                        return Decision(True, True, max(risk, 6),
+                                        (*reasons, "in-place write outside the workspace"))
                 if not self.within_workspace(cwd):
                     return Decision(False, False, risk, (*reasons, "cwd outside workspace"))
                 return Decision(True, True, risk, (*reasons, "fresh one-shot shell approval required"))
@@ -385,6 +425,13 @@ class PolicyEngine:
             # full_access
             if crisk.catastrophic and not self.config.safety.catastrophic_override:
                 return Decision(False, False, risk, (*reasons, "catastrophic command blocked (settings override)"))
+            norm = normalize_command(cmd)
+            if re.search(r"\bgit\s+config\b", norm) and re.search(
+                    r"\b(core\.fsmonitor|core\.hookspath|core\.sshcommand|core\.editor|core\.pager|alias\.)", norm):
+                # M1: hook/exec injection persists arbitrary code execution —
+                # never silent, even in full_access.
+                return Decision(True, True, max(risk, 8),
+                                (*reasons, "git config hook/exec injection requires approval"))
             return Decision(True, False, risk, tuple(reasons))
 
         if cls is ToolClass.NET:
@@ -429,7 +476,10 @@ class PolicyEngine:
         # …and never outside the recipient allowlist when one is set
         allow = [a.strip().lower() for a in m.recipient_allowlist.split(",") if a.strip()]
         to = str(args.get("to") or "").strip().lower()
-        if allow and to not in allow:
+        if not allow:
+            return Decision(True, True, risk,
+                            (*reasons, "no mail recipient allowlist configured: approval required"))
+        if to not in allow:
             return Decision(True, True, 8, (*reasons, f"{to!r} is not on the mail recipient allowlist"))
         return Decision(True, False, risk, (*reasons, "full_access + mail enabled"))
 
@@ -464,6 +514,21 @@ class PolicyEngine:
             if self.is_system(tgt):
                 return True
         return False
+
+    def _inline_write_targets(self, cmd: str) -> list[str]:
+        """File operands of in-place writers that bypass redirect detection:
+        ``sed -i SCRIPT FILE…`` and ``tee [-a] FILE…`` (M1)."""
+        tokens = normalize_command(cmd).split()
+        if not tokens:
+            return []
+        base = _basename(tokens[0])
+        args = [t for t in tokens[1:] if not t.startswith("-")]
+        if base == "sed" and any(t == "-i" or t.startswith("-i") for t in tokens[1:]):
+            # sed needs a script operand; everything after it is a file
+            return args[1:] if len(args) >= 2 else []
+        if base == "tee":
+            return args
+        return []
 
 
 def describe(tool: str, args: dict, decision: Decision) -> str:

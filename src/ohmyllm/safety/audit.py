@@ -52,7 +52,15 @@ class AuditLogger:
         flags = os.O_RDWR | os.O_CREAT
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
-        fd = os.open(lock_path, flags, 0o600)
+        try:
+            fd = os.open(lock_path, flags, 0o600)
+        except OSError:
+            # A planted symlink must never be followed (O_NOFOLLOW) nor brick
+            # auditing: remove the link itself and recreate a private lock once.
+            if not lock_path.is_symlink():
+                raise
+            lock_path.unlink()
+            fd = os.open(lock_path, flags, 0o600)
         try:
             if os.name == "posix":
                 import fcntl

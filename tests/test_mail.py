@@ -160,7 +160,8 @@ def test_mail_gating_matrix(tmp_path):
 
     e = _engine(tmp_path, PermissionMode.FULL_ACCESS)
     d = e.evaluate("email_send", {"to": "a@b.c"})
-    assert d.allowed and not d.requires_approval              # opt-in + full access = silent
+    # L4: empty recipient allowlist → approval even in full_access.
+    assert d.allowed and d.requires_approval
 
     e = _engine(tmp_path, PermissionMode.FULL_ACCESS, enabled=False)
     assert e.evaluate("email_send", {"to": "a@b.c"}).requires_approval  # kill switch holds

@@ -236,8 +236,9 @@ class PlainApp:
             cur = bool(getattr(self.svc.config.agent, "yolo", False))
             want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
             self.svc.config.agent.yolo = want == "on"
-            c.print("[bold red]⚡ YOLO armed — the NEXT prompt skips approvals; "
-                    "catastrophic commands (rm -rf /, fork bombs) stay blocked[/bold red]"
+            c.print("[bold red]⚡ YOLO armed — the NEXT prompt auto-approves routine tool calls; "
+                    "shell/network/mail still ask; catastrophic commands "
+                    "(rm -rf /, fork bombs) stay blocked[/bold red]"
                     if want == "on" else "[green]yolo off — approvals restored[/green]")
         elif cmd == "settings":
             # NEVER dump raw config: [cloud] keys would land in terminal
@@ -303,10 +304,15 @@ class PlainApp:
         cfg = self.svc.config
         section = getattr(cfg, backend_key, None)
         if section is not None and hasattr(section, "default_model"):
+            changed = cfg.default_backend.value != backend_key
             section.default_model = model
-            if cfg.default_backend.value != backend_key:
+            if changed:
                 cfg.default_backend = BackendName(backend_key)
             self.svc.save_config()
+            if changed:
+                # D4: a cross-backend /model must rebind the live runtime too,
+                # or the next turn keeps talking to the previous backend.
+                self.rt = self.svc.runtime()
             self.console.print(f"[green]default model → {backend_key}:{model}[/green]")
 
     async def _backend(self, arg: str) -> None:
@@ -342,6 +348,10 @@ class PlainApp:
             self.console.print(f"[bold red]FULL ACCESS: no prompts. Type the phrase {self.svc.full_access_phrase()!r} to confirm.[/bold red]")
             phrase = (self.console.input("phrase> ")).strip()
         ok = self.svc.set_mode(mode, phrase=phrase)
+        if ok:
+            # D3: the live runtime holds its own policy object — rebuild it so
+            # the new mode actually governs the next turn.
+            self.rt = self.svc.runtime()
         self.console.print("[green]mode set[/green]" if ok else "[red]phrase mismatch — mode unchanged[/red]")
 
     async def _memory(self, arg: str) -> None:
@@ -438,7 +448,7 @@ class PlainApp:
     def _print_help(self) -> None:
         self.console.print(Panel(
             "/help /model /backend /mode /soul /memory [edit|forget …] /doctor /settings /agentloop /tone\n"
-            "/chat /plan /build — operation modes · /yolo — next prompt skips approvals\n"
+            "/chat /plan /build — operation modes · /yolo — next prompt auto-approves routine calls; shell/network/mail still ask\n"
             "/chats [open N] /new /rename <title> /delete [id] /export [json|markdown] /clear /quit\n"
             "Plain mode uses the SAME permission engine as the TUI — blocked is blocked.",
             title="OhMyLLM plain mode", border_style="cyan",

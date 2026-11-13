@@ -178,13 +178,20 @@ class OllamaBackend(BaseBackend):
                 path=m.get("digest"),
             )
             out.append(info.apply_name_heuristics())
-        for info in out:
-            try:
-                show = await self.inspect(info.name)
-            except Exception:  # noqa: BLE001 — listing must not fail on metadata
-                show = {}
+        # D13: enrich metadata with bounded parallelism — a serial /api/show
+        # per model made the Models screen crawl on big libraries.
+        sem = asyncio.Semaphore(4)
+
+        async def enrich(info: ModelInfo) -> None:
+            async with sem:
+                try:
+                    show = await self.inspect(info.name)
+                except Exception:  # noqa: BLE001 — listing must not fail on metadata
+                    show = {}
             if show:
                 _apply_show(info, show)
+
+        await asyncio.gather(*(enrich(i) for i in out))
         return out
 
     async def inspect(self, model: str) -> dict[str, Any]:

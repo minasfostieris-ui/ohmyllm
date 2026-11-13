@@ -55,6 +55,7 @@ from ohmyllm.backends import registry  # noqa: E402
 from ohmyllm.backends.mock import MockBackend  # noqa: E402
 from ohmyllm.config import Config, ConfigStore, PermissionMode  # noqa: E402
 from ohmyllm.config.models import BackendName  # noqa: E402
+from ohmyllm.sessions.store import SessionStore  # noqa: E402
 
 
 class FakeBackend(MockBackend):
@@ -183,13 +184,39 @@ def open_gui(pw, port: int, token: str, width: int):
         executable_path=CHROMIUM,
         headless=True,
         viewport={"width": width, "height": 900},
-        # NO --no-sandbox: the Chromium sandbox stays enabled.
+        # K24: explicitly retain the Chromium sandbox. Playwright defaults to
+        # chromium_sandbox=False, which silently passes --no-sandbox; the
+        # setuid chrome-sandbox helper / unprivileged userns make True work.
+        chromium_sandbox=True,
     )
     page = ctx.pages[0] if ctx.pages else ctx.new_page()
     page.set_default_timeout(20_000)
     page.on("dialog", lambda d: d.accept())  # beforeunload must never hang us
     page.goto(f"http://127.0.0.1:{port}/#token={token}", wait_until="domcontentloaded")
-    return ctx, page
+    return ctx, page, profile
+
+
+def sandbox_proof(profile: str) -> bool:
+    """K24: prove the browser for this unique profile runs WITH the sandbox.
+
+    Scan /proc for the process whose cmdline carries our --user-data-dir and
+    assert it was found and never received --no-sandbox.
+    """
+    needle = profile.encode()
+    found = False
+    disabled = False
+    for p in Path("/proc").iterdir():
+        if not p.name.isdigit():
+            continue
+        try:
+            cmd = (p / "cmdline").read_bytes()
+        except OSError:
+            continue
+        if needle in cmd:
+            found = True
+            if b"--no-sandbox" in cmd:
+                disabled = True
+    return found and not disabled
 
 
 def wait_boot(page) -> None:
@@ -628,6 +655,10 @@ def flows_laptop(page, client) -> None:
         # jump to the strip start so the right-edge fade + wheel are testable
         page.evaluate("() => document.querySelector('#tabs .tab')"
                       ".scrollIntoView({inline:'nearest',block:'nearest',behavior:'instant'})")
+        # auto-scroll now follows the active tab, so settle back at the start
+        # and let the scroll event refresh the edge fades before measuring.
+        page.wait_for_function("() => document.getElementById('tabs').scrollLeft <= 2", timeout=5_000)
+        page.wait_for_timeout(150)
         geo = page.evaluate("""() => {
             const t = document.getElementById('tabs'), w = document.getElementById('tabs-wrap');
             const n = document.getElementById('btn-new');
@@ -711,6 +742,21 @@ def flows_laptop(page, client) -> None:
         ("listbox", f_listbox), ("rail", f_rail), ("palette-rows", f_palette_rows),
         ("market-cards", f_market_cards), ("settings-controls", f_settings_controls),
         ("tabs", f_tabs),
+        # ---- R1 UX regression flows (task #48) ----
+        ("codeblock", lambda: f_codeblock(page, client)),
+        ("replay-status", lambda: f_replay_status(page, client)),
+        ("dates", lambda: f_dates(page, client)),
+        ("close-guard", lambda: f_close_guard(page, client)),
+        ("stay", lambda: f_stay(page, client)),
+        ("composer-foot", lambda: f_composer_foot(page, client)),
+        ("market-bars", lambda: f_market_bars(page, client)),
+        ("settings-bounds", lambda: f_settings_bounds(page, client)),
+        ("r1ux-misc", lambda: f_misc(page, client)),
+        ("quit", lambda: f_quit(page, client)),
+        ("hints-aria", lambda: f_hints_aria(page, client)),
+        ("export-skills", lambda: f_export_skills(page, client)),
+        ("toggles", lambda: f_toggles(page, client)),
+        ("tab-patch", lambda: f_tab_patch(page, client)),
     ]:
         dismiss_stray_modals(page)
         flow(name, fn)
@@ -729,6 +775,549 @@ EMPTY_AGENT_JS = """() => {
 }"""
 
 
+# --------------------------------------------------------------------------
+# R1 UX regression flows (task #48). Module-level so each is self-contained;
+# they run AFTER the legacy laptop flows and never mutate their assertions.
+# --------------------------------------------------------------------------
+def f_codeblock(page, client) -> None:
+    """K1: hl() tokenizes the RAW source once — quotes/comments/keywords in
+    code must round-trip, never nest spans, and render + copy verbatim."""
+    src = "\n".join([
+        '# class demo: "return" inside a comment',
+        "def f(x):",
+        '    s = "class const return 42"',
+        "    t = 'fn let 7'",
+        "    return x + 1  # trailing class",
+    ])
+    probe = page.evaluate("""(src) => {
+        const h = hl(src, 'python');
+        const stripped = h.replace(/<span class="[a-z]+">/g, '').replace(/<\\/span>/g, '');
+        const round = stripped.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+        return {
+            roundtrip: round === src,
+            noNested: !/<span[^>]*>[^<]*<span/.test(h),
+            cmt2: (h.match(/class="cmt"/g) || []).length === 2,
+            kw2: (h.match(/class="kw"/g) || []).length === 2,
+            strKeeps: /class="str">[^<]*class const return/.test(h),
+        };
+    }""", src)
+    check("K1 hl(): raw-source roundtrip, no nested spans", probe["roundtrip"] and probe["noNested"])
+    check("K1 hl(): string>comment>keyword priority (2 cmt, 2 kw, keywords kept in string)",
+          probe["cmt2"] and probe["kw2"] and probe["strKeeps"])
+    store = SessionStore()
+    sess = store.create(title="codeblock probe")
+    sess.add_message("user", "show me code")
+    sess.add_message("assistant", "Here:\n\n```python\n" + src + "\n```\n")
+    store.save(sess)
+    page.evaluate("async (sid) => { await openChat(sid); }", sess.id)
+    page.wait_for_selector("#stream .codeblock code", timeout=10_000)
+    dom = page.evaluate("""() => {
+        const c = document.querySelector('#stream .codeblock code');
+        const b = document.querySelector('#stream .codeblock .copy-code');
+        return {code: c.textContent, copy: b.dataset.code};
+    }""")
+    check("K1 rendered code block preserves source exactly (display + copy)",
+          dom["code"].strip() == src.strip() and dom["copy"].strip() == src.strip())
+    page.screenshot(path=str(VALIDATION / "gui-laptop-codeblock.png"), full_page=False)
+    check("screenshot saved: .validation/gui-laptop-codeblock.png",
+          (VALIDATION / "gui-laptop-codeblock.png").exists())
+
+
+def f_replay_status(page, client) -> None:
+    """K2: replay journals per-call id/args/status — ok/denied/blocked rows
+    stay distinct, colored, and the approval echoes become decided cards."""
+    store = SessionStore()
+    sess = store.create(title="replay probe")
+    sess.add_message("user", "run some tools")
+    sess.add_message("assistant", "", tool_calls=[
+        {"id": "call_a", "type": "function", "function": {"name": "run_command", "arguments": json.dumps({"command": "ls"})}},
+        {"id": "call_b", "type": "function", "function": {"name": "run_command", "arguments": json.dumps({"command": "rm -rf /tmp/x"})}},
+        {"id": "call_c", "type": "function", "function": {"name": "write_file", "arguments": json.dumps({"path": "/etc/passwd", "content": "x"})}},
+    ])
+    sess.add_message("tool", "total 0\nfile.txt", tool_call_id="call_a", name="run_command")
+    sess.add_message("assistant", "[asked to run run_command]")
+    sess.add_message("tool", "The user DENIED this tool call. Do not retry it; adapt your answer.", tool_call_id="call_b", name="run_command")
+    sess.add_message("assistant", "[attempted write_file]")
+    sess.add_message("tool", "BLOCKED BY PERMISSION ENGINE: outside workspace", tool_call_id="call_c", name="write_file")
+    sess.add_message("assistant", "Done.")
+    sess.record_tool("run_command", {"command": "ls"}, "ok", "allow", 12.0)
+    sess.record_tool("run_command", {"command": "rm -rf /tmp/x"}, "denied", "deny", 3.0)
+    sess.record_tool("write_file", {"path": "/etc/passwd", "content": "x"}, "blocked", "deny", 1.0)
+    store.save(sess)
+    page.evaluate("async (sid) => { await openChat(sid); }", sess.id)
+    page.wait_for_selector("#stream .tool-entry", timeout=10_000)
+    info = page.evaluate("""() => Array.from(document.querySelectorAll('#stream .tool-entry')).map(e => ({
+        call: e.dataset.call,
+        cls: ['ok', 'denied', 'blocked', 'err'].filter(c => e.classList.contains(c)),
+        tag: e.querySelector('summary .tag').textContent,
+        color: getComputedStyle(e.querySelector('summary .tag')).color,
+        args: e.querySelectorAll('pre')[0].textContent,
+    }))""")
+    ok = (len(info) == 3
+          and [i["call"] for i in info] == ["call_a", "call_b", "call_c"]
+          and info[0]["cls"] == ["ok"] and info[0]["tag"] == "ok"
+          and info[1]["cls"] == ["denied"] and info[1]["tag"] == "denied"
+          and info[2]["cls"] == ["blocked"] and info[2]["tag"] == "blocked"
+          and "ls" in info[0]["args"] and "rm -rf" in info[1]["args"])
+    check("K2 replay: per-call id, status class, tag and args (ok/denied/blocked)", ok)
+    check("K2 replay: denied tag red, blocked tag amber",
+          info[1]["color"] == "rgb(224, 104, 92)" and info[2]["color"] == "rgb(226, 166, 61)")
+    st = page.evaluate(EMPTY_AGENT_JS)
+    check("K2 replay: echoes are decided cards, no empty rows, no leaked prose",
+          st["cards"] == 2 and st["empty"] == 0 and st["echoes"] == 0)
+    page.screenshot(path=str(VALIDATION / "gui-laptop-replay.png"), full_page=False)
+    check("screenshot saved: .validation/gui-laptop-replay.png",
+          (VALIDATION / "gui-laptop-replay.png").exists())
+
+
+def f_dates(page, client) -> None:
+    """K3: /api/chats rows carry epoch SECONDS — relTime must scale to ms."""
+    page.evaluate("async () => { await renderSidebar(); }")
+    page.wait_for_selector("#sb-list .sb-row time", timeout=10_000)
+    probe = page.evaluate("""() => {
+        const nowS = Date.now() / 1000;
+        return {
+            h: relTime(nowS - 3600),
+            m: relTime(nowS - 120),
+            iso: relTime(new Date((nowS - 3600) * 1000).toISOString()),
+            times: Array.from(document.querySelectorAll('#sb-list .sb-row time')).map(e => e.textContent),
+        };
+    }""")
+    check("K3 relTime: epoch seconds -> '1h ago' / '2m ago', ISO too",
+          probe["h"] == "1h ago" and probe["m"] == "2m ago" and probe["iso"] == "1h ago")
+    check("K3 sidebar timestamps sane (non-empty, no 1970)",
+          bool(probe["times"]) and all(t.strip() and "1970" not in t for t in probe["times"]))
+
+
+def f_close_guard(page, client) -> None:
+    """K5: the streaming guard runs before pruning; a refused switch restores
+    the tab instead of leaking it."""
+    wait_ready(page)
+    sid = page.evaluate("() => state.session")
+    other = client.post("/api/chats", {"first_message": ""})["id"]
+    page.evaluate("(sid) => { state.openTabs = [sid]; renderTabs(); }", sid)
+    send(page, "slow guard window")
+    page.wait_for_selector("#cancel:not([hidden])", timeout=15_000)
+    page.evaluate("async (sid) => { await closeTab(sid); }", sid)
+    g1 = page.evaluate("""(sid) => ({
+        present: state.openTabs.includes(sid),
+        session: state.session === sid,
+        toast: document.getElementById('toasts').innerText,
+    })""", sid)
+    check("K5 closeTab: streaming guard refuses last-tab close, tab+session intact",
+          g1["present"] and g1["session"]
+          and "Stop the current turn before closing the last tab" in g1["toast"])
+    page.evaluate("(o) => { state.openTabs.push(o); renderTabs(); }", other)
+    page.evaluate("async (sid) => { await closeTab(sid); }", sid)
+    g2 = page.evaluate("""(sid) => ({
+        present: state.openTabs.includes(sid), session: state.session === sid,
+    })""", sid)
+    check("K5 closeTab: refused switch restores the tab (no pruning leak)",
+          g2["present"] and g2["session"])
+    page.keyboard.press("Control+x")
+    wait_ready(page)
+
+
+def f_stay(page, client) -> None:
+    """K6: Stay on the unsaved-edits modal cancels the switch AND new-chat."""
+    other = client.post("/api/chats", {"first_message": ""})["id"]
+    page.keyboard.press("Control+g")
+    page.wait_for_selector("#view-settings:not([hidden])", timeout=10_000)
+    page.wait_for_selector("#set-generation-temperature", timeout=10_000)
+    orig = page.input_value("#set-generation-temperature")
+    dirty = "0.9" if orig != "0.9" else "0.8"
+    page.fill("#set-generation-temperature", dirty)
+    page.wait_for_function("() => state.settingsDirty", timeout=5_000)
+    n0 = len(client.get("/api/chats").get("chats", []))
+    page.evaluate("(sid) => { window.__r = openChat(sid); }", other)
+    page.wait_for_selector("#confirm-modal:not([hidden])", timeout=10_000)
+    page.click("#cf-cancel")
+    r = page.evaluate("async () => await window.__r")
+    stayed = page.evaluate("""() => ({
+        view: state.view,
+        visible: !document.getElementById('view-settings').hidden,
+        temp: document.getElementById('set-generation-temperature').value,
+    })""")
+    check("K6 Stay cancels chat switch (openChat false, dirty editor kept)",
+          r is False and stayed["view"] == "settings" and stayed["visible"] and stayed["temp"] == dirty)
+    page.evaluate("() => { window.__r2 = newChat(); }")
+    page.wait_for_selector("#confirm-modal:not([hidden])", timeout=10_000)
+    page.click("#cf-cancel")
+    page.evaluate("async () => { await window.__r2; }")
+    n1 = len(client.get("/api/chats").get("chats", []))
+    check("K6 Stay cancels new-chat (no chat spawned)", n1 == n0)
+    page.fill("#set-generation-temperature", orig)
+    page.wait_for_function("() => !state.settingsDirty", timeout=5_000)
+    page.keyboard.press("Control+h")
+    page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
+    check("K6 clean editor navigates after restore", True)
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+
+
+def f_composer_foot(page, client) -> None:
+    """K8: --composer-h tracks the real composer height so the stream-foot
+    rides above it even when the composer grows tall."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    page.fill("#input", "\n".join(f"line {i}" for i in range(12)))
+    page.wait_for_timeout(350)
+    geo = page.evaluate("""() => {
+        const w = document.querySelector('.composer-wrap');
+        const foot = document.querySelector('.stream-foot');
+        const cs = getComputedStyle(document.documentElement).getPropertyValue('--composer-h').trim();
+        return {varH: parseFloat(cs), wrapH: w.offsetHeight,
+                footBottom: foot.getBoundingClientRect().bottom,
+                wrapTop: w.getBoundingClientRect().top};
+    }""")
+    check("K8 --composer-h tracks the real composer height", abs(geo["varH"] - geo["wrapH"]) <= 1)
+    check("K8 stream-foot sits above the grown composer (no overlap)",
+          geo["footBottom"] <= geo["wrapTop"] + 1)
+    page.screenshot(path=str(VALIDATION / "gui-laptop-tall-composer.png"), full_page=False)
+    check("screenshot saved: .validation/gui-laptop-tall-composer.png",
+          (VALIDATION / "gui-laptop-tall-composer.png").exists())
+    page.fill("#input", "")
+    page.wait_for_timeout(200)
+
+
+def f_market_bars(page, client) -> None:
+    """K9: fit-bar widths are set through CSSOM (CSP blocks style attrs)."""
+    page.click("#rail [data-view='market']")
+    page.wait_for_selector("#view-market:not([hidden])", timeout=10_000)
+    page.wait_for_selector(".market-card", timeout=15_000)
+    page.evaluate("() => { if (marketData && !marketData.vram_bytes)"
+                  " { marketData.vram_bytes = 24 * 2 ** 30; paintMarket(); } }")
+    page.wait_for_timeout(200)
+    bars = page.evaluate("""() => {
+        const is = Array.from(document.querySelectorAll('.mc-bar i'));
+        return {n: is.length,
+                allInline: is.every(e => e.style.width && e.style.width.endsWith('%')),
+                widths: [...new Set(is.map(e => getComputedStyle(e).width))]};
+    }""")
+    check("K9 market fit bars set width via CSSOM (inline style, CSP-safe)",
+          bars["n"] > 0 and bars["allInline"])
+    check("K9 market fit bars show varied widths (not all zero)", len(bars["widths"]) >= 2)
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+
+
+def f_settings_bounds(page, client) -> None:
+    """K10: number inputs carry min/max; an out-of-range save highlights the
+    field inline, keeps the edit, and never sends a partial config payload."""
+    page.keyboard.press("Control+g")
+    page.wait_for_selector("#view-settings:not([hidden])", timeout=10_000)
+    page.wait_for_selector("#set-generation-temperature", timeout=10_000)
+    orig = page.input_value("#set-generation-temperature")
+    attrs = page.evaluate("""() => {
+        const t = document.getElementById('set-generation-temperature');
+        const m = document.getElementById('set-agent-max_steps');
+        return {tmin: t.min, tmax: t.max, mmin: m.min, mmax: m.max};
+    }""")
+    check("K10 number inputs carry min/max from SET_BOUNDS",
+          attrs["tmin"] == "0" and attrs["tmax"] == "2" and attrs["mmin"] == "1" and attrs["mmax"] == "64")
+    hits = {"n": 0}
+
+    def guard(route):
+        if route.request.method in ("PATCH", "POST"):
+            hits["n"] += 1
+        route.continue_()
+
+    page.route("**/api/config", guard)
+    page.route("**/api/config/agent", guard)
+    try:
+        page.fill("#set-generation-temperature", "5")
+        page.click("#settings-save")
+        page.wait_for_selector("#set-generation-temperature.invalid", timeout=5_000)
+        err = page.evaluate("""() => {
+            const t = document.getElementById('set-generation-temperature');
+            const e = document.getElementById('set-generation-temperature-err');
+            return {invalid: t.classList.contains('invalid'), aria: t.getAttribute('aria-invalid'),
+                    errText: e ? e.textContent : '', value: t.value,
+                    toast: document.getElementById('toasts').innerText};
+        }""")
+        check("K10 out-of-range save: inline error + aria-invalid + value kept",
+              err["invalid"] and err["aria"] == "true" and "2" in err["errText"] and err["value"] == "5")
+        check("K10 out-of-range save: human toast, no partial config write",
+              "out of range" in err["toast"] and hits["n"] == 0)
+        page.fill("#set-generation-temperature", orig)
+        page.wait_for_function(
+            "() => !document.getElementById('set-generation-temperature').classList.contains('invalid')",
+            timeout=5_000)
+        check("K10 inline error clears when the field is corrected", True)
+    finally:
+        page.unroute("**/api/config")
+        page.unroute("**/api/config/agent")
+    page.keyboard.press("Control+h")
+    page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+
+
+def f_misc(page, client) -> None:
+    """K11/K30/K31/K32/K42/K36 + K22 help/mail/search honesty fixes."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    page.evaluate("() => setSidebar(false)")
+    page.keyboard.press("Control+o")
+    page.wait_for_timeout(200)
+    k11 = page.evaluate("() => ({open: sidebarIsOpen(), focus: document.activeElement.id})")
+    check("K11 Ctrl+O opens sidebar + focuses search", k11["open"] and k11["focus"] == "sb-search")
+    check("K30 run-verb is aria-hidden (decorative)",
+          page.get_attribute("#run-verb", "aria-hidden") == "true")
+    page.keyboard.press("Control+h")
+    page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
+    page.wait_for_selector("#help-body table", timeout=10_000)
+    check("K31 help table cells wrap (white-space: normal)",
+          page.evaluate("() => Array.from(document.querySelectorAll('#help-body td'))"
+                        ".every(td => getComputedStyle(td).whiteSpace === 'normal')"))
+    check("K22 help documents the TUI-only subset", "TUI-only" in page.text_content("#help-body"))
+    page.click("#rail [data-view='providers']")
+    page.wait_for_selector("#view-providers:not([hidden])", timeout=10_000)
+    page.wait_for_timeout(300)
+    cur = page.evaluate("() => { const r = document.querySelector('.prov-row');"
+                        " return r ? getComputedStyle(r).cursor : 'auto'; }")
+    check("K32 provider rows have no pointer cursor", cur != "pointer")
+    check("K42 .dd.right CSS rule present", page.evaluate("""() => {
+        for (const sheet of document.styleSheets) {
+            try { for (const r of sheet.cssRules) if (r.selectorText && r.selectorText.includes('.dd.right')) return true; }
+            catch (e) { /* cross-origin */ }
+        }
+        return false;
+    }"""))
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    page.route("**/api/voice", lambda route: route.fulfill(
+        status=401, content_type="application/json", body=json.dumps({"error": "bad token"})))
+    try:
+        page.evaluate("async () => { await handleSlash('/voice'); }")
+        page.wait_for_timeout(200)
+        check("K36 401 toast gives the relaunch instruction", "relaunch with" in page.text_content("#toasts"))
+    finally:
+        page.unroute("**/api/voice")
+    page.evaluate("async () => { await handleSlash('/mail'); }")
+    page.wait_for_timeout(150)
+    check("K22 /mail toast points to `oml mail`", "oml mail" in page.text_content("#toasts"))
+    page.evaluate("async () => { await handleSlash('/search quartz'); }")
+    page.wait_for_timeout(400)
+    s = page.evaluate("""() => ({open: sidebarIsOpen(), q: document.getElementById('sb-search').value,
+        rows: document.querySelectorAll('#sb-list .sb-row').length})""")
+    check("K22 /search opens sidebar with the query and results",
+          s["open"] and s["q"] == "quartz" and s["rows"] >= 1)
+    page.fill("#sb-search", "")
+    page.evaluate("async () => { await renderSidebar(); }")
+
+
+def f_quit(page, client) -> None:
+    """K12: /quit honors ui.confirm_quit. The shutdown endpoint is ALWAYS
+    intercepted — the real bridge must never be told to shut down."""
+    hits = {"n": 0}
+
+    def shutdown_guard(route):
+        hits["n"] += 1
+        route.fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True}))
+
+    page.route("**/api/shutdown", shutdown_guard)
+    try:
+        page.evaluate("() => { state.config.ui = state.config.ui || {}; state.config.ui.confirm_quit = false; }")
+        page.evaluate("async () => { await handleSlash('/quit'); }")
+        page.wait_for_timeout(200)
+        check("K12 confirm_quit=false: /quit posts shutdown without a modal",
+              hits["n"] == 1 and page.evaluate("() => document.getElementById('confirm-modal').hidden"))
+        page.evaluate("() => { state.config.ui.confirm_quit = true; }")
+        page.evaluate("() => { window.__q = handleSlash('/quit'); }")
+        page.wait_for_selector("#confirm-modal:not([hidden])", timeout=10_000)
+        page.click("#cf-cancel")
+        page.evaluate("async () => { await window.__q; }")
+        check("K12 confirm_quit=true: Stay cancels shutdown", hits["n"] == 1)
+    finally:
+        page.unroute("**/api/shutdown")
+        page.evaluate("() => { if (state.config && state.config.ui) delete state.config.ui.confirm_quit; }")
+
+
+def f_hints_aria(page, client) -> None:
+    """K41 exact-match sorts first; K35 composer is a combobox whose
+    aria-activedescendant follows the arrow keys."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    page.fill("#input", "/mode")
+    page.wait_for_selector("#slash-hint:not([hidden])", timeout=5_000)
+    check("K41 exact-match command sorts first", page.evaluate("() => slashMatches[0].cmd") == "/mode")
+    aria = page.evaluate("""() => {
+        const i = document.getElementById('input');
+        return {role: i.getAttribute('role'), expanded: i.getAttribute('aria-expanded'),
+                active: i.getAttribute('aria-activedescendant')};
+    }""")
+    check("K35 composer combobox: expanded + activedescendant",
+          aria["role"] == "combobox" and aria["expanded"] == "true" and aria["active"] == "slash-opt-0")
+    page.keyboard.press("ArrowDown")
+    a1 = page.get_attribute("#input", "aria-activedescendant")
+    page.keyboard.press("ArrowUp")
+    a0 = page.get_attribute("#input", "aria-activedescendant")
+    check("K35 arrow keys move aria-activedescendant", a1 == "slash-opt-1" and a0 == "slash-opt-0")
+    page.keyboard.press("Enter")
+    page.wait_for_selector("#mode-modal:not([hidden])", timeout=5_000)
+    check("K41 Enter on the exact match opens the mode modal", True)
+    page.keyboard.press("Escape")
+    page.wait_for_selector("#mode-modal", state="hidden", timeout=5_000)
+    page.wait_for_timeout(150)
+    check("K35 aria-expanded false after hints close", page.get_attribute("#input", "aria-expanded") == "false")
+    page.fill("#input", "")
+
+
+def f_export_skills(page, client) -> None:
+    """K39: /export json writes a .json file, bad formats warn + keep input,
+    and casting an unknown skill is refused."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    sid = page.evaluate("() => state.session")
+    if not sid:
+        sid = client.post("/api/chats", {"first_message": "export probe"})["id"]
+        page.evaluate("async (s) => { await openChat(s); }", sid)
+    page.evaluate("async () => { await handleSlash('/export json'); }")
+    page.wait_for_timeout(400)
+    toast = page.text_content("#toasts")
+    check("K39 /export json exports a .json file", "exported" in toast and ".json" in toast)
+    page.fill("#input", "/export bogus")
+    page.evaluate("async () => { await handleSlash('/export bogus'); }")
+    page.wait_for_timeout(200)
+    bad = page.evaluate("() => ({toast: document.getElementById('toasts').innerText,"
+                        " input: document.getElementById('input').value})")
+    check("K39 /export rejects unknown format with usage + keeps input",
+          "usage: /export" in bad["toast"] and bad["input"] == "/export bogus")
+    page.fill("#input", "")
+    skill_dir = HOME / "skills" / "probe-skill"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: probe-skill\ndescription: A probe skill for the checker.\n---\n\n# Probe\n\nInstructions.\n",
+        encoding="utf-8")
+    page.click("#btn-plus")
+    page.wait_for_selector("#plus-skills", state="visible", timeout=5_000)
+    page.click("#plus-skills")
+    page.wait_for_selector("#prompt-modal:not([hidden])", timeout=5_000)
+    page.fill("#pm-input", "does-not-exist")
+    page.click("#pm-ok")
+    page.wait_for_timeout(300)
+    sk = page.text_content("#toasts")
+    check("K39 casting an unknown skill is refused with a helpful toast",
+          "unknown skill" in sk and "probe-skill" in sk)
+
+
+def f_toggles(page, client) -> None:
+    """K23: Ctrl+J / Ctrl+T parity toggles, End jump-to-latest, F2 sidebar,
+    and an honest refusal of vision image paste."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    j0 = page.evaluate("() => !(state.config && state.config.ui && state.config.ui.show_tool_panels === false)")
+    page.keyboard.press("Control+j")
+    page.wait_for_timeout(300)
+    j1 = page.evaluate("() => state.config.ui.show_tool_panels")
+    check("K23 Ctrl+J toggles tool panels", j1 == (not j0))
+    page.keyboard.press("Control+j")
+    page.wait_for_timeout(300)
+    check("K23 Ctrl+J toggles back",
+          page.evaluate("() => !(state.config.ui.show_tool_panels === false)") == j0)
+    t0 = page.evaluate("() => !(state.config && state.config.agent && state.config.agent.thinking_visible === false)")
+    page.keyboard.press("Control+t")
+    page.wait_for_timeout(300)
+    check("K23 Ctrl+T toggles thinking text",
+          page.evaluate("() => state.config.agent.thinking_visible") == (not t0))
+    page.keyboard.press("Control+t")
+    page.wait_for_timeout(300)
+    page.evaluate("() => { const i = document.getElementById('input'); i.blur();"
+                  " if (document.activeElement && document.activeElement.blur) document.activeElement.blur();"
+                  " state.following = false; document.getElementById('stream').scrollTop = 0; }")
+    page.keyboard.press("End")
+    page.wait_for_timeout(200)
+    end = page.evaluate("() => ({following: state.following, jump: document.getElementById('jump-latest').hidden})")
+    check("K23 End jumps to latest + resumes following", end["following"] and end["jump"])
+    f0 = page.evaluate("() => sidebarIsOpen()")
+    page.keyboard.press("F2")
+    page.wait_for_timeout(200)
+    check("K23 F2 toggles the sidebar", page.evaluate("() => sidebarIsOpen()") != f0)
+    page.keyboard.press("F2")
+    page.wait_for_timeout(200)
+    paste = page.evaluate("""() => {
+        const inp = document.getElementById('input');
+        const dt = new DataTransfer();
+        dt.items.add(new File([new Uint8Array([137, 80, 78, 71])], 'x.png', {type: 'image/png'}));
+        const ev = new ClipboardEvent('paste', {clipboardData: dt, bubbles: true, cancelable: true});
+        inp.dispatchEvent(ev);
+        return {prevented: ev.defaultPrevented, toast: document.getElementById('toasts').innerText};
+    }""")
+    check("K23 image paste refused with TUI-only guidance",
+          paste["prevented"] and "TUI-only" in paste["toast"])
+
+
+def f_tab_patch(page, client) -> None:
+    """K4/K34: renderTabs diff/patches (nodes + scroll + focus survive the 2s
+    poll), tabs are proper ARIA tabs, and the overflow scrollbar is hidden.
+    Runs LAST so the capture pass shows a populated, overflowing strip."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    need = page.evaluate("() => Math.max(0, 12 - state.openTabs.length)")
+    for _ in range(need):
+        sid = client.post("/api/chats", {"first_message": ""})["id"]
+        page.evaluate("async (s) => { await openChat(s); }", sid)
+    page.wait_for_function("() => document.querySelectorAll('#tabs .tab').length >= 12", timeout=15_000)
+    page.evaluate("""() => {
+        document.querySelectorAll('#tabs .tab').forEach((t, i) => { t.__mark = 'm' + i; });
+        document.getElementById('tabs').scrollLeft = 40;
+    }""")
+    sl_set = page.evaluate("() => document.getElementById('tabs').scrollLeft")
+    page.evaluate("() => renderTabs()")
+    patch = page.evaluate("""() => {
+        const ts = Array.from(document.querySelectorAll('#tabs .tab'));
+        return {marks: ts.every(t => typeof t.__mark === 'string'),
+                scroll: document.getElementById('tabs').scrollLeft,
+                roles: ts.every(t => t.getAttribute('role') === 'tab'),
+                selected: ts.filter(t => t.getAttribute('aria-selected') === 'true').length,
+                keyshortcuts: ts.every(t => t.getAttribute('aria-keyshortcuts') === 'Delete Backspace'),
+                tablist: document.getElementById('tabs').getAttribute('role') === 'tablist',
+                roving: ts.filter(t => t.tabIndex === 0).length};
+    }""")
+    check("K4 renderTabs diff/patch keeps nodes + scroll (no innerHTML rebuild)",
+          patch["marks"] and abs(patch["scroll"] - sl_set) <= 1)
+    check("K34 tabs ARIA: role=tab, one selected, keyshortcuts, tablist, roving tabindex",
+          patch["roles"] and patch["selected"] == 1 and patch["keyshortcuts"]
+          and patch["tablist"] and patch["roving"] == 1)
+    sb = page.evaluate("""() => {
+        const t = document.getElementById('tabs');
+        return {sw: t.scrollWidth, cw: t.clientWidth, oh: t.offsetHeight, ch: t.clientHeight,
+                sbw: getComputedStyle(t).scrollbarWidth};
+    }""")
+    check("tab strip overflows (scrollWidth > clientWidth)", sb["sw"] > sb["cw"])
+    check("tab strip scrollbar fully hidden (zero height + scrollbar-width:none)",
+          sb["oh"] - sb["ch"] == 0 and sb["sbw"] == "none")
+    # visual evidence for the hidden-scrollbar contract: capture the strip
+    # while it is populated and overflowing, before later flows mutate it
+    page.screenshot(path=str(VALIDATION / "gui-laptop-tabs.png"))
+    check("screenshot saved: .validation/gui-laptop-tabs.png",
+          (VALIDATION / "gui-laptop-tabs.png").exists())
+    page.evaluate("""() => {
+        const a = document.querySelector('#tabs .tab.active') || document.querySelector('#tabs .tab');
+        a.focus(); a.__focusMark = true;
+    }""")
+    page.wait_for_timeout(2300)
+    foc = page.evaluate("""() => {
+        const ae = document.activeElement;
+        return {isTab: !!(ae && ae.closest && ae.closest('#tabs .tab')), mark: !!(ae && ae.__focusMark)};
+    }""")
+    check("K4 focused tab survives the 2s poll (focus + node retained)", foc["isTab"] and foc["mark"])
+    del_sid = page.evaluate("() => document.activeElement.dataset.sid")
+    page.keyboard.press("Delete")
+    page.wait_for_function("(sid) => !state.openTabs.includes(sid)", arg=del_sid, timeout=5_000)
+    check("K34 Delete closes the focused tab", True)
+    qid = page.evaluate("() => (state.chats.find(c => (c.title || '').includes('quartz')) || {}).id")
+    if qid:
+        page.evaluate("async (s) => { await openChat(s); }", qid)
+    # K5 regression: the closed tab must stay closed even when the neighbor
+    # switch loses the load race to this newer openChat (no zombie restore).
+    page.wait_for_timeout(300)
+    check("K5 closed tab stays closed when a newer switch wins the load race",
+          page.evaluate("(sid) => !state.openTabs.includes(sid)", del_sid))
+    page.evaluate("() => { document.getElementById('tabs').scrollLeft = 0; }")
+
+
 def flows_responsive(page, width: int) -> None:
     def f():
         wait_boot(page)
@@ -742,6 +1331,35 @@ def flows_responsive(page, width: int) -> None:
             check(f"{width}px: sidebar toggles open as overlay", True)
             page.click("#btn-sidebar")
             page.wait_for_timeout(200)
+            # K7: a closed overlay sidebar must be inert + visibility:hidden,
+            # not merely off-screen — unreachable by focus and the a11y tree.
+            page.wait_for_timeout(350)
+            closed = page.evaluate("""() => {
+                const sb = document.getElementById('sidebar');
+                document.getElementById('sb-search').focus();
+                return {inert: sb.inert, aria: sb.getAttribute('aria-hidden'),
+                        vis: getComputedStyle(sb).visibility,
+                        focusId: document.activeElement.id,
+                        inSidebar: sb.contains(document.activeElement)};
+            }""")
+            check(f"{width}px: closed sidebar inert + aria-hidden + visibility:hidden",
+                  closed["inert"] and closed["aria"] == "true" and closed["vis"] == "hidden")
+            check(f"{width}px: closed sidebar refuses focus (inert)",
+                  not closed["inSidebar"] and closed["focusId"] != "sb-search")
+            page.click("#btn-sidebar")
+            page.wait_for_selector("#sidebar.open", timeout=5000)
+            page.wait_for_timeout(250)
+            opened = page.evaluate("""() => {
+                const sb = document.getElementById('sidebar');
+                document.getElementById('sb-search').focus();
+                return {inert: sb.inert, aria: sb.getAttribute('aria-hidden'),
+                        vis: getComputedStyle(sb).visibility, focusId: document.activeElement.id};
+            }""")
+            check(f"{width}px: reopened sidebar reachable (not inert, focus works)",
+                  not opened["inert"] and opened["aria"] == "false"
+                  and opened["vis"] == "visible" and opened["focusId"] == "sb-search")
+            page.click("#btn-sidebar")
+            page.wait_for_timeout(350)
         else:
             check(f"{width}px: sidebar visible by default", page.is_visible("#sidebar"))
         # task #29: persistent left rail (icon-only collapse on narrow)
@@ -808,7 +1426,9 @@ def main() -> int:
             for label, width in WIDTHS.items():
                 ctx = page = None
                 try:
-                    ctx, page = open_gui(pw, client.port, client.token, width)
+                    ctx, page, profile = open_gui(pw, client.port, client.token, width)
+                    check(f"{width}px: Chromium sandbox retained (no --no-sandbox)",
+                          sandbox_proof(profile))
                     contexts.append(ctx)
                     if label == "laptop":
                         flows_laptop(page, client)
@@ -844,6 +1464,12 @@ def main() -> int:
                         page.wait_for_selector(f"#view-{v}:not([hidden])", timeout=10_000)
                         page.wait_for_function(VIEW_READY[v], timeout=20_000)
                         page.wait_for_timeout(450)
+                        if v == "market":
+                            # K9: give the fit bars a real VRAM budget so the
+                            # capture shows varied CSSOM widths, not all 0%
+                            page.evaluate("() => { if (marketData && !marketData.vram_bytes)"
+                                          " { marketData.vram_bytes = 24 * 2 ** 30; paintMarket(); } }")
+                            page.wait_for_timeout(200)
                         page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
                         name = f"gui-{label}-{v}.png"
                         page.screenshot(path=str(VALIDATION / name), full_page=False)

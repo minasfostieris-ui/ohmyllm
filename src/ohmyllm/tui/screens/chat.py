@@ -40,7 +40,7 @@ def pathlib_home():
 class ChatScreen(Screen):
     SLASH: tuple[tuple[str, str, str], ...] = (
         ("/help", "", "this help screen"), ("/model", "[name]", "set or pick the default model"), ("/models", "", "browse models (b switches backend)"), ("/modelsettings", "", "per-model settings for the current model"),
-        ("/backend", "[ollama|lmstudio|cloud]", "switch backend"), ("/mode", "[name]", "permission mode"), ("/perms", "", "permission modes"),
+        ("/backend", "[ollama|lmstudio|cloud|mock]", "switch backend"), ("/mode", "[name]", "permission mode"), ("/perms", "", "permission modes"),
         ("/think", "[off|low|medium|high|xhigh|max|hide|show]", "reasoning effort"),
         ("/skillimport", "", "open the skills folder (add/remove/move skills)"),
         ("/market", "", "recommended models — VRAM fit + one-key download"),
@@ -214,8 +214,10 @@ class ChatScreen(Screen):
             self.query_one("#chat-input", Input).value = self.app.drafts.pop(self.app.session.id)
         self.query_one("#chat-input", Input).focus()
         self.app.refresh_chrome()
-        if self.app.turn_active:
+        if self.app.turn_active and self.app.turn_session_id == (self.app.session.id if self.app.session else None):
             # user left mid-turn (menu/screen switch): rebuild the live response
+            # — but only for the chat that owns the turn (D11), never bleed
+            # another session's buffers into this one.
             hist = self.query_one("#history", VerticalScroll)
             if self.app.turn_thinking:
                 self._think_buf = self.app.turn_thinking
@@ -698,6 +700,9 @@ class ChatScreen(Screen):
             self._sysline(f"unexpected error: {type(exc).__name__}: {exc}", "error")
         finally:
             app.busy = False
+            # D11: the runtime's backend-error path returns without a turn_end
+            # event — clear the flag here so the UI never strands mid-turn.
+            app.turn_active = False
             app.active_runtime = None
             try:
                 app.svc.sessions.save(sess)
@@ -1156,7 +1161,7 @@ class ChatScreen(Screen):
             else:
                 app.push_screen(ModelSettingsModal(ModelInfo(name=name, backend=BackendName(key))))
         elif cmd == "backend":
-            if arg in {"ollama", "lmstudio", "mock"}:
+            if arg in {"ollama", "lmstudio", "cloud", "mock"}:
                 from ...config import BackendName
 
                 app.svc.config.default_backend = BackendName(arg)
@@ -1385,6 +1390,11 @@ class ChatScreen(Screen):
 
     async def _delete_current(self) -> None:
         app = self.app
+        if app.busy:
+            # D8/D11: deleting the chat under a running turn would strand the
+            # worker and resurrect the session on its finally-save.
+            app.notify("agent is working — Ctrl+X cancels the turn before deleting this chat", severity="warning")
+            return
         sess = app.session
         if not sess or sess.message_count == 0:
             app.new_chat()

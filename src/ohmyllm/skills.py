@@ -188,9 +188,12 @@ class SkillManager:
 
         stage = root / f".import-{secrets.token_hex(12)}"
         previous = root / f".replaced-{secrets.token_hex(12)}"
-        shutil.copytree(src, stage, symlinks=False)
         moved_previous = False
         try:
+            # D16: copy INSIDE the try so a failed copytree (permissions, disk
+            # full, vanishing source) still hits the finally cleanup instead
+            # of leaking a half-written .import-* directory.
+            shutil.copytree(src, stage, symlinks=False)
             if dest.exists():
                 os.replace(dest, previous)
                 moved_previous = True

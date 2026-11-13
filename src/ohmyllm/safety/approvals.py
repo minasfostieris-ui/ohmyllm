@@ -78,6 +78,31 @@ def _key(
     return f"v{_RULES_VERSION}:sha256:{digest}"
 
 
+def _permanent_key(
+    tool: str,
+    args: dict,
+    *,
+    workspace: str = "",
+    policy_generation: int = 0,
+) -> str:
+    """Permanent grants omit session_id so they survive across chat sessions.
+
+    Workspace and policy generation still bind the grant; any policy change
+    invalidates it. Session-scoped grants keep using :func:`_key`.
+    """
+    identity = {
+        "version": _RULES_VERSION,
+        "tool": str(tool),
+        "arguments": args,
+        "scope": {
+            "workspace": str(workspace),
+            "policy_generation": int(policy_generation),
+        },
+    }
+    digest = hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
+    return f"v{_RULES_VERSION}:sha256:{digest}"
+
+
 @dataclass
 class ApprovalManager:
     """Remembers exact scoped calls; shell authorization is always one-shot."""
@@ -106,8 +131,12 @@ class ApprovalManager:
                 str(rule["key"])
                 for rule in data.get("rules", [])
                 if rule.get("decision") == "allow"
+                and rule.get("kind") == "permanent"
                 and str(rule.get("key", "")).startswith(f"v{_RULES_VERSION}:sha256:")
             }
+            # Migration: legacy v2 keys embedded a session_id and can never be
+            # re-derived (one-way hash). Dropping them here is fail-safe — the
+            # dead grants expire instead of silently persisting.
         except (AttributeError, OSError, ValueError, TypeError, KeyError):
             self._permanent = set()
 
@@ -116,7 +145,10 @@ class ApprovalManager:
             return
         payload = {
             "version": _RULES_VERSION,
-            "rules": [{"key": key, "decision": "allow"} for key in sorted(self._permanent)],
+            "rules": [
+                {"key": key, "decision": "allow", "kind": "permanent"}
+                for key in sorted(self._permanent)
+            ],
         }
         private_mkdir(self.rules_path.parent)
         atomic_write(self.rules_path, json.dumps(payload, indent=2) + "\n", mode=0o600)
@@ -130,14 +162,20 @@ class ApprovalManager:
         session_id: str = "",
         policy_generation: int = 0,
     ) -> bool:
-        key = _key(
+        session_key = _key(
             tool,
             args,
             workspace=workspace,
             session_id=session_id,
             policy_generation=policy_generation,
         )
-        return key in self._session or key in self._permanent
+        permanent_key = _permanent_key(
+            tool,
+            args,
+            workspace=workspace,
+            policy_generation=policy_generation,
+        )
+        return session_key in self._session or permanent_key in self._permanent
 
     def remember_session(
         self,
@@ -165,15 +203,19 @@ class ApprovalManager:
         session_id: str = "",
         policy_generation: int = 0,
     ) -> None:
-        key = _key(
+        self._session.add(_key(
             tool,
             args,
             workspace=workspace,
             session_id=session_id,
             policy_generation=policy_generation,
-        )
-        self._session.add(key)
-        self._permanent.add(key)
+        ))
+        self._permanent.add(_permanent_key(
+            tool,
+            args,
+            workspace=workspace,
+            policy_generation=policy_generation,
+        ))
         self.save_rules()
 
     def clear_session(self) -> None:

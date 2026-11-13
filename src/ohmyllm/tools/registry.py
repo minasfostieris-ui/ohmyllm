@@ -50,7 +50,7 @@ def _tone_create(ctx, args: dict) -> ToolResult:
     if agent.op_mode in ("chat", "plan"):
         return ToolResult(False, "", f"tone_create is a change — it needs build mode (current: {agent.op_mode}); "
                                      "ask the user to run /build first")
-    if not agent.custom_tones and ctx.config.permission_mode.value == "strict":
+    if ctx.config.permission_mode.value == "strict":
         return ToolResult(False, "", "strict permission mode does not allow creating tones — the user can "
                                      "switch modes or pick a built-in tone in Settings")
     agent.custom_tones = {**agent.custom_tones, name: fragment}

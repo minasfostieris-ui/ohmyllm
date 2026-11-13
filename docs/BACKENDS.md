@@ -1,8 +1,8 @@
 # Backends
 
-OhMyLLM speaks to local model servers only. Three backends ship in the box;
-the agent runtime, policy engine, and memory layer are identical for all of
-them.
+Ollama and LM Studio are local-first; the mock backend needs no server.
+Cloud providers are opt-in (below). The agent runtime, policy engine, and
+memory layer are identical across backends.
 
 ## Ollama
 
@@ -126,7 +126,9 @@ never reach the chat, the parser, or the stored session.
 
 `/ultrathink` deliberately does **not** rely on any of these knobs: the
 critique-and-revise pass is plain prompting, so it multiplies thinking depth
-(≈2.8x measured on Qwen3.5-9B) on every row of this table. ### What the ladder really does (measured)
+(≈4.6x measured on Qwen3.5-9B) on every row of this table.
+
+### What the ladder really does (measured)
 
 `/think off|low|medium|high|xhigh|max` maps to `reasoning_effort` (LM Studio,
 vLLM, SGLang) or `think` (Ollama graded servers). Whether levels *change

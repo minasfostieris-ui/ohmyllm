@@ -1,8 +1,10 @@
-"""Rotating spinner verbs for the busy/thinking indicators.
+"""Rotating spinner verbs for the TUI busy/thinking indicators.
 
-Time-driven on purpose: both the TUI status bar (1 s refresh tick) and the
-GUI ticker (1 s interval) call :func:`verb` and get the same answer for the
-same wall-clock window, so no extra timers or state are needed anywhere.
+Time-driven on purpose: the TUI status bar (1 s refresh tick) calls
+:func:`verb` and gets a deterministic answer for the current wall-clock
+window, so no extra timers or state are needed. The GUI ticker keeps its
+own independent verb list and cadence in app.js — the two are not
+synchronized and do not claim to be.
 """
 
 from __future__ import annotations

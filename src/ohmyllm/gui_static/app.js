@@ -317,7 +317,7 @@ function makeStepper(inp) {
 async function api(path, opts = {}) {
   const headers = { "Content-Type": "application/json", "X-OMLLM-Token": BOOT.token, ...(opts.headers || {}) };
   const res = await fetch(BASE + path, { ...opts, headers });
-  if (res.status === 401) { const e = new Error("bridge token rejected — restart the GUI"); e.status = 401; throw e; }
+  if (res.status === 401) { const e = new Error("bridge token rejected — relaunch with `ohmyllm gui` for a fresh signed URL"); e.status = 401; throw e; }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) { const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e; }
   return data;
@@ -338,15 +338,25 @@ function toast(msg, kind = "") {
 
 /* ------------------------------------------------------------- markdown */
 function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
-const KEYWORDS = /\b(fn|def|class|const|let|var|use|mod|pub|struct|enum|impl|if|else|elif|for|while|return|import|from|async|await|try|except|catch|throw|new|match|switch|case|break|continue|self|this|null|None|nil|true|false|True|False)\b/g;
+/* K1: one tokenizer pass over the RAW source. The old pipeline escaped
+   first, then ran four regex replaces over its own output — keyword and
+   number passes rewrote the spans earlier passes had just inserted,
+   corrupting code that contained quotes, comments or span-like text.
+   Tokens are matched once, in priority order (string > comment > keyword >
+   number), and every slice is escaped exactly once on the way out. */
+const HL_TOKEN = /("(?:\\.|.)*?"|'(?:\\.|.)*?'|`(?:\\.|[\s\S])*?`)|(\/\/.*|#.*|\/\*[\s\S]*?\*\/)|\b(fn|def|class|const|let|var|use|mod|pub|struct|enum|impl|if|else|elif|for|while|return|import|from|async|await|try|except|catch|throw|new|match|switch|case|break|continue|self|this|null|None|nil|true|false|True|False)\b|\b(\d+(?:\.\d+)?)\b/g;
 function hl(code, lang) {
   if (/^(json|toml|ini|yaml)$/.test(lang)) return esc(code);
-  let out = esc(code);
-  out = out.replace(/(&quot;.*?&quot;|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, '<span class="str">$1</span>');
-  out = out.replace(/(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)/g, (m) => (m.includes('class="') ? m : `<span class="cmt">${m}</span>`));
-  out = out.replace(KEYWORDS, '<span class="kw">$1</span>');
-  out = out.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>');
-  return out;
+  const src = String(code);
+  let out = "", last = 0, m;
+  HL_TOKEN.lastIndex = 0;
+  while ((m = HL_TOKEN.exec(src)) !== null) {
+    out += esc(src.slice(last, m.index));
+    const cls = m[1] != null ? "str" : m[2] != null ? "cmt" : m[3] != null ? "kw" : "num";
+    out += `<span class="${cls}">${esc(m[0])}</span>`;
+    last = m.index + m[0].length;
+  }
+  return out + esc(src.slice(last));
 }
 function inline(s) {
   s = esc(s);
@@ -542,7 +552,7 @@ function userHtml(content) {
   if (Array.isArray(content)) {
     const txt = content.filter((p) => p && p.type === "text").map((p) => inline(p.text || "")).join("<br>");
     const imgs = content.filter((p) => p && p.type === "image_url" && String((p.image_url || {}).url || "").startsWith("data:"))
-      .map((p) => `<img class="msg-img" src="${p.image_url.url}" alt="attached image" loading="lazy">`).join("");
+      .map((p) => `<img class="msg-img" src="${esc(p.image_url.url)}" alt="attached image" loading="lazy">`).join("");
     return (txt || "") + (imgs ? `<div class="msg-imgs">${imgs}</div>` : "");
   }
   return inline(content);
@@ -587,9 +597,11 @@ function sealLive() {
   if (liveNode && !liveNode.textContent.trim()) liveNode.closest(".msg").remove();
   liveNode = null; liveText = ""; sealThinkLive();
 }
-/* playful activity verbs — a GUI mirror of ohmyllm/verbs.py (the canonical
-   TUI list), extended with a few console-exclusive ones. Time-windowed so
-   the ticker and any renderer agree without extra state (task #30). */
+/* playful activity verbs — the GUI's OWN independent list (22 verbs on a
+   3.5 s time window, Math.imul hash), NOT a mirror of the TUI's canonical
+   ohmyllm/verbs.py (74 verbs, 2.7 s window, random.Random). The two are not
+   kept in sync. Time-windowed so the ticker and any renderer agree without
+   extra state (task #30). */
 const VERBS = [
   "pondering", "ruminating", "untangling", "connecting dots", "consulting the oracle",
   "crunching", "squinting", "following the white rabbit", "feeding the hamster", "rubber-ducking",
@@ -677,12 +689,17 @@ function toolEntry(d) {
   $("#stream").appendChild(det);
   scrollBottom();
   const entry = { det, sm, out, tag: sm.querySelector(".tag") };
-  state.toolEntries.set(d.name, entry);
+  // K2: key by call id so two calls to the same tool never collapse into one row
+  const key = String(d.call_id || d.id || d.name);
+  det.dataset.call = key;
+  det.open = !(state.config && state.config.ui && state.config.ui.show_tool_panels === false);
+  state.toolEntries.set(key, entry);
   return entry;
 }
 function toolResult(d) {
-  const entry = state.toolEntries.get(d.name) || toolEntry({ name: d.name, args: {} });
-  const cls = d.ok ? "ok" : "err";
+  const key = String(d.call_id || d.id || d.name);
+  const entry = state.toolEntries.get(key) || toolEntry({ name: d.name, args: d.args || {}, call_id: d.call_id || d.id });
+  const cls = d.ok ? "ok" : d.denied ? "denied" : d.blocked ? "blocked" : "err";
   entry.det.classList.add(cls);
   entry.tag.textContent = d.blocked ? "blocked" : d.denied ? "denied" : d.ok ? "ok" : "fail";
   const f = d.file;
@@ -742,10 +759,54 @@ async function loadSessionIntoView(sid) {
   if (state.tabStates[sid] === "done") delete state.tabStates[sid]; // viewed → clear
   $("#input").value = state.drafts.get(sid) || ""; autoGrow();
   clearStream();
+  // K2: replay per-call outcomes. The runtime journals assistant anchors
+  // (extra.tool_calls with id + arguments), tool rows keyed by tool_call_id,
+  // and "[asked to run X]"/"[attempted X]" echoes for denied/blocked calls.
+  const anchors = new Map();
+  const rowsByName = new Map();
+  (sess.tool_calls || []).forEach((r) => {
+    const n = r.name || "tool";
+    if (!rowsByName.has(n)) rowsByName.set(n, []);
+    rowsByName.get(n).push(r);
+  });
+  let pendingEcho = null;
   (sess.messages || []).forEach((m) => {
-    if (m.role === "user") addMsg("user", m.content);
-    else if (m.role === "assistant") replayAssistant(m);
-    else if (m.role === "tool") toolResult({ name: m.name || "tool", ok: true, output: String(m.content).slice(0, 4000) });
+    if (m.role === "user") { addMsg("user", m.content); return; }
+    if (m.role === "assistant") {
+      (m.tool_calls || []).forEach((tc) => {
+        let args = {};
+        try { args = JSON.parse((tc.function || {}).arguments || "{}"); } catch { args = {}; }
+        if (tc.id) anchors.set(tc.id, { name: (tc.function || {}).name || "tool", args });
+      });
+      const text = Array.isArray(m.content)
+        ? m.content.filter((p) => p && p.type === "text").map((p) => p.text || "").join("")
+        : String(m.content ?? "");
+      const echo = approvalEcho(text);
+      if (echo) pendingEcho = { name: echo[2], denied: echo[1] === "asked to run" };
+      replayAssistant(m);
+      return;
+    }
+    if (m.role === "tool") {
+      const anchor = anchors.get(m.tool_call_id);
+      const name = m.name || (anchor && anchor.name) || "tool";
+      const queue = rowsByName.get(name);
+      const row = queue && queue.length ? queue.shift() : null;
+      const content = String(m.content ?? "");
+      const denied = content.startsWith("The user DENIED this tool call")
+        || !!(pendingEcho && pendingEcho.denied && pendingEcho.name === name)
+        || (row && row.status === "denied");
+      const blocked = !denied && (content.startsWith("BLOCKED BY PERMISSION ENGINE")
+        || !!(pendingEcho && !pendingEcho.denied && pendingEcho.name === name)
+        || (row && row.status === "blocked"));
+      toolResult({
+        name, args: (anchor && anchor.args) || (row && row.args) || {},
+        call_id: m.tool_call_id, ok: !denied && !blocked,
+        denied: !!denied, blocked: !!blocked,
+        output: content.slice(0, 4000),
+        duration_ms: row ? row.duration_ms : undefined,
+      });
+      pendingEcho = null;
+    }
   });
   if (!sess.messages?.length) emptyState();
   renderTabs();
@@ -845,7 +906,7 @@ function handleEvent(ev, d) {
       setRunVerb(false);
       if (d.session) { state.session = d.session; addTab(d.session); }
       state.streaming = false;
-      $("#cancel").hidden = true; $("#send").disabled = false;
+      $("#cancel").hidden = true; resetSendBtn();
       if (d.error) addEvline("error", d.error, "err");
       const rtext = state.thinkNode ? "" : (d.reasoning || state.reasonBuf || "");
       if (rtext.trim()) {
@@ -972,11 +1033,22 @@ async function answerApproval(decision) {
 });/* ------------------------------------------------------- composer basics */
 const input = $("#input"), composer = $("#composer");
 const slashHint = $("#slash-hint"), atHint = $("#at-hint");
-function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 240) + "px"; }
+function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 240) + "px"; syncComposerHeight(); }
+/* K8: stream bottom padding + stream-foot offset track the composer's
+   real height (CSSOM custom property — CSP-safe). */
+function syncComposerHeight() {
+  const w = $(".composer-wrap");
+  if (w) document.documentElement.style.setProperty("--composer-h", w.offsetHeight + "px");
+}
+new ResizeObserver(syncComposerHeight).observe($(".composer-wrap"));
 function fmtTok(n) { n = Number(n) || 0; if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k"; return String(n); }
 function relTime(t) {
   if (!t) return "";
-  const d = new Date(t); if (isNaN(d.getTime())) return "";
+  // /api/chats rows carry epoch SECONDS; Date() wants milliseconds (K3)
+  let v = t;
+  if (typeof v === "string" && /^\d+(\.\d+)?$/.test(v)) v = Number(v);
+  if (typeof v === "number" && v > 0 && v < 1e12) v *= 1000;
+  const d = new Date(v); if (isNaN(d.getTime())) return "";
   const s = (Date.now() - d.getTime()) / 1000;
   if (s < 45) return "just now";
   if (s < 3600) return Math.max(1, Math.floor(s / 60)) + "m ago";
@@ -1010,7 +1082,17 @@ const SLASHES = [
   { cmd: "/settings", desc: "open settings" },
   { cmd: "/providers", desc: "connect cloud providers" },
   { cmd: "/market", desc: "model market" },
-  { cmd: "/export", desc: "export this chat" },
+  { cmd: "/yolo", desc: "one-prompt approval bypass (except shell/network/mail)", arg: true },
+  { cmd: "/mail", desc: "mail account status" },
+  { cmd: "/search", desc: "search chats…", arg: true },
+  { cmd: "/chats", desc: "open the chats sidebar" },
+  { cmd: "/clear", desc: "start a fresh chat" },
+  { cmd: "/rename", desc: "rename this chat…", arg: true },
+  { cmd: "/delete", desc: "delete this chat (to trash)" },
+  { cmd: "/forget", desc: "forget a memory…", arg: true },
+  { cmd: "/memory", desc: "open the memory view" },
+  { cmd: "/voice", desc: "voice engine status" },
+  { cmd: "/export", desc: "export this chat (markdown|json)", arg: true },
   { cmd: "/cancel", desc: "stop the current turn" },
   { cmd: "/quit", desc: "shut down the bridge" },
 ];
@@ -1022,6 +1104,8 @@ function computeHints() {
   if (v.startsWith("/") && !v.includes(" ")) {
     const head = v.toLowerCase();
     slashMatches = SLASHES.filter((s) => s.cmd.startsWith(head));
+    // K41: exact match first — typing /mode must never complete to /model
+    slashMatches.sort((a, b) => (b.cmd === head) - (a.cmd === head));
     slashSel = 0;
   } else { slashMatches = []; }
   const am = v.match(/@([\w:]*)$/);
@@ -1031,15 +1115,25 @@ function computeHints() {
 }
 function paintHints() {
   if (slashMatches.length) {
-    slashHint.innerHTML = slashMatches.map((s, i) => `<div role="option" aria-selected="${i === slashSel}" class="${i === slashSel ? "sel" : ""}" data-i="${i}"><b>${esc(s.cmd)}</b><span>${esc(s.desc)}</span></div>`).join("");
+    slashHint.innerHTML = slashMatches.map((s, i) => `<div role="option" id="slash-opt-${i}" aria-selected="${i === slashSel}" class="${i === slashSel ? "sel" : ""}" data-i="${i}"><b>${esc(s.cmd)}</b><span>${esc(s.desc)}</span></div>`).join("");
     slashHint.hidden = false;
   } else slashHint.hidden = true;
   if (atMatches.length) {
-    atHint.innerHTML = atMatches.map((r, i) => `<div role="option" aria-selected="${i === atSel}" class="${i === atSel ? "sel" : ""}" data-i="${i}"><b>@${esc(r)}</b><span>${esc(REF_DESC[r] || "")}</span></div>`).join("");
+    atHint.innerHTML = atMatches.map((r, i) => `<div role="option" id="at-opt-${i}" aria-selected="${i === atSel}" class="${i === atSel ? "sel" : ""}" data-i="${i}"><b>@${esc(r)}</b><span>${esc(REF_DESC[r] || "")}</span></div>`).join("");
     atHint.hidden = false;
   } else atHint.hidden = true;
+  syncHintAria();
 }
-function hideHints() { slashHint.hidden = true; atHint.hidden = true; }
+/* K35: the composer is a combobox — screen readers need the expanded state
+   and the active option, not just a visual highlight. */
+function syncHintAria() {
+  const open = !slashHint.hidden || !atHint.hidden;
+  input.setAttribute("aria-expanded", String(open));
+  if (!slashHint.hidden && slashMatches.length) input.setAttribute("aria-activedescendant", `slash-opt-${slashSel}`);
+  else if (!atHint.hidden && atMatches.length) input.setAttribute("aria-activedescendant", `at-opt-${atSel}`);
+  else input.removeAttribute("aria-activedescendant");
+}
+function hideHints() { slashHint.hidden = true; atHint.hidden = true; syncHintAria(); }
 function cycleHint(dir) {
   if (!slashHint.hidden && slashMatches.length) { slashSel = (slashSel + dir + slashMatches.length) % slashMatches.length; paintHints(); }
   else if (!atHint.hidden && atMatches.length) { atSel = (atSel + dir + atMatches.length) % atMatches.length; paintHints(); }
@@ -1080,6 +1174,16 @@ input.addEventListener("keydown", (e) => {
     submit();
   }
 });
+/* K23: vision paste is TUI-only — the GUI bridge has no media upload path.
+   Refuse honestly instead of silently dropping the image. */
+input.addEventListener("paste", (e) => {
+  const items = (e.clipboardData && e.clipboardData.items) || [];
+  const hasImage = Array.from(items).some((it) => it.kind === "file" && String(it.type).startsWith("image/"));
+  if (hasImage) {
+    e.preventDefault();
+    toast("Image paste is TUI-only for now — the GUI bridge has no media upload path. Use the TUI (Ctrl+V) for vision paste.", "warn");
+  }
+});
 composer.addEventListener("submit", (e) => { e.preventDefault(); if (composing) return; submit(); });
 
 /* ------------------------------------------------------------- submitting */
@@ -1097,7 +1201,13 @@ async function sendNormal(text, memoryDirective) {
   input.value = ""; autoGrow();
   const userNode = addMsg("user", text).closest(".msg");
   state.streaming = true; state.stopping = false;
-  $("#send").disabled = true; $("#cancel").hidden = false; $("#cancel").disabled = false;
+  // K33: Enter steers a running turn — keep Send enabled, label it honestly
+  const sendBtn = $("#send");
+  sendBtn.disabled = false;
+  sendBtn.classList.add("steering");
+  sendBtn.setAttribute("aria-label", "Steer the running turn");
+  sendBtn.title = "Steer (Enter) — queue guidance into the running turn";
+  $("#cancel").hidden = false; $("#cancel").disabled = false;
   $("#run-state").textContent = "Working";
   setRunVerb(true);
   renderTabs();
@@ -1115,7 +1225,7 @@ async function sendNormal(text, memoryDirective) {
     }
   } finally {
     state.streaming = false; state.stopping = false;
-    $("#send").disabled = false; $("#cancel").hidden = true;
+    resetSendBtn(); $("#cancel").hidden = true;
     setRunVerb(false);
     if (!state.approvalQueue.length) $("#run-state").textContent = "Ready";
     renderTabs();
@@ -1126,6 +1236,13 @@ async function sendNormal(text, memoryDirective) {
 let steerTimer = null;
 function showSteerChip(text) { const c = $("#steer-chip"); c.textContent = text; c.hidden = false; clearTimeout(steerTimer); steerTimer = setTimeout(hideSteerChip, 6000); }
 function hideSteerChip() { $("#steer-chip").hidden = true; clearTimeout(steerTimer); }
+function resetSendBtn() {
+  const b = $("#send");
+  b.disabled = false;
+  b.classList.remove("steering");
+  b.setAttribute("aria-label", "Send message");
+  b.title = "Send (Enter)";
+}
 async function steerOrQueue(text) {
   if (!text) { toast("nothing to steer", "warn"); return; }
   let fallback = false, notice409 = false;
@@ -1153,7 +1270,7 @@ async function steerOrQueue(text) {
 async function setOpMode(mode) {
   try {
     try { await post("/api/mode", { mode }); }
-    catch (e) { if (e.status === 400) await patch("/api/config", { agent: { op_mode: mode } }); else throw e; }
+    catch (e) { if (e.status === 400) await post("/api/config/agent", { op_mode: mode, confirm: true }); else throw e; }
     toast(`op mode: ${mode}`); refreshStatus();
   } catch (e) { toast(e.message, "err"); }
 }
@@ -1193,11 +1310,11 @@ async function handleSlash(text) {
       case "/tone":
         clear();
         if (!arg) { toast("usage: /tone default|ruthless|chill|friendly|professional|terse", "warn"); keep(); return; }
-        await patch("/api/config", { agent: { tone: arg } }); toast(`tone: ${arg}`); refreshStatus(); return;
+        await post("/api/config/agent", { tone: arg, confirm: true }); toast(`tone: ${arg}`); refreshStatus(); return;
       case "/agentloop": {
         clear();
         const cur = state.config && state.config.agent ? state.config.agent.agent_loop : false;
-        await patch("/api/config", { agent: { agent_loop: !cur } }); toast(`agent loop: ${!cur}`); refreshStatus(); return;
+        await post("/api/config/agent", { agent_loop: !cur, confirm: true }); toast(`agent loop: ${!cur}`); refreshStatus(); return;
       }
       case "/chat": case "/plan": case "/build": clear(); setOpMode(cmd.slice(1)); return;
       case "/remember":
@@ -1209,16 +1326,79 @@ async function handleSlash(text) {
       case "/settings": clear(); switchView("settings"); return;
       case "/providers": clear(); switchView("providers"); return;
       case "/market": clear(); switchView("market"); return;
-      case "/export":
+      case "/yolo": {
         clear();
+        const cur = !!state.yolo;
+        const want = arg === "on" ? true : arg === "off" ? false : arg ? null : !cur;
+        if (want == null) { toast("usage: /yolo [on|off]", "warn"); keep(); return; }
+        await post("/api/config/agent", { yolo: want, confirm: true });
+        state.yolo = want;
+        toast(want ? "yolo on — skips approvals except shell, network and mail; disarms at turn end" : "yolo off");
+        return;
+      }
+      case "/mail": {
+        clear();
+        const addr = state.config && state.config.mail && state.config.mail.address;
+        if (addr) toast(`mail account: ${addr} — manage with \`oml mail\` in a terminal`);
+        else toast("mail not configured — run `oml mail` in a terminal to connect an account", "warn");
+        return;
+      }
+      case "/search":
+        clear(); setSidebar(true); $("#sb-search").value = arg; $("#sb-search").focus(); renderSidebar(); return;
+      case "/chats":
+        clear(); setSidebar(true); $("#sb-search").focus(); return;
+      case "/clear": clear(); newChat(); return;
+      case "/rename": {
+        if (!state.session) { toast("no active chat to rename", "warn"); return; }
+        const t = arg || await promptModal("Rename chat", "New title", false, (state.chats.find((c) => c.id === state.session) || {}).title || "");
+        if (!t) { keep(); return; }
+        clear();
+        await patch(`/api/chats/${state.session}`, { title: t });
+        renderSidebar(); renderTabs(); toast(`renamed → ${t}`);
+        return;
+      }
+      case "/delete": {
+        if (!state.session) { toast("no active chat to delete", "warn"); return; }
+        const sid = state.session;
+        if (!await confirmModal("Delete chat?", "It is moved to trash and exported first.", "Delete")) { keep(); return; }
+        clear();
+        await del(`/api/chats/${sid}`);
+        pruneTab(sid);
+        state.session = null;
+        clearStream(); emptyState();
+        renderSidebar(); renderTabs();
+        return;
+      }
+      case "/forget":
+        if (!arg) { toast("usage: /forget <thing to forget>", "warn"); keep(); return; }
+        clear(); await sendNormal(`forget: ${arg}`, true); return;
+      case "/memory": clear(); switchView("memory"); return;
+      case "/voice": {
+        clear();
+        const r = await get("/api/voice");
+        toast(r.line || "voice status unavailable");
+        return;
+      }
+      case "/export": {
         if (!state.session) { toast("no active chat to export", "warn"); return; }
-        { const r = await post(`/api/chats/${state.session}/export`, {}); toast(`exported → ${r.path}`); }
-        return;
-      case "/cancel": clear(); $("#cancel").click(); return;
-      case "/quit":
+        // K39: the bridge accepts markdown|json — md is a friendly alias
+        const fmt = (arg || "markdown").toLowerCase();
+        const format = fmt === "md" ? "markdown" : fmt;
+        if (!["markdown", "json"].includes(format)) { toast("usage: /export [markdown|json]", "warn"); keep(); return; }
         clear();
-        if (await confirmModal("Shut down?", "This stops the local bridge and ejects the model.", "Shut down")) { await post("/api/shutdown", {}); toast("bridge shutting down"); }
+        const r = await post(`/api/chats/${state.session}/export`, { format });
+        toast(`exported → ${r.path}`);
         return;
+      }
+      case "/cancel": clear(); $("#cancel").click(); return;
+      case "/quit": {
+        clear();
+        // K12: honor ui.confirm_quit — false means shut down without asking
+        const ask = !(state.config && state.config.ui && state.config.ui.confirm_quit === false);
+        if (ask && !await confirmModal("Shut down?", "This stops the local bridge and ejects the model.", "Shut down")) return;
+        await post("/api/shutdown", {}); toast("bridge shutting down");
+        return;
+      }
       default:
         if (cmd.startsWith("/skill:")) {
           clear();
@@ -1248,53 +1428,109 @@ function updateTabFades() {
   w.classList.toggle("can-l", t.scrollLeft > 2);
   w.classList.toggle("can-r", t.scrollLeft + t.clientWidth < t.scrollWidth - 2);
 }
+let lastTabSig = "";
 function renderTabs() {
   const tabs = $("#tabs");
   const keepScroll = tabs.scrollLeft;
-  tabs.innerHTML = "";
+  const ae = document.activeElement;
+  const aeTab = ae && ae.closest ? ae.closest("#tabs .tab") : null;
+  const focusSid = aeTab ? aeTab.dataset.sid : null;
+  const focusClose = !!(ae && ae.classList && ae.classList.contains("tab-close"));
+  const sig = state.openTabs.join("|") + "#" + (state.session || "");
+  // K4: diff/patch, never innerHTML="" — the 2s poll used to rebuild every
+  // tab, stealing focus and resetting scroll on each tick.
+  const prev = new Map();
+  Array.from(tabs.children).forEach((el) => prev.set(el.dataset.sid, el));
+  let last = null;
   state.openTabs.forEach((id) => {
     const c = state.chats.find((x) => x.id === id) || { id, title: "New chat" };
-    const b = document.createElement("div");
-    b.className = "tab" + (id === state.session ? " active" : "");
-    b.dataset.sid = id;
-    b.setAttribute("role", "button");
-    b.tabIndex = 0;
-    b.title = c.title || "New chat";
+    let b = prev.get(id);
+    if (!b) {
+      b = document.createElement("div");
+      b.className = "tab";
+      b.dataset.sid = id;
+      b.setAttribute("role", "tab");
+      b.setAttribute("aria-keyshortcuts", "Delete Backspace");
+      const glyph = document.createElement("span"); glyph.className = "glyph";
+      const t = document.createElement("span"); t.className = "t";
+      const dot = document.createElement("span"); dot.className = "dot";
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "tab-close"; x.tabIndex = -1;
+      x.title = "Close tab (session stays in Chats)";
+      x.innerHTML = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg>';
+      x.onclick = (e) => { e.stopPropagation(); closeTab(b.dataset.sid); };
+      b.append(glyph, t, dot, x);
+      b.onclick = () => openChat(b.dataset.sid);
+      b.onkeydown = (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openChat(b.dataset.sid); }
+        else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); closeTab(b.dataset.sid); }
+        else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+          e.preventDefault();
+          const sib = e.key === "ArrowLeft" ? b.previousElementSibling : b.nextElementSibling;
+          if (sib) sib.focus();
+        }
+      };
+      // middle-click closes, matching editor tab conventions
+      b.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(b.dataset.sid); } };
+    }
+    prev.delete(id);
+    const active = id === state.session;
     const st = state.tabStates[id] || "idle";
-    const glyph = document.createElement("span"); glyph.className = "glyph"; glyph.style.background = glyphColor(id);
-    glyph.textContent = (c.title || "?").trim().charAt(0).toUpperCase() || "?";
-    const t = document.createElement("span"); t.className = "t"; t.textContent = c.title || "New chat";
-    const dot = document.createElement("span"); dot.className = "dot " + st; dot.setAttribute("aria-label", st);
-    const x = document.createElement("button");
-    x.type = "button"; x.className = "tab-close"; x.tabIndex = -1;
-    x.setAttribute("aria-label", `Close tab ${c.title || "New chat"}`);
-    x.title = "Close tab (session stays in Chats)";
-    x.innerHTML = '<svg viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2l-6 6"/></svg>';
-    x.onclick = (e) => { e.stopPropagation(); closeTab(id); };
-    b.append(glyph, t, dot, x);
-    b.onclick = () => openChat(id);
-    b.onkeydown = (e) => {
-      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); openChat(id); }
-      else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); closeTab(id); }
-    };
-    // middle-click closes, matching editor tab conventions
-    b.onauxclick = (e) => { if (e.button === 1) { e.preventDefault(); closeTab(id); } };
-    tabs.appendChild(b);
+    const title = c.title || "New chat";
+    b.classList.toggle("active", active);
+    b.setAttribute("aria-selected", String(active));
+    b.setAttribute("aria-label", `${title}${st !== "idle" ? ` · ${st}` : ""}`);
+    b.tabIndex = active ? 0 : -1;
+    b.title = title;
+    const glyph = b.querySelector(".glyph");
+    glyph.style.background = glyphColor(id); // CSSOM: CSP blocks style attrs in markup
+    glyph.textContent = title.trim().charAt(0).toUpperCase() || "?";
+    b.querySelector(".t").textContent = title;
+    const dot = b.querySelector(".dot");
+    dot.className = "dot " + st;
+    dot.setAttribute("aria-label", st);
+    b.querySelector(".tab-close").setAttribute("aria-label", `Close tab ${title}`);
+    const want = last ? last.nextSibling : tabs.firstChild;
+    if (want !== b) tabs.insertBefore(b, want);
+    last = b;
   });
-  tabs.scrollLeft = keepScroll;
-  updateTabFades();
+  prev.forEach((el) => el.remove());
   const act = tabs.querySelector(".tab.active");
-  if (act) act.scrollIntoView({ block: "nearest", inline: "nearest" });
+  if (!act && tabs.firstChild) tabs.firstChild.tabIndex = 0;
+  tabs.scrollLeft = keepScroll;
+  // auto-scroll only when the tab set / active chat actually changed.
+  // instant (not smooth): openChat renders twice in one tick — a smooth
+  // animation started here would be cancelled by the next keepScroll restore.
+  if (sig !== lastTabSig) {
+    lastTabSig = sig;
+    if (act) act.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+  }
+  updateTabFades();
+  if (focusSid && document.activeElement !== ae) {
+    const nb = tabs.querySelector(`.tab[data-sid="${focusSid}"]`) || act || tabs.querySelector(".tab");
+    if (nb) (focusClose ? nb.querySelector(".tab-close") : nb).focus();
+  }
 }
 async function closeTab(id) {
   if (!state.openTabs.includes(id)) return;
+  // K5: the streaming guard runs BEFORE any pruning — a refused close must
+  // never leave the tab list mutated.
+  if (state.session === id && state.streaming && state.openTabs.length === 1) {
+    toast("Stop the current turn before closing the last tab", "warn");
+    return;
+  }
   const idx = state.openTabs.indexOf(id);
   pruneTab(id);
   if (state.session === id) {
     const next = state.openTabs[Math.min(idx, state.openTabs.length - 1)];
-    if (next) await openChat(next);
-    else {
-      if (state.streaming) { toast("Stop the current turn before closing the last tab", "warn"); addTab(id); renderTabs(); return; }
+    if (next) {
+      const seqBefore = loadSeq;
+      const ok = await openChat(next);
+      // K5: restore only when the switch was refused (streaming guard / Stay).
+      // If a newer openChat won the load race, the close stands — restoring
+      // here would resurrect the closed tab as a zombie.
+      if (!ok && loadSeq === seqBefore) { state.openTabs.splice(Math.min(idx, state.openTabs.length), 0, id); renderTabs(); return; }
+    } else {
       state.session = null;
       clearStream(); emptyState();
     }
@@ -1311,6 +1547,33 @@ $("#tabs").addEventListener("wheel", (e) => {
     t.scrollLeft += e.deltaY;
   }
 }, { passive: false });
+/* drag-to-scroll (grab the strip and pull); a real drag suppresses the
+   click so pulling the strip never opens a tab by accident. The scrollbar
+   itself stays hidden — wheel, drag, arrow keys and the edge fades are the
+   only overflow affordances. */
+let tabDrag = null, tabDragged = false;
+$("#tabs").addEventListener("pointerdown", (e) => {
+  if (e.button !== 0 || e.target.closest(".tab-close")) return;
+  const t = $("#tabs");
+  if (t.scrollWidth <= t.clientWidth) return;
+  tabDrag = { x: e.clientX, left: t.scrollLeft, id: e.pointerId };
+  tabDragged = false;
+  try { t.setPointerCapture(e.pointerId); } catch { /* capture is best-effort */ }
+});
+window.addEventListener("pointermove", (e) => {
+  if (!tabDrag || e.pointerId !== tabDrag.id) return;
+  const dx = e.clientX - tabDrag.x;
+  if (!tabDragged && Math.abs(dx) < 5) return;
+  tabDragged = true;
+  const t = $("#tabs");
+  t.style.scrollBehavior = "auto";
+  t.scrollLeft = tabDrag.left - dx;
+  t.style.scrollBehavior = "";
+});
+window.addEventListener("pointerup", () => { tabDrag = null; });
+$("#tabs").addEventListener("click", (e) => {
+  if (tabDragged) { e.preventDefault(); e.stopPropagation(); tabDragged = false; }
+}, true);
 window.addEventListener("resize", updateTabFades);
 let polling = false;
 async function pollState() {
@@ -1345,9 +1608,13 @@ async function pollState() {
   finally { polling = false; }
 }
 async function openChat(id) {
-  if (state.view !== "chat") await switchView("chat");
+  if (state.view !== "chat") {
+    const ok = await switchView("chat");
+    if (!ok) return false; // Stay on the dirty editor — do not switch chats
+  }
   const ok = await loadSessionIntoView(id);
   if (ok) { addTab(id); renderTabs(); closeSidebarNarrow(); }
+  return ok;
 }
 
 /* --------------------------------------------------------------- sidebar */
@@ -1514,10 +1781,10 @@ async function chooseMode(mode) {
 /* ----------------------------------------------------------- view routing */
 async function switchView(view) {
   closeMenus();
-  if (view === state.view) return;
+  if (view === state.view) return true;
   if ((state.view === "settings" && state.settingsDirty) || (state.view === "memory" && state.soulDirty)) {
     const ok = await confirmModal("Unsaved edits", "You have unsaved edits. They are kept until you save or discard them.", "Leave");
-    if (!ok) return;
+    if (!ok) return false; // Stay means stay
   }
   state.view = view;
   $$(".rail-btn[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
@@ -1533,12 +1800,15 @@ async function switchView(view) {
   else if (view === "settings") renderSettings();
   else if (view === "help") renderHelp();
   else if (view === "chat") input.focus();
+  return true;
 }
 async function newChat() {
   if (state.streaming) { toast("Stop the current turn before starting a new chat", "warn"); return; }
   if (state.changingChat) return;
   state.changingChat = true;
   try {
+    // K6: ask before creating anything — Stay must not spawn a chat
+    if (state.view !== "chat") { const ok = await switchView("chat"); if (!ok) return; }
     const sess = await post("/api/chats", { first_message: "" });
     state.drafts.set(state.session, input.value);
     state.session = sess.id;
@@ -1546,7 +1816,6 @@ async function newChat() {
     input.value = state.drafts.get(sess.id) || ""; autoGrow();
     emptyState();
     await renderSidebar();
-    if (state.view !== "chat") await switchView("chat");
     input.focus();
   } catch (e) { toast(e.message, "err"); }
   finally { state.changingChat = false; }
@@ -1809,12 +2078,15 @@ function paintMarket() {
       <div class="mc-top"><span class="mc-title" title="${esc(e.title)}">${esc(e.title)}</span><span class="mc-size">${esc(e.size_gb)} GB</span></div>
       <div class="mc-fit ${fitCls[e.fit] || "dim"}">${esc(e.fit_label || e.fit || "?")}</div>
       <div class="mc-blurb">${esc(e.blurb || e.short || "")}</div>
-      <div class="mc-bar"><i class="${fitCls[e.fit] || "dim"}" style="width:${pct}%"></i></div>
+      <div class="mc-bar"><i class="${fitCls[e.fit] || "dim"}"></i></div>
       <div class="mc-foot"><span class="mc-repo" title="${esc(e.repo || "")}">${esc(e.repo || "")}</span><span class="mc-dl">download →</span></div>`;
     const go = () => marketDownload(e);
     card.onclick = go;
     card.onkeydown = (ev) => { if (ev.key === "Enter" && !ev.isComposing) go(); };
     grid.appendChild(card);
+    // K9: CSP style-src 'self' blocks inline style attributes in markup —
+    // set the fit-bar width through CSSOM after insertion instead.
+    card.querySelector(".mc-bar i").style.width = pct + "%";
   });
 }
 async function marketDownload(e) {
@@ -2022,6 +2294,46 @@ const SET_FIELDS = {
     ["confirm_quit", "bool", "confirm before shutting down"],
   ],
 };
+/* K10: client-side mirrors of the config schema bounds.
+   [min, max, exclusiveLower] — null means unbounded. The bridge still
+   validates; this catches typos before a round-trip and explains them
+   inline instead of a single cryptic toast. */
+const SET_BOUNDS = {
+  "generation.temperature": [0, 2],
+  "generation.top_p": [0, 1],
+  "generation.top_k": [0, null],
+  "generation.repeat_penalty": [0, 2],
+  "generation.num_ctx": [128, 1000000],
+  "generation.num_gpu": [-1, null],
+  "generation.num_batch": [1, null],
+  "generation.max_tokens": [1, null],
+  "generation.timeout": [0, null, true],
+  "generation.thinking_budget": [0, null],
+  "agent.max_steps": [1, 64],
+  "agent.max_parse_retries": [0, 5],
+  "agent.tool_timeout": [0, null, true],
+  "agent.compact_ratio": [0.2, 0.95, true],
+};
+function fieldError(el, msg) {
+  const row = el.closest(".set-row");
+  const old = row && row.querySelector(".field-err");
+  if (old) old.remove();
+  if (!msg) {
+    el.classList.remove("invalid");
+    el.removeAttribute("aria-invalid");
+    el.removeAttribute("aria-describedby");
+    return;
+  }
+  el.classList.add("invalid");
+  el.setAttribute("aria-invalid", "true");
+  const err = document.createElement("span");
+  err.className = "field-err";
+  err.id = el.id + "-err";
+  err.setAttribute("role", "alert");
+  err.textContent = msg;
+  el.setAttribute("aria-describedby", err.id);
+  if (row) row.appendChild(err);
+}
 const RO_ROWS = [
   ["permission_mode", "Permission mode", "read-only · change via the mode badge (Ctrl+P), phrase-gated"],
   ["workspace", "Workspace", "read-only · set at launch"],
@@ -2079,11 +2391,16 @@ function renderSettings() {
         el = document.createElement("input");
         el.type = type === "text" ? "text" : "number";
         if (type === "num") el.step = "any";
+        const b = SET_BOUNDS[path];
+        if (b && el.type === "number") {
+          if (b[0] != null) el.min = String(b[0]);
+          if (b[1] != null) el.max = String(b[1]);
+        }
         el.value = val == null ? "" : String(val);
         if (el.type === "number") holder = makeStepper(el);
       }
       el.id = id; el.dataset.key = path; el.dataset.type = type;
-      el.addEventListener("input", () => { state.settingsDirty = settingsDirtyNow(); });
+      el.addEventListener("input", () => { state.settingsDirty = settingsDirtyNow(); if (el.classList.contains("invalid")) fieldError(el, ""); });
       el.addEventListener("change", () => { state.settingsDirty = settingsDirtyNow(); });
       row.appendChild(holder || el);
       form.appendChild(row);
@@ -2111,27 +2428,57 @@ function renderSettings() {
 $("#settings-save").onclick = async () => {
   const values = settingsValues();
   const body = {};
+  // K10: validate every field first — highlight all offenders inline, keep
+  // every edit, and never send a partial payload.
+  let firstBad = null;
+  const fail = (el, msg) => { fieldError(el, msg); if (!firstBad) firstBad = el; };
   for (const [path, raw] of Object.entries(values)) {
     const [section, key] = path.split(".");
     const el = $(`#settings-form [data-key="${path}"]`);
     const type = el ? el.dataset.type : "text";
     let v = raw;
     if (type === "bool") v = !!el.checked;
-    else if (type === "int") { v = parseInt(raw, 10); if (!Number.isFinite(v)) { toast(`${key}: enter an integer`, "err"); return; } }
-    else if (type === "num") { v = parseFloat(raw); if (!Number.isFinite(v)) { toast(`${key}: enter a number`, "err"); return; } }
+    else if (type === "int" || type === "num") {
+      const s = String(raw).trim();
+      const shape = type === "int" ? /^-?\d+$/ : /^-?(\d+(\.\d+)?|\.\d+)$/;
+      if (!shape.test(s)) { fail(el, `${key}: enter ${type === "int" ? "an integer" : "a number"}`); continue; }
+      v = type === "int" ? parseInt(s, 10) : parseFloat(s);
+      const b = SET_BOUNDS[path];
+      if (b) {
+        const [lo, hi, excl] = b;
+        const badLo = lo != null && (excl ? v <= lo : v < lo);
+        const badHi = hi != null && v > hi;
+        if (badLo || badHi) {
+          const range = lo != null && hi != null ? `${lo}–${hi}` : lo != null ? `${excl ? "above " : "≥ "}${lo}` : `≤ ${hi}`;
+          fail(el, `${key}: must be ${range}`);
+          continue;
+        }
+      }
+      fieldError(el, "");
+    }
     (body[section] = body[section] || {})[key] = v;
+  }
+  if (firstBad) {
+    firstBad.focus();
+    toast("Some settings are out of range — fix the highlighted fields; your edits are kept.", "err");
+    return;
   }
   const btn = $("#settings-save"); btn.disabled = true;
   try {
-    const r = await patch("/api/config", body);
-    state.config = r.config || state.config;
+    // agent policy goes through the dedicated confirmation-aware control
+    // (H2); the generic PATCH refuses protected sections outright.
+    const { agent: agentBody, ...rest } = body;
+    let r = null;
+    if (agentBody) r = await post("/api/config/agent", { ...agentBody, confirm: true });
+    if (Object.keys(rest).length) r = await patch("/api/config", rest);
+    state.config = (r && r.config) || state.config;
     settingsSnapshot = { ...values };
     // edits typed DURING the save are still dirty — never clobber them
     state.settingsDirty = settingsDirtyNow();
     toast("settings saved");
     if (!state.settingsDirty) renderSettings();
     refreshStatus();
-  } catch (e) { toast(`save failed — edits kept: ${e.message}`, "err"); }
+  } catch (e) { toast(`Settings not saved — your edits are kept. (${e.message})`, "err"); }
   finally { btn.disabled = false; }
 };
 
@@ -2149,10 +2496,17 @@ function renderHelp() {
     ["Ctrl+D", "doctor"],
     ["Ctrl+G", "settings"],
     ["Ctrl+H", "this help"],
-    ["Ctrl+O", "focus chat search"],
+    ["Ctrl+O", "open chats sidebar & focus search"],
     ["Ctrl+E (hold)", "voice input — release to transcribe"],
     ["Ctrl+Enter", "save soul.md (Memory view)"],
     ["Tab / ↑ ↓", "complete slash & @ hints"],
+    ["Ctrl+X", "stop the running turn"],
+    ["Ctrl+T", "show / hide thinking text"],
+    ["Ctrl+J", "expand / collapse tool panels"],
+    ["Ctrl+End / End", "jump to the latest message"],
+    ["F2", "toggle the chats sidebar"],
+    ["Delete / Backspace", "close the focused tab"],
+    ["← / → (on a tab)", "move between tabs"],
   ];
   const refs = [
     ["@file:path", "attach a file's contents as context"],
@@ -2168,6 +2522,8 @@ function renderHelp() {
     <table>${refs.map(([k, d]) => `<tr><td><code>${esc(k)}</code></td><td>${esc(d)}</td></tr>`).join("")}</table>
     <h3>Slash commands</h3>
     <table>${SLASHES.map((s) => `<tr><td><code>${esc(s.cmd)}</code></td><td>${esc(s.desc)}</td></tr>`).join("")}</table>
+    <h3>GUI vs TUI</h3>
+    <p>This console implements the everyday command set above. A few remain <b>TUI-only</b>: <code>/modelsettings</code>, <code>/perms</code>, <code>/skillimport</code>, <code>/onboarding</code>, <code>/gui</code>, <code>/omlgui</code> and <code>/think hide|show</code> (use <kbd>Ctrl+T</kbd> here). Vision image paste is also TUI-only (<kbd>Ctrl+V</kbd>) — the GUI bridge has no media upload path yet.</p>
     <h3>Operation modes</h3>
     <p>The composer's <b>chat / plan / build</b> selector is separate from the permission mode: chat and plan block write and shell tools entirely; build is the full agent.</p>
     <h3>Steering a running turn</h3>
@@ -2264,6 +2620,27 @@ async function talkStop() {
   $("#run-state").textContent = state.streaming ? "Working" : "Ready";
 }
 
+/* K23: GUI parity toggles for the TUI's Ctrl+T / Ctrl+J */
+async function toggleThinkingVisible() {
+  try {
+    const cur = !(state.config && state.config.agent && state.config.agent.thinking_visible === false);
+    const want = !cur;
+    await post("/api/config/agent", { thinking_visible: want, confirm: true });
+    if (state.config) (state.config.agent = state.config.agent || {}).thinking_visible = want;
+    toast(`thinking text: ${want ? "visible" : "hidden"}`);
+  } catch (e) { toast(e.message, "err"); }
+}
+async function toggleToolPanels() {
+  try {
+    const cur = !(state.config && state.config.ui && state.config.ui.show_tool_panels === false);
+    const want = !cur;
+    await patch("/api/config", { ui: { show_tool_panels: want } });
+    if (state.config) (state.config.ui = state.config.ui || {}).show_tool_panels = want;
+    $$(".tool-entry").forEach((d) => { d.open = want; });
+    toast(`tool panels: ${want ? "expanded" : "collapsed"}`);
+  } catch (e) { toast(e.message, "err"); }
+}
+
 /* ------------------------------------------------------------ global keys */
 document.addEventListener("keydown", (e) => {
   if (e.isComposing || e.keyCode === 229) return; // IME guard on every hotkey path
@@ -2277,6 +2654,8 @@ document.addEventListener("keydown", (e) => {
       if (!slashHint.hidden || !atHint.hidden) { hideHints(); return; }
       if (state.streaming && !state.stopping) { e.preventDefault(); $("#cancel").click(); }
     }
+    else if (e.key === "F2") { e.preventDefault(); setSidebar(!sidebarIsOpen()); }
+    else if (e.key === "End" && !(e.target && e.target.closest && e.target.closest("input, textarea, om-listbox"))) { e.preventDefault(); scrollBottom(true); }
     return;
   }
   const k = e.key.toLowerCase();
@@ -2286,7 +2665,11 @@ document.addEventListener("keydown", (e) => {
   else if (k === "n") { e.preventDefault(); newChat(); }
   else if (k === "k") { e.preventDefault(); openPalette(); }
   else if (k === "q") { e.preventDefault(); handleSlash("/quit"); }
-  else if (k === "o") { e.preventDefault(); openSidebarNarrow(); $("#sb-search").focus(); }
+  else if (k === "o") { e.preventDefault(); setSidebar(true); $("#sb-search").focus(); }
+  else if (k === "x") { e.preventDefault(); if (state.streaming && !state.stopping) $("#cancel").click(); }
+  else if (k === "t") { e.preventDefault(); toggleThinkingVisible(); }
+  else if (k === "j") { e.preventDefault(); toggleToolPanels(); }
+  else if (k === "end") { e.preventDefault(); scrollBottom(true); }
   else if (k === "enter" && state.view === "memory") { e.preventDefault(); $("#soul-save").click(); }
 });
 document.addEventListener("keyup", (e) => {
@@ -2335,7 +2718,10 @@ $("#plus-skills").onclick = async () => {
     const names = (r.skills || []).map((s) => s.name);
     if (!names.length) { toast("no skills saved yet", "warn"); return; }
     const name = await promptModal("Cast a skill", names.join(", "), false, names[0]);
-    if (name) { input.value = `/skill:${name}`; autoGrow(); submit(); }
+    if (!name) return;
+    // K39: only cast skills that exist — a typo must not reach the agent
+    if (!names.includes(name)) { toast(`unknown skill "${name}" — pick one of: ${names.join(", ")}`, "err"); return; }
+    input.value = `/skill:${name}`; autoGrow(); submit();
   } catch (e) { toast(e.message, "err"); }
 };
 
@@ -2349,6 +2735,10 @@ function setSidebar(open) {
   const sb = $("#sidebar");
   if (narrowMQ.matches) { sb.classList.toggle("open", open); sb.classList.remove("closed"); }
   else { sb.classList.toggle("closed", !open); sb.classList.remove("open"); }
+  // K7: a closed sidebar must be unreachable — inert drops it from the tab
+  // order and the accessibility tree while it sits off-screen.
+  sb.inert = !open;
+  sb.setAttribute("aria-hidden", String(!open));
   $("#btn-sidebar").setAttribute("aria-pressed", String(open));
 }
 function closeSidebarNarrow() { if (narrowMQ.matches) setSidebar(false); }

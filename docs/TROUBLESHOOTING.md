@@ -49,9 +49,11 @@ eats VRAM fast (≈4 KB/token/GPU-layer on most architectures).
 
 ## "bad token" / GUI won't connect
 
-- The bridge token is per-process. Reload the page from the URL `ohmyllm gui`
-  printed, or restart the GUI.
-- Port already in use? `ohmyllm gui --port 0` picks a free one.
+- The bridge token is per-process. Reload from the full tokenized URL
+  printed by `ohmyllm gui --no-open`, or restart the GUI to mint a new one.
+- Port already in use? The default (`--port 0`) already picks a free
+  ephemeral port; pin a specific one with `ohmyllm gui --port <n>` only
+  when you need a stable URL.
 - Native window says "Could not reach the OhMyLLM bridge": launch it through
   `ohmyllm gui` (it sets `OMLLM_PYTHON` for you), or export
   `OMLLM_PYTHON=/path/to/.venv/bin/python` pointing at an environment where

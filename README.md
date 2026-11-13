@@ -5,7 +5,7 @@
 <h1 align="center">OhMyLLM</h1>
 
 <p align="center">
-  <a href="https://github.com/minasfosteris-ui/ohmyllm/actions/workflows/ci.yml"><img src="https://github.com/minasfosteris-ui/ohmyllm/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/minasfostieris-ui/ohmyllm/actions/workflows/ci.yml"><img src="https://github.com/minasfostieris-ui/ohmyllm/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
 </p>
 
 
@@ -111,10 +111,11 @@ everything, and rewrites. Measured on a local Qwen3.5-9B: 4.6x the reasoning
 it beats `/think max` on every model because the review pass is pure
 prompting, not an API knob.
 
-**`/market` — the model marketplace.** Fourteen curated downloads in
-two sections: 10 language models (Qwen3.8-27B in two honest quants,
-Sushi-Coder-RL, Spark-X2.6-4B Q8_0, official Gemma-4 QAT, GPT-OSS-20B,
-Qwen3-Coder-30B, R1-Distill-14B, Phi-4) and 4 **speech-to-text** models — real sizes, a
+**`/market` — the model marketplace.** Fifteen curated downloads in
+two sections: 11 language models (Qwen3.8-27B in two honest quants,
+Sushi-Coder-RL, Spark-X2.6-4B Q8_0, official Gemma-4 QAT 26B/12B,
+GPT-OSS-20B, Qwen3-Coder-30B, R1-Distill-14B, Phi-4,
+MiniCPM-V-4.7-35B-A3B) and 4 **speech-to-text** models — real sizes, a
 **"will it fit my GPU" verdict** from a live VRAM
 probe (NVIDIA, AMD, Apple Silicon unified memory) for LLMs, MB sizes for
 voice. Enter or click starts the download — LLMs straight into your LM
@@ -186,9 +187,20 @@ streaming, first-run wizard, model table with VRAM fit, backend cards,
 permission modes with the phrase gate, soul editor, doctor, command palette:
 all in there.
 
+The GUI implements the everyday slash-command set, including `/mail`,
+`/voice`, `/search`, `/chats`, `/clear`, `/rename`, `/delete`, `/forget`,
+`/memory` and `/export [markdown|json]`. A few remain **TUI-only**:
+`/modelsettings`, `/perms`, `/skillimport`, `/onboarding`, `/gui`,
+`/omlgui` and `/think hide|show` (use `Ctrl+T` in the GUI). Vision image
+paste is also TUI-only for now — the GUI bridge has no media upload path.
+`Ctrl+T/J/X/End/F2` work in the GUI. The chat tab strip scrolls
+horizontally with a hidden scrollbar (wheel, drag or arrow keys); the
+edge fades are the only overflow affordance, and `Delete`/`Backspace`
+closes the focused tab.
+
 ```bash
 ohmyllm gui --browser            # force browser mode
-ohmyllm gui --no-open            # just print the URL
+ohmyllm gui --no-open            # print the full tokenized URL — keep it private
 # build the native window (needs Rust + webkit2gtk-4.1 / Tauri prereqs):
 cd gui/src-tauri && cargo build --release
 ```
@@ -231,7 +243,7 @@ danger_threshold = 0.55
 
 ```bash
 uv sync --extra dev            # or pip install -e ".[dev]"
-pytest tests/ -q               # 114 tests, no network, no model required
+pytest tests/ -q               # 921 tests, no network, no model required
 ruff check src tests scripts
 mypy src/ohmyllm
 python scripts/e2e_check.py    # scripted agent: memory + tools + audit
@@ -240,10 +252,14 @@ python scripts/tui_smoke.py    # headless TUI click-through
 
 ## Privacy
 
-OhMyLLM only ever talks to `127.0.0.1` (model servers, GUI bridge). There is
-no telemetry, no update pings, no cloud dependency. The `http_fetch` tool is
-disabled by default; enabling it still requires a host allowlist and, in
-every mode below `full_access`, your approval.
+Local model servers (Ollama/LM Studio) and the GUI bridge talk over
+`127.0.0.1` by default. Cloud providers are opt-in: connecting an API key
+and selecting one sends prompts to that vendor. Market downloads,
+`ohmyllm update`, and mail (when configured) also use the network. There
+is no telemetry and no automatic update ping; a cloud backend is never
+required. The `http_fetch` tool is disabled by default; enabling it still
+requires a host allowlist and, in every mode below `full_access`, your
+approval.
 
 ## Troubleshooting
 

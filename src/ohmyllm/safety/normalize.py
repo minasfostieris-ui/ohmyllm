@@ -9,6 +9,15 @@ and ``sh -c`` / ``bash -c`` / ``eval`` / ``env`` / ``xargs`` wrappers.
 This module is deliberately *over*-inclusive: it produces every plausible
 normalized variant of a command so the policy engine can fnmatch each one.
 It never executes anything and has no side effects.
+
+Additional deobfuscation layers (R1 security review):
+  * ANSI-C ``$'...'`` quoting is decoded (``$'\t'`` etc.) BEFORE generic
+    quote removal, so escaped payloads stay visible (H1);
+  * ``${VAR}`` is folded to ``$VAR`` and literal ``VAR=value`` assignments
+    are expanded into ``$VAR`` references with a bounded, non-executing
+    substitution (C1/C2) — unknown variables are left untouched;
+  * long-form destructive flags (``rm --recursive --force``) are folded to
+    their short equivalents (``rm -rf``) so spelling cannot dodge gates (C1).
 """
 
 from __future__ import annotations
@@ -26,14 +35,154 @@ _ALL_WS_RX = re.compile(r"\s+")
 _IFS_RX = re.compile(r"\$\{IFS\}|\$IFS")
 _ESCAPE_RX = re.compile(r"\\(.)", re.DOTALL)
 _SHELL_WRAPPERS = frozenset({"sh", "bash", "zsh", "dash", "ksh"})
+_BRACE_VAR_RX = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+_ANSI_C_RX = re.compile(r"\$'((?:[^'\\]|\\.)*)'")
+_ANSI_ESCAPES = {
+    "a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r",
+    "t": "\t", "v": "\v", "\\": "\\", "'": "'", '"': '"',
+    "e": "\x1b", "E": "\x1b", "0": "\x00",
+}
+_ASSIGN_RX = re.compile(r"(?:^|[\s;|&])([A-Za-z_][A-Za-z0-9_]*)=([^\s;|&]*)")
+_VAR_REF_RX = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+# Quote splicing: '"' / "'" adjacency concatenates shell strings. The splice
+# quotes are pure syntax — dropping them exposes hidden $'...' payloads (H1).
+
+
+def _decode_ansi_c(text: str) -> str:
+    """Decode ANSI-C ``$'...'`` quoting (H1). Runs before generic quote
+    removal so ``$'\\t'`` becomes a real tab instead of a literal ``t``.
+    Handles ``\\xHH``, ``\\uHHHH``, ``\\UHHHHHHHH`` and octal ``\\NNN`` too,
+    so ``$'\\x2f'`` cannot hide a ``/`` from the catastrophic gate."""
+
+    def _sub(m: re.Match[str]) -> str:
+        body = m.group(1)
+        out: list[str] = []
+        i = 0
+        while i < len(body):
+            ch = body[i]
+            if ch == "\\" and i + 1 < len(body):
+                nxt = body[i + 1]
+                if nxt == "x":
+                    j = i + 2
+                    while j < len(body) and j < i + 4 and body[j] in "0123456789abcdefABCDEF":
+                        j += 1
+                    if j > i + 2:
+                        out.append(chr(int(body[i + 2:j], 16)))
+                        i = j
+                        continue
+                elif nxt in "uU":
+                    width = 4 if nxt == "u" else 8
+                    digits = body[i + 2:i + 2 + width]
+                    if len(digits) == width and all(c in "0123456789abcdefABCDEF" for c in digits):
+                        out.append(chr(int(digits, 16)))
+                        i += 2 + width
+                        continue
+                elif nxt in "01234567":
+                    j = i + 1
+                    while j < len(body) and j < i + 4 and body[j] in "01234567":
+                        j += 1
+                    out.append(chr(int(body[i + 1:j], 8)))
+                    i = j
+                    continue
+                out.append(_ANSI_ESCAPES.get(nxt, nxt))
+                i += 2
+            else:
+                out.append(ch)
+                i += 1
+        return "".join(out)
+
+    return _ANSI_C_RX.sub(_sub, text)
 
 
 def _strip_tricks(text: str) -> str:
     """Remove quoting/escape/whitespace obfuscation, collapse whitespace."""
     out = _IFS_RX.sub(" ", text)
+    # Unsplice '"' / "'" adjacencies (fixpoint) BEFORE decoding: splicing
+    # hides ANSI-C payloads from the decoder, and a premature decode would
+    # consume the splice quotes as body (touch$'"'\t'"'/tmp → touch$'\t'/tmp).
+    while True:
+        nxt = out.replace("'\"", "").replace("\"'", "")
+        if nxt == out:
+            break
+        out = nxt
+    out = _decode_ansi_c(out)
+    out = _BRACE_VAR_RX.sub(r"$\1", out)
     out = _ESCAPE_RX.sub(r"\1", out)
     out = out.replace("'", "").replace('"', "")
+    # Tabs/VT/FF surviving quote removal (e.g. a literal tab inside "...")
+    # are argument separators too — fold them so `touch\t/tmp` cannot span
+    # a whitespace-sensitive deny glob (H1). Newlines stay: they chain.
+    out = re.sub(r"[^\S\n]+", " ", out)
     return _WS_RX.sub(" ", out).strip()
+
+
+def _expand_vars(text: str) -> str:
+    """Bounded, NON-executing expansion of literal ``VAR=value`` assignments
+    into ``$VAR``/``${VAR}`` references (C2). First assignment wins (shell
+    semantics for sequential assignment), at most 3 substitution passes so
+    chained indirection terminates. Unassigned references are left as-is.
+    """
+    values: dict[str, str] = {}
+    for m in _ASSIGN_RX.finditer(text):
+        name, val = m.group(1), m.group(2)
+        if name not in values:
+            values[name] = val.strip("'\"")
+    if not values:
+        return text
+
+    def _sub(m: re.Match[str]) -> str:
+        name = m.group(1) or m.group(2)
+        return values.get(name, m.group(0))
+
+    out = text
+    for _ in range(3):
+        nxt = _VAR_REF_RX.sub(_sub, out)
+        if nxt == out:
+            break
+        out = nxt
+    return out
+
+
+_RM_LONG_FLAGS = {
+    "--recursive": "r", "--force": "f", "--dir": "d", "--verbose": "v",
+    "--interactive": "i", "--one-file-system": "x", "--no-preserve-root": "",
+}
+
+
+def _semantic_flags(seg: str) -> str:
+    """Fold long-form ``rm`` flags into their short equivalents (C1) so
+    ``rm --recursive --force /`` normalizes to ``rm -rf /``. Only flag
+    spelling changes; arguments and their order are preserved."""
+    tokens = seg.split()
+    if not tokens:
+        return seg
+    exe = tokens[0].rsplit("/", 1)[-1]
+    if exe != "rm":
+        return seg
+    out: list[str] = [tokens[0]]
+    shorts: list[str] = []
+
+    def flush() -> None:
+        if shorts:
+            out.append("-" + "".join(dict.fromkeys(shorts)))
+            shorts.clear()
+
+    for tok in tokens[1:]:
+        if tok in _RM_LONG_FLAGS:
+            folded = _RM_LONG_FLAGS[tok]
+            if folded:
+                shorts.append(folded)
+            else:  # --no-preserve-root keeps its own token (gate matches it)
+                flush()
+                out.append(tok)
+        elif tok.startswith("-") and tok != "-":
+            flush()
+            out.append(tok)
+        else:
+            flush()
+            out.append(tok)
+    flush()
+    return " ".join(out)
 
 
 def _compact(text: str) -> str:
@@ -133,6 +282,14 @@ def command_variants(command: str) -> list[str]:
             return
         add(norm)
         add(_compact(norm))
+        expanded = _expand_vars(norm)
+        if expanded != norm:
+            add(expanded)
+            add(_compact(expanded))
+            if depth < 1:
+                # re-walk the expanded form (fixpoint: re-expansion is a
+                # no-op, so this terminates after one extra level)
+                walk(expanded, depth + 1)
         if depth < 1:
             for match in _SUBSHELL_RX.finditer(norm):
                 inner = match.group(1) or match.group(2) or match.group(3) or ""
@@ -142,6 +299,10 @@ def command_variants(command: str) -> list[str]:
         for seg in segments:
             add(seg)
             add(_compact(seg))
+            folded = _semantic_flags(seg)
+            if folded != seg:
+                add(folded)
+                add(_compact(folded))
             tokens = seg.split()
             if not tokens:
                 continue
@@ -149,7 +310,9 @@ def command_variants(command: str) -> list[str]:
             add(exe)
             base = exe.rsplit("/", 1)[-1]
             add(base)
-            if depth >= 1:
+            # Two wrapper levels: `bash -c "bash -c 'rm -rf /'"` must expose
+            # the innermost payload to anchored deny rules (bounded depth).
+            if depth >= 2:
                 continue
             if base in _SHELL_WRAPPERS and "-c" in tokens[1:3]:
                 # take the RAW remainder so newlines inside the payload survive
@@ -183,3 +346,11 @@ def command_variants(command: str) -> list[str]:
 
     walk(str(command), 0)
     return seen
+
+
+def normalize_command(command: str) -> str:
+    """Single canonical normalized form for risk scoring: deobfuscate,
+    expand literal variable assignments, fold semantic flags. Unlike
+    :func:`command_variants` this returns ONE string (no bare-executable
+    variants) so scoring cannot be inflated by stray tokens."""
+    return _semantic_flags(_expand_vars(_strip_tricks(str(command))))

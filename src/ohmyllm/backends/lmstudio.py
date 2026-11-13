@@ -277,8 +277,15 @@ class LMStudioBackend(BaseBackend):
     # --------------------------------------------------------------- chat
     async def _v0_state(self, model: str) -> tuple[str | None, str]:
         """Return (key, state) for a model via the v0 admin API."""
+        if getattr(self, "_v0_missing", False):
+            return None, ""
         async with self._client(self.config.lmstudio.base_url, timeout=10.0) as c:
             resp = await c.get("/api/v0/models")
+            if resp.status_code in (404, 405):
+                # D6: older LM Studio builds have no v0 admin API — remember
+                # it and degrade to v1 (which auto-loads on first chat).
+                self._v0_missing = True
+                return None, ""
             resp.raise_for_status()
             for m in resp.json().get("data") or []:
                 if m.get("id") == model or m.get("key") == model:
@@ -328,6 +335,8 @@ class LMStudioBackend(BaseBackend):
                 await self.unload(prev)
         self._last_loaded = model
         _, state = await self._v0_state(model)
+        if getattr(self, "_v0_missing", False):
+            return  # D6: no admin API — v1 chat auto-loads the model on demand
         if state == "loaded":
             return
         # GPU offload is only controllable through the lms CLI — the REST load
@@ -393,7 +402,7 @@ class LMStudioBackend(BaseBackend):
         deadline = time.monotonic() + max(self.config.lmstudio.startup_timeout, 180.0)
         while time.monotonic() < deadline:
             _, state = await self._v0_state(model)
-            if state == "loaded":
+            if state == "loaded" or getattr(self, "_v0_missing", False):
                 return
             await asyncio.sleep(1.0)
         raise BackendError(f"LM Studio is still loading {model!r} after the timeout — try again")

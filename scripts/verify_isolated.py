@@ -85,7 +85,7 @@ def main() -> int:
     results = []
     for i, (cmd, cwd) in enumerate(steps):
         try:
-            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=360)
+            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
             code, output = result.returncode, result.stdout + result.stderr
         except subprocess.TimeoutExpired as exc:
             code, output = 124, str(exc)

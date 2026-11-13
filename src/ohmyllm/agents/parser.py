@@ -28,7 +28,7 @@ class ParseReport:
     malformed_reason: str = ""
 
 
-_FENCE_RX = re.compile(r"```(?:json|JSON|tool|tool_call|functions\\.\\w+)?\s*\n(.*?)```", re.DOTALL)
+_FENCE_RX = re.compile(r"```(?:json|JSON|tool|tool_call|functions\.\w+)?\s*\n(.*?)```", re.DOTALL)
 _REACT_RX = re.compile(
     r"Action\s*:\s*['\"`]?([A-Za-z_][\w.]*)['\"`]?\s*\n+?\s*Action\s*Input\s*:\s*(.*?)(?=\n\s*(?:Thought|Action|Final Answer)\s*:|\Z)",
     re.DOTALL | re.IGNORECASE,

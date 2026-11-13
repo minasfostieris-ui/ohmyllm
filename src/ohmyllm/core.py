@@ -181,6 +181,8 @@ class Services:
             "logging": cfg.logging.model_dump(mode="json"),
             "operation_mode": cfg.agent.op_mode,
             "yolo": cfg.agent.yolo,
+            "tone": cfg.agent.tone,
+            "custom_tones": cfg.agent.custom_tones,
             "mail": cfg.mail.model_dump(mode="json"),
             "cloud": cfg.cloud.model_dump(mode="json"),
             "backend_boundary": {
@@ -208,7 +210,9 @@ class Services:
         old_workspace = self.workspace
         old_memory = self.config.memory.model_dump(mode="json")
         old_logging = self.config.logging.model_dump(mode="json")
-        if config_changed:
+        if config_changed or security_changed:
+            # Security-only deltas (e.g. yolo, which is excluded from dumps)
+            # must retire runtimes too — a live runtime cannot keep stale policy.
             self._retire_runtimes()
         # Existing PolicyEngine and AgentRuntime objects reference this instance.
         for name in Config.model_fields:

@@ -318,11 +318,17 @@ class ApprovalModal(ModalScreen[ApprovalOutcome]):
                     prev = self.req.preview[:2200]
                     lang = "diff" if ("@@" in prev or prev.startswith(("write", "patch"))) else "text"
                     yield Static(Syntax(prev, lang if lang != "text" else "text", theme="monokai", word_wrap=True), classes="code-block preview-block")
+                shell = self.req.tool == "run_command"
                 with Horizontal(id="approval-buttons"):
                     yield Button("Allow once (y)", variant="success", id="ok")
-                    yield Button("Allow session (a)", variant="primary", id="session")
-                    yield Button("Permanent rule (p)", variant="warning", id="always")
+                    if not shell:
+                        # K13: the approval manager coerces shell decisions to
+                        # one-shot — session/permanent buttons would lie.
+                        yield Button("Allow session (a)", variant="primary", id="session")
+                        yield Button("Permanent rule (p)", variant="warning", id="always")
                     yield Button("Deny (n)", variant="error", id="deny")
+                if shell:
+                    yield Static("[dim]shell calls are always one-shot — session/permanent rules never apply[/dim]")
 
     @on(Button.Pressed, "#ok")
     def _ok(self) -> None:
@@ -350,7 +356,13 @@ class ApprovalModal(ModalScreen[ApprovalOutcome]):
         self._out(ApprovalOutcome.DENIED)
 
     def action_allow_session(self) -> None:
+        if self.req.tool == "run_command":
+            self.notify("shell approvals are one-shot — press y to allow this call", severity="warning")
+            return
         self._out(ApprovalOutcome.APPROVED_SESSION)
 
     def action_always(self) -> None:
+        if self.req.tool == "run_command":
+            self.notify("shell approvals are one-shot — press y to allow this call", severity="warning")
+            return
         self._out(ApprovalOutcome.APPROVED_ALWAYS)

@@ -171,9 +171,21 @@ class CloudBackend(BaseBackend):
             r = await c.get(f"{base}/models", headers=self._headers(kind, key))
             if r.status_code != 200:
                 raise BackendError(f"{label}: model list failed ({r.status_code}): {r.text[:200]}")
-            data = r.json().get("data") or r.json().get("models") or []
+            try:
+                payload = r.json()
+            except ValueError as exc:
+                raise BackendError(f"{label}: model list returned invalid JSON") from exc
+        # D7: validate the shape before touching it — a proxy/login page or a
+        # bare list must surface as a clear BackendError, not AttributeError.
+        if not isinstance(payload, dict):
+            raise BackendError(f"{label}: unexpected model list shape ({type(payload).__name__})")
+        data = payload.get("data") or payload.get("models") or []
+        if not isinstance(data, list):
+            raise BackendError(f"{label}: unexpected model list shape (data is {type(data).__name__})")
         out: list[ModelInfo] = []
         for row in data:
+            if not isinstance(row, dict):
+                continue
             mid = str(row.get("id") or row.get("name") or "")
             if not mid:
                 continue
@@ -309,21 +321,33 @@ class CloudBackend(BaseBackend):
                                 if not isinstance(tc, dict):
                                     continue
                                 tid = str(tc.get("id") or "")
+                                raw_idx = tc.get("index")
+                                idx: int | None = None
+                                if isinstance(raw_idx, int) and not isinstance(raw_idx, bool) and raw_idx >= 0:
+                                    idx = raw_idx
+                                elif isinstance(raw_idx, str) and raw_idx.isdigit():
+                                    idx = int(raw_idx)
+                                # D2: parallel tool calls are keyed by the SSE
+                                # `index` first — id-only keying merges distinct
+                                # calls when providers reuse or omit ids.
                                 if tid and tid in by_id:
                                     slot = pending[by_id[tid]]
+                                elif idx is not None:
+                                    slot = pending.setdefault(idx, {"id": tid, "name": "", "args": ""})
+                                    if tid and not slot["id"]:
+                                        slot["id"] = tid
+                                    if tid:
+                                        by_id[tid] = idx
+                                    last_key = idx
                                 elif tid:
-                                    last_key = len(pending)
+                                    last_key = max(pending, default=-1) + 1
                                     by_id[tid] = last_key
                                     slot = pending[last_key] = {"id": tid, "name": "", "args": ""}
                                 elif last_key >= 0:
                                     slot = pending[last_key]  # continuation without id/index
                                 else:
-                                    try:
-                                        idx = int(tc.get("index", 0))
-                                    except (TypeError, ValueError):
-                                        idx = 0
-                                    last_key = idx
-                                    slot = pending.setdefault(idx, {"id": "", "name": "", "args": ""})
+                                    last_key = 0
+                                    slot = pending[0] = {"id": "", "name": "", "args": ""}
                                 fn0 = tc.get("function")
                                 fn = fn0 if isinstance(fn0, dict) else {}
                                 if fn.get("name"):

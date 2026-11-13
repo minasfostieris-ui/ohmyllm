@@ -216,7 +216,7 @@ def models(
     be = svc.backend(key)
     ok, _ = asyncio.run(_health(be))
     if not ok:
-        console.print(f"[yellow]{key}: server not running — starting probe offline list is impossible.[/yellow]")
+        console.print(f"[yellow]{key}: server is not running — the model list needs a live server.[/yellow]")
         console.print("Run [bold]ohmyllm backend --start[/bold] or start it manually.")
         raise typer.Exit(2)
     rows = asyncio.run(be.list_models())
@@ -372,7 +372,7 @@ def run(
     backend_name: str | None = typer.Option(None, "--backend", "-b"),
     model: str | None = typer.Option(None, "--model", "-m"),
     mode: str | None = typer.Option(None, "--mode", help="Permission mode for this run."),
-    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve tool calls this run."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve non-shell tool calls this run; shell commands still ask."),
 ) -> None:
     """Run a single agentic task from the shell (permission mode enforced)."""
     workspace, resume = _options(ctx, workspace, resume)
@@ -859,13 +859,17 @@ def gui(
                                 border_style="dim"))
             console.print("[dim]to get the native app: build `gui/src-tauri` (cargo build --release) or set OMLLM_GUI_BIN.[/dim]")
             return
-        console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → {base_url}\n"
-                            f"[dim]loopback only · capability token is never printed · Ctrl+C closes the session[/dim]",
-                            border_style="dim"))
-        if not no_open:
-            webbrowser.open(url)
+        if no_open:
+            # K36: --no-open must hand over the FULL tokenized URL — a bare
+            # loopback URL lands on a 401 page with no way to authenticate.
+            console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → {url}\n"
+                                f"[dim]loopback only · this URL carries the capability token — keep it private · Ctrl+C closes the session[/dim]",
+                                border_style="dim"))
         else:
-            console.print("[dim]--no-open suppresses secure token handoff; rerun without it to authenticate.[/dim]")
+            console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → {base_url}\n"
+                                f"[dim]loopback only · capability token is never printed · Ctrl+C closes the session[/dim]",
+                                border_style="dim"))
+            webbrowser.open(url)
         while child.poll() is None:
             time.sleep(0.3)
     except KeyboardInterrupt:
@@ -1047,7 +1051,7 @@ def mail_status() -> None:
     if not m.password and os.environ.get("OMLLM_KEY_MAIL"):
         pw = "OMLLM_KEY_MAIL env"
     elif m.password:
-        pw = f"{m.password[:2]}{'•' * 8}"
+        pw = "•" * 8  # K38: never leak even a prefix of the password
     else:
         pw = "unset"
     console.print(f"enabled={m.enabled} · {m.address} · IMAP {m.imap_host}:{m.imap_port} · "

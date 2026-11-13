@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from .normalize import normalize_command
+
 #: (pattern, score, reason, catastrophic) — catastrophic is score>=9 anyway;
 #: the flag marks "never prompt-able without override" patterns.
 _RULES: list[tuple[str, int, str]] = [
@@ -17,6 +19,8 @@ _RULES: list[tuple[str, int, str]] = [
     # raw devices / disks
     (r"\bmkfs(\.\w+)?\b", 10, "format filesystem (mkfs)"),
     (r"\bdd\b[^|;]*\bof=/dev/", 10, "dd write to raw device"),
+    (r"\bfind\b[^|;]*\s-delete(\s|$)", 10, "find -delete mass removal"),
+    (r"\bfind\b[^|;]*\s-exec(dir)?\s+rm\b", 10, "find -exec rm mass removal"),
     (r">\s*/dev/(sd|nvme|hd|disk|mapper)", 10, "redirect onto raw device"),
     (r"\bfdisk\b|\bparted\b|\bmkswap\b|\blvm\b", 9, "disk partitioning/volumes"),
     (r"\bmount\b|\bumount\b", 6, "filesystem mount change"),
@@ -35,6 +39,7 @@ _RULES: list[tuple[str, int, str]] = [
     (r"\beval\s*\$\(\s*(curl|wget)\b", 8, "eval of remote content"),
     # version control damage
     (r"\bgit\s+push\b[^|;]*(--force|-f)\b", 6, "force push"),
+    (r"\bgit\s+config\b[^|;]*\b(core\.fsmonitor|core\.hookspath|core\.sshcommand|core\.editor|core\.pager|alias\.)", 8, "git config hook/exec injection"),
     (r"\bgit\s+reset\s+--hard\b", 5, "hard reset discards work"),
     (r"\bgit\s+clean\s+-[a-zA-Z]*f", 5, "git clean removes untracked files"),
     (r"\bgit\s+(filter-branch|filter-repo)\b", 7, "history rewrite"),
@@ -42,6 +47,9 @@ _RULES: list[tuple[str, int, str]] = [
     (r"\b(apt|apt-get|dnf|yum|pacman|zypper|brew|choco|winget)\s+install\b", 6, "system package install"),
     (r"\b(pip|pip3|uv)\s+install\b", 5, "package install"),
     (r"\bnpm\s+(install|i)\b", 4, "node package install"),
+    # in-place editors / arbitrary interpreter payloads (M1)
+    (r"\bsed\b[^|;]*\s-i\b", 5, "sed in-place file edit"),
+    (r"shutil\.rmtree|os\.system\s*\(|subprocess\.(call|run|Popen)\s*\(|os\.exec\w*\s*\(|child_process", 9, "destructive interpreter payload"),
     # process control
     (r"\b(killall|pkill)\b|\bkill\s+-9\b", 5, "process kill"),
     # credential / privacy access
@@ -68,7 +76,7 @@ _COMPILED: list[tuple[re.Pattern[str], int, str]] = [
 ]
 
 _WRITEISH_SUBCOMMANDS: dict[str, set[str]] = {
-    "git": {"add", "commit", "checkout", "switch", "stash", "reset", "merge", "rebase", "push", "clean"},
+    "git": {"add", "commit", "checkout", "switch", "stash", "reset", "merge", "rebase", "push", "clean", "config"},
     "pip": {"install", "uninstall"}, "pip3": {"install", "uninstall"},
     "uv": {"add", "remove", "sync", "pip"},
     "npm": {"install", "i", "uninstall", "link"},
@@ -94,6 +102,10 @@ class RiskScorer:
     def score_command(self, command: str) -> CommandRisk:
         reasons: list[str] = []
         score = 0
+        # Deobfuscate first (quotes/escapes/ANSI-C/${VAR}/semantic flags) so
+        # spelling tricks cannot dodge the rules (C1/C2/H1). One canonical
+        # string — NOT command_variants — so stray tokens cannot inflate it.
+        command = normalize_command(command)
         if command.strip():
             lowered = command.lower()
             first = lowered.split()
@@ -108,6 +120,15 @@ class RiskScorer:
                     score = m_score
                 if m_reason not in reasons:
                     reasons.append(m_reason)
+            # interpreter -c/-e payloads are scored recursively (M1): the
+            # inline code is the real command, not the interpreter wrapper.
+            if base in _INTERPRETERS:
+                payload = _inline_code_payload(first)
+                if payload:
+                    sub = self.score_command(payload)
+                    if sub.score > score:
+                        score = sub.score
+                    reasons.extend(r for r in sub.reasons if r not in reasons)
             segments = re.split(r"[;&|]+|\$\(", command)
             for seg in segments[1:]:
                 sub = self.score_command(seg.strip())
@@ -145,7 +166,9 @@ class RiskScorer:
             for rx in (r"/\.ssh(/|$)", r"\\\.ssh(\\|$)", r"\.gnupg", r"\.aws[/\\]", r"keyring",
                        r"\.netrc", r"id_rsa", r"\.pem$", r"\.key$", r"_history$", r"\.mozilla",
                        r"google-chrome", r"chromium", r"firefox", r"microsoft\\credentials",
-                       r"keychains", r"\.env$", r"\.env\.")
+                       r"keychains", r"\.env$", r"\.env\.",
+                       r"\.npmrc($|[^-\w])", r"\.pypirc($|[^-\w])",
+                       r"\.docker[/\\]config\.json", r"\.git[/\\]config($|[^-\w])")
         )
         system = any(
             re.search(rx, low)
@@ -173,3 +196,18 @@ def _basename(tok: str) -> str:
     tok = tok.strip("\"'`")
     tok = tok.replace("\\", "/")
     return tok.rsplit("/", 1)[-1].lower()
+
+
+_INTERPRETERS = frozenset({"python", "python3", "node", "perl", "ruby"})
+
+
+def _inline_code_payload(tokens: list[str]) -> str:
+    """Code following an interpreter's ``-c``/``-e`` flag (separated or
+    attached). Returns the raw remainder; quotes were already stripped by
+    normalization, so this is the payload the interpreter would execute."""
+    for i, tok in enumerate(tokens[1:], start=1):
+        if tok in ("-c", "-e") and i + 1 < len(tokens):
+            return " ".join(tokens[i + 1:])
+        if tok.startswith(("-c", "-e")) and len(tok) > 2 and not tok.startswith("--"):
+            return tok[2:] + (" " + " ".join(tokens[i + 1:]) if i + 1 < len(tokens) else "")
+    return ""

@@ -34,9 +34,14 @@ Entries are bullet lines; the agent appends `- [YYYY-MM-DD] fact` items.
 |---|---|---|---|
 | view/edit | `Ctrl+S` | Memory screen | `ohmyllm soul` / `--edit` / `--path` |
 | append | `/remember <fact>` | `/remember` in composer | same — say it to the agent |
-| search | `/forget <query>` | Memory screen | ask the agent (`soul_search`) |
+| search | ask the agent (`soul_search`) | ask the agent (`soul_search`) | ask the agent (`soul_search`) |
+| forget | `/forget <thing>` | `/forget` in composer | ask the agent (`soul_forget`) |
 | revert backup | Memory screen | Revert button | ask the agent, or restore from `backups/soul/` |
 | clear | Memory screen | Clear button | `ohmyllm soul --edit` |
+
+Memory search is the `soul_search` tool in every frontend — ask the agent;
+there is no `oml soul --search` CLI flag. `/forget` removes an entry; it
+never searches.
 
 Every write takes a backup first; the Memory screen's **Revert backup** restores
 the newest one. The changelog records who wrote what, when, and from which

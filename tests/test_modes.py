@@ -107,7 +107,8 @@ async def test_tone_create_tool_roundtrip(svc):
     assert svc.config.agent.tone == "pirate"
     assert "pirate" in svc.config.agent.custom_tones
     d = svc.policy.evaluate("tone_create", {"name": "x", "instructions": "y"})
-    assert d.allowed and not d.requires_approval
+    # H3: tone_create persists a system-prompt change — approval in every mode.
+    assert d.allowed and d.requires_approval
 
 
 @pytest.mark.asyncio()

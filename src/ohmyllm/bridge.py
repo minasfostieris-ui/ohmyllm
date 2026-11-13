@@ -62,7 +62,7 @@ _CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type, X-OMLLM-Token",
     "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
 }
-_PUBLIC_PATHS = {"/", "/index.html", "/api/health", "/app.css", "/styles.css", "/app.js"}
+_PUBLIC_PATHS = {"/", "/index.html", "/api/health", "/app.css", "/styles.css", "/app.js", "/boot.js"}
 _BODY_FIELDS = {
     ("POST", "/api/message"): {"text", "new", "session", "memory_directive"},
     ("POST", "/api/cancel"): set(),
@@ -71,6 +71,9 @@ _BODY_FIELDS = {
     ("POST", "/api/model"): {"backend", "model"},
     ("POST", "/api/config/memory"): {"enabled", "agent_writes", "require_explicit_save",
                                        "max_inject_chars", "backups_keep"},
+    ("POST", "/api/config/agent"): {"max_steps", "max_parse_retries", "tool_timeout", "native_tools",
+                                      "react_fallback", "compact", "compact_ratio", "thinking_visible",
+                                      "agent_loop", "tone", "custom_tones", "op_mode", "yolo", "confirm"},
     ("POST", "/api/soul"): {"action", "text", "backup", "section"},
     ("POST", "/api/chats"): {"first_message"},
     ("POST", "/api/shutdown"): set(),
@@ -105,6 +108,8 @@ class BridgeState:
         self.shutdown_hook = lambda: None
         self.active_turn: Any = None
         self.active_runtime: Any = None  # live AgentRuntime while a turn runs (D4/D6)
+        self.deleted_sessions: set[str] = set()  # D8: tombstones — a deleted chat must not resurrect
+        self.heartbeat_task: Any = None  # D15: cancelled explicitly on shutdown
 
     def cancel_active(self) -> None:
         """Cancel the active turn and deny every bridge-owned pending prompt."""
@@ -233,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header(
             "Content-Security-Policy",
-            "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self'; "
+            "default-src 'self'; script-src 'self'; style-src 'self'; "
             "img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
         )
         origin = self.headers.get("Origin")
@@ -407,6 +412,20 @@ class Handler(BaseHTTPRequestHandler):
             rules = {"enabled": (bool, None), "agent_writes": (bool, None),
                      "require_explicit_save": (bool, None), "max_inject_chars": (int, None),
                      "backups_keep": (int, None)}
+        elif path == "/api/config/agent":
+            rules = {"max_steps": (int, None), "max_parse_retries": (int, None),
+                     "tool_timeout": (float, None), "native_tools": (str, 16),
+                     "react_fallback": (bool, None), "compact": (bool, None),
+                     "compact_ratio": (float, None), "thinking_visible": (bool, None),
+                     "agent_loop": (bool, None), "tone": (str, 64),
+                     "op_mode": (str, 16), "yolo": (bool, None), "confirm": (bool, None)}
+            tones = body.get("custom_tones")
+            if tones is not None:
+                if type(tones) is not dict or len(tones) > 64:
+                    raise RequestBodyError("custom_tones must be an object (max 64 entries)")
+                for tname, tfrag in tones.items():
+                    if type(tname) is not str or type(tfrag) is not str or len(tfrag) > 1500:
+                        raise RequestBodyError("custom_tones entries must be strings (fragment <= 1500 chars)")
         elif path == "/api/soul":
             rules = {"action": (str, 16), "text": (str, _MAX_BODY_BYTES),
                      "backup": (str, 255), "section": (str, 200)}
@@ -467,6 +486,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static(name="styles.css")
             if path == "/app.js":
                 return self._static(name="app.js")
+            if path == "/boot.js":
+                return self._boot_js()
             if path == "/api/health":
                 return self._json(200, {"ok": True, "version": __version__})
             if path == "/api/status":
@@ -552,6 +573,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._set_model(body)
             if path == "/api/config/memory":
                 return self._memory_config(body)
+            if path == "/api/config/agent":
+                return self._agent_config(body)
             if path == "/api/soul":
                 return self._soul(body)
             if path == "/api/chats":
@@ -650,6 +673,12 @@ class Handler(BaseHTTPRequestHandler):
                 if sess:
                     export(self.state.svc.sessions, sess, "markdown")
             trash = self.state.svc.sessions.delete(sid)
+            if trash:
+                # D8: tombstone the id so an in-flight turn's finally-save
+                # cannot resurrect the chat; cancel it if it is still running.
+                self.state.deleted_sessions.add(sid)
+                if self.state.session_id == sid and self.state.busy:
+                    self.state.cancel_active()
             if self.state.session_id == sid:
                 self.state.session_id = None
             return self._json(200, {"trashed": str(trash) if trash else None})
@@ -660,7 +689,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.state.loop is None:  # pragma: no cover
             raise RuntimeError("loop missing")
         fut = asyncio.run_coroutine_threadsafe(coro, self.state.loop)
-        result = fut.result(timeout=120)
+        try:
+            result = fut.result(timeout=120)
+        except TimeoutError:
+            fut.cancel()  # D9: a timed-out request must not keep running orphaned
+            raise
         if isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], int):
             self._json(result[0], result[1])
         else:
@@ -671,15 +704,24 @@ class Handler(BaseHTTPRequestHandler):
         if not f.is_file():
             return self._json(404, {"error": f"missing {name}"})
         raw = f.read_bytes()
-        if name == "index.html":
-            # The token arrives only in the URL fragment and is never sent in a request.
-            boot = json.dumps({"port": self._port(),
-                               "first_run": bool(self.state.svc.config.first_run_completed)})
-            raw = raw.replace(b"/*BOOT*/null", boot.encode())
         self.send_response(200)
         ctype = {"index.html": "text/html; charset=utf-8", "styles.css": "text/css; charset=utf-8",
                  "app.js": "text/javascript; charset=utf-8"}[name]
         self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(raw)))
+        self._send_security_headers()
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def _boot_js(self) -> None:
+        """External boot script (L3): keeps index.html free of inline JS so
+        the CSP can drop 'unsafe-inline'. The token arrives only in the URL
+        fragment and is never sent in a request."""
+        boot = json.dumps({"port": self._port(),
+                           "first_run": bool(self.state.svc.config.first_run_completed)})
+        raw = f"window.__OMLLM__ = {boot};\n".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/javascript; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self._send_security_headers()
         self.end_headers()
@@ -1137,19 +1179,51 @@ class Handler(BaseHTTPRequestHandler):
         live = json.loads(cfg.model_dump_json())
         # Security transitions have dedicated, confirmation-aware controls; the
         # generic endpoint may echo these sections but must never alter them.
+        # agent/cloud/mail/default_backend joined the protected set (H2): they
+        # carry yolo/op_mode/tone injection, endpoint redirection and the mail
+        # exfiltration channel. Comparison runs on the MERGED result so masked
+        # echo-backs (stripped keys/passwords) still pass through untouched.
         protected = {
             "version", "policy_generation", "permission_mode", "workspace", "memory",
             "safety", "guard", "logging", "ollama", "lmstudio",
+            "agent", "cloud", "mail", "default_backend",
         }
-        changed = sorted(key for key in protected if key in body and body[key] != live.get(key))
+        merged = deep_merge(live, body)
+        changed = sorted(key for key in protected if merged.get(key) != live.get(key))
         if changed:
             return self._json(403, {"error": "security config requires a dedicated control: " + ", ".join(changed)})
-        merged = deep_merge(live, body)
         try:
             new = Config.model_validate(merged)
         except Exception as exc:  # noqa: BLE001
-            return self._json(400, {"error": str(exc)[:400]})
+            return self._json(400, {"error": _validation_sentence(exc)})
         self.state.svc.apply_config(new)
+        self._json(200, {"ok": True, "config": _safe_config(new)})
+
+    def _agent_config(self, body: dict[str, Any]) -> None:
+        """Dedicated agent-policy control (H2). yolo/op_mode/tone/custom_tones
+        are security-sensitive: changing them requires an explicit
+        ``confirm: true`` (the GUI sends it only from a user-driven save).
+        The generic /api/config endpoint refuses these fields entirely."""
+        svc = self.state.svc
+        live = json.loads(svc.config.model_dump_json())
+        live_agent = dict(live.get("agent") or {})
+        live_agent["yolo"] = bool(svc.config.agent.yolo)  # never in dumps
+        incoming = {k: v for k, v in body.items() if k != "confirm"}
+        sensitive = {"yolo", "op_mode", "tone", "custom_tones"}
+        changed = sorted(k for k in sensitive if k in incoming and incoming[k] != live_agent.get(k))
+        if changed and body.get("confirm") is not True:
+            return self._json(403, {"error": "agent policy change requires confirm=true: " + ", ".join(changed)})
+        merged = deep_merge(live, {"agent": incoming})
+        try:
+            new = Config.model_validate(merged)
+        except Exception as exc:  # noqa: BLE001
+            return self._json(400, {"error": _validation_sentence(exc)})
+        svc.apply_config(new)
+        svc.audit.log(
+            mode=svc.config.permission_mode.value, tool="__agent_config__",
+            args={"changed": sorted(incoming)}, approval="user", success=True,
+            duration_ms=0, event="agent_config_changed",
+        )
         self._json(200, {"ok": True, "config": _safe_config(new)})
 
     def _memory_config(self, body: dict[str, Any]) -> None:
@@ -1159,7 +1233,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             new = Config.model_validate(merged)
         except Exception as exc:  # noqa: BLE001
-            return self._json(400, {"error": str(exc)[:400]})
+            return self._json(400, {"error": _validation_sentence(exc)})
         self.state.svc.apply_config(new)
         self._json(200, {"ok": True, "config": _safe_config(new)})
 
@@ -1336,7 +1410,7 @@ class Handler(BaseHTTPRequestHandler):
                     cancel=self.state.cancel, user_requested_memory=bool(body.get("memory_directive")),
                     interjections=self.state.interjections,
                 )
-                if sess.title in ("New chat", "", None):
+                if sess.id not in self.state.deleted_sessions and sess.title in ("New chat", "", None):
                     new_title = make_title(text)
                     self.state.svc.sessions.rename(sess.id, new_title)
                     sess.title = new_title
@@ -1356,12 +1430,14 @@ class Handler(BaseHTTPRequestHandler):
                 where = f" (at {tb[-1].filename.rsplit('/', 1)[-1]}:{tb[-1].lineno})" if tb else ""
                 final_payload = {"message": f"{type(exc).__name__}: {exc}{where}"}
             finally:
-                try:
-                    self.state.svc.sessions.save(sess)
-                except Exception as exc:
-                    final_kind = "done"
-                    final_payload["error"] = f"Session save failed: {exc}"
-                    final_payload["saved"] = False
+                if sess.id not in self.state.deleted_sessions:
+                    # D8: a chat deleted mid-turn must never be written back.
+                    try:
+                        self.state.svc.sessions.save(sess)
+                    except Exception as exc:
+                        final_kind = "done"
+                        final_payload["error"] = f"Session save failed: {exc}"
+                        final_payload["saved"] = False
                 with self.state.turn_lock:
                     self.state.busy = False
                     self.state.active_turn = None
@@ -1450,7 +1526,7 @@ class Handler(BaseHTTPRequestHandler):
                     q.put(("done", {"ok": False, "error": str(exc)[:1000]}), timeout=2)
 
         assert self.state.loop is not None
-        asyncio.run_coroutine_threadsafe(work(), self.state.loop)
+        fut = asyncio.run_coroutine_threadsafe(work(), self.state.loop)
         try:
             while True:
                 kind, payload = q.get(timeout=600)
@@ -1458,7 +1534,41 @@ class Handler(BaseHTTPRequestHandler):
                 if kind == "done":
                     return
         except (BrokenPipeError, OSError, queue.Empty):
+            fut.cancel()  # D10: nobody is listening — stop the orphaned pull
             return
+
+
+def _validation_sentence(exc: Exception) -> str:
+    """K10: turn pydantic's wall of ValidationError text into one human
+    sentence the GUI can show verbatim ("generation.temperature must be at
+    most 2"), instead of a raw multi-line dump with a docs URL."""
+    from pydantic import ValidationError
+
+    if not isinstance(exc, ValidationError):
+        return str(exc)[:200] or "invalid configuration"
+    parts: list[str] = []
+    for err in exc.errors():
+        loc = ".".join(str(p) for p in err.get("loc") or ()) or "config"
+        etype = str(err.get("type") or "")
+        ctx = err.get("ctx") or {}
+        lo = ctx.get("ge", ctx.get("gt"))
+        hi = ctx.get("le", ctx.get("lt"))
+        if etype in ("greater_than_equal", "less_than_equal", "greater_than", "less_than"):
+            if lo is not None and hi is not None:
+                parts.append(f"{loc} must be between {lo} and {hi}")
+            elif lo is not None:
+                parts.append(f"{loc} must be at least {lo}")
+            elif hi is not None:
+                parts.append(f"{loc} must be at most {hi}")
+            else:
+                parts.append(f"{loc}: {err.get('msg') or 'invalid value'}")
+        elif etype in ("string_pattern_mismatch", "enum", "literal_error"):
+            parts.append(f"{loc} is not an allowed value")
+        else:
+            parts.append(f"{loc}: {err.get('msg') or 'invalid value'}")
+        if len(parts) >= 4:
+            break
+    return "; ".join(parts)[:300] or "invalid configuration"
 
 
 def _safe_config(cfg: Config) -> dict:
@@ -1555,7 +1665,7 @@ def serve(workspace: str | None = None, port: int = 0, token_file: str | None = 
     def loop_main() -> None:
         asyncio.set_event_loop(loop)
         state.loop = loop
-        loop.create_task(heartbeat())
+        state.heartbeat_task = loop.create_task(heartbeat())
         loop.run_forever()
 
     t = threading.Thread(target=loop_main, daemon=True)
@@ -1625,8 +1735,21 @@ def serve(workspace: str | None = None, port: int = 0, token_file: str | None = 
         for discovery in discovery_files:
             with contextlib.suppress(OSError):
                 discovery.unlink()
+
+        # D15: cancel every pending task (heartbeat included) and give the
+        # loop a beat to process the cancellations BEFORE stopping it —
+        # stop() in the same callback would leave tasks pending forever.
+        def _drain() -> None:
+            for task in asyncio.all_tasks(loop):
+                task.cancel()
+            loop.call_later(0.2, loop.stop)
+
         with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(loop.stop)
+            loop.call_soon_threadsafe(_drain)
+        t.join(timeout=5)
+        if not t.is_alive():
+            with contextlib.suppress(RuntimeError):
+                loop.close()
 
 
 def main(argv: list[str] | None = None) -> int:

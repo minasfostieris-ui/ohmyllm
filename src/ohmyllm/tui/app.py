@@ -163,6 +163,7 @@ class OhMyLLMApp(App[None]):
         self.memory_flash_until = 0.0
         self.interjections: list[str] = []
         self.turn_active = False
+        self.turn_session_id: str | None = None  # D11: which chat owns the in-flight turn buffers
         self.turn_text = ""
         self.turn_thinking = ""
         self.active_runtime: Any = None  # live AgentRuntime while a turn runs (/steer)
@@ -214,6 +215,11 @@ class OhMyLLMApp(App[None]):
             self.switch_screen(ChatScreen())
 
     def load_session(self, sid: str) -> bool:
+        if self.busy:
+            # D11: switching chats mid-turn strands the response in the old
+            # session's buffers — refuse until the turn ends or is cancelled.
+            self.notify("agent is working — Ctrl+X cancels the turn before switching chats", severity="warning")
+            return False
         sess = self.svc.sessions.get(sid)
         if sess is None:
             return False
@@ -228,6 +234,9 @@ class OhMyLLMApp(App[None]):
         self.new_chat()
 
     def new_chat(self, first_message: str = "") -> None:
+        if self.busy:
+            self.notify("agent is working — Ctrl+X cancels the turn before switching chats", severity="warning")
+            return
         self._stash_draft()
         self.session = self.svc.new_session(first_message)
         self.save_state = False
@@ -282,6 +291,7 @@ class OhMyLLMApp(App[None]):
         t = ev.get("type")
         if t == "turn_start":
             self.turn_active = True
+            self.turn_session_id = self.session.id if self.session else None
             self.turn_text = ""
             self.turn_thinking = ""
         elif t == "token":
@@ -295,7 +305,12 @@ class OhMyLLMApp(App[None]):
             self.turn_active = False
         from .screens.chat import ChatScreen
         scr = self.screen
-        if isinstance(scr, ChatScreen):
+        # D11: only the chat that owns the turn may render its events; None
+        # means no turn_start was seen (legacy/test dispatch) — keep flowing.
+        if isinstance(scr, ChatScreen) and (
+            self.turn_session_id is None
+            or (self.session is not None and self.turn_session_id == self.session.id)
+        ):
             scr._on_event(ev)
 
     def reload_model(self, backend_name: str, model: str) -> None:

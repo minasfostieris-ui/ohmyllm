@@ -10,8 +10,8 @@ exact-phrase confirmation. Every gated decision is journaled to
 | Mode | Reads | File writes | Commands | Network | Notes |
 |---|---|---|---|---|---|
 | `strict` | workspace-scoped | forbidden | forbidden | forbidden | memory writes only when explicitly requested |
-| `safe` (default) | workspace-scoped | forbidden | forbidden | forbidden | conservative daily driver |
-| `sandboxed` | workspace auto; outside asks | workspace writes ask by default; outside blocked | allowlisted forms require fresh approval | disabled by default; enabled allowlist asks | strongest practical boundary |
+| `safe` | workspace-scoped | forbidden | forbidden | forbidden | conservative daily driver |
+| `sandboxed` (default) | workspace auto; outside asks | workspace writes ask by default; outside blocked | allowlisted forms require fresh approval | disabled by default; enabled allowlist asks | strongest practical boundary |
 | `dangerous` | outside workspace asks | risk and boundary gated | every call requires fresh approval | disabled by default; enabled allowlist asks | for trusted work |
 | active `full_access` | auto except sensitive state | auto except protected/system gates | auto except catastrophic guard | only when enabled and allowlisted | process-local confirmation required |
 
@@ -58,9 +58,11 @@ policy generation, and invalidates prior approvals.
 
 ## Danger guard (Clef-Flash)
 
-`dangerous` and `full_access` normally run mutating tools with no prompt.
-The optional **danger guard** puts a fast local *decision model* in front of
-them: every non-read tool call is scored by
+`dangerous` requires fresh approval for every shell call and gates risky or
+boundary-crossing mutations; `full_access` runs most tools unprompted, with
+the catastrophic-command and protected-system guards still in force. The
+optional **danger guard** adds a fast local *decision model* in front of
+non-read calls in both modes: each call is scored by
 [Cloudflare Clef-Flash](https://huggingface.co/Cloudflare/clef-flash)
 (a 9B Qwen fine-tune that answers typed questions in one forward pass —
 it does not generate text). If the model's `dangerous` probability crosses
@@ -80,9 +82,9 @@ are scored in a single batch, so keep `--ubatch-size` above your typical
 tool-call size.) Then in **Settings → Danger guard** tick *enabled* (or set
 `[guard] enabled = true` in `config.toml`). `oml doctor` probes the server.
 
-Failure policy: if the guard server is down, calls proceed unchecked in
-dangerous/full_access modes (fail-open) and the tool panel notes the guard
-was offline — the helper process must never brick your agent.
+Failure policy: if the guard server is down, calls in dangerous/full_access
+are escalated to a fresh approval (fail-closed) and the tool panel notes the
+guard was offline — an unreachable guard can never silently widen permissions.
 
 Any llama.cpp `/v1/systemone` decision server works (Clef, Laya, openjev):
 point `guard.base_url` at it and set `guard.model`.
@@ -94,14 +96,16 @@ When the engine asks, you can answer:
 - **Allow once** — this exact call only.
 - **Allow for session** — this exact validated request in the current workspace,
   chat session, and policy generation.
-- **Permanent rule** — the same exact scoped identity, persisted privately to
-  `~/.ohmyllm/rules.json`.
+- **Permanent rule** — the same exact request identity bound to the workspace
+  and policy generation (no session binding, so it survives new chat sessions),
+  persisted privately to `~/.ohmyllm/rules.json`.
 - **Deny** — the model is told the call was denied and must adapt.
 
 Approval identities hash the complete canonical arguments; values are neither
 whitespace-normalized nor truncated. Shell approvals are always one-shot outside
 active `full_access`, even if “session” or “always” is selected. Legacy unscoped
-approval files are intentionally ignored.
+approval files — including older permanent keys that embedded a session id —
+are intentionally ignored.
 
 ## Tool classes
 
@@ -138,3 +142,5 @@ Every gate decision, approval outcome, and tool result lands in
 
 Secrets matching common patterns (API keys, tokens, passwords in `KEY=…`
 positions) are redacted before writing. `ohmyllm audit -n 50` shows the tail.
+If the audit log becomes persistently unwritable, mutating tool calls are
+escalated to a fresh approval (fail-closed) until audit health is restored.

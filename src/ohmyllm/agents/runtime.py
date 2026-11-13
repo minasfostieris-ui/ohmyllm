@@ -23,7 +23,7 @@ from ..config.models import Config, PermissionMode
 from ..memory import SoulManager
 from ..safety.approvals import ApprovalManager, ApprovalOutcome, PromptFn
 from ..safety.audit import AuditLogger
-from ..safety.policy import Decision, PolicyEngine
+from ..safety.policy import Decision, PolicyEngine, ToolClass, classify
 from ..secureio import atomic_write, canonical_json, private_mkdir
 from ..sessions import Session
 from ..tools.registry import ToolRegistry
@@ -109,6 +109,7 @@ class AgentRuntime:
         self.prompt_builder = PromptBuilder(config, registry, soul, skills=skills,
                                             workspace=policy.workspace)
         self.last_usage: dict[str, Any] = {}
+        self._turn_usage: dict[str, Any] = {}  # D5: aggregated across all steps of one turn
         self._retired = False
         # D4: machine state (injectable clock + path for offline tests)
         self._clock: Callable[[], float] = clock or time.time
@@ -247,6 +248,7 @@ class AgentRuntime:
         session.add_message("user", user_content if user_content is not None else user_text)
         emit = on_event or (lambda _e: None)
         result = TurnResult()
+        self._turn_usage = {}
         self._invalid_counts: dict[tuple[str, str], int] = {}
         ctx = ToolContext(
             workspace=self.policy.workspace,
@@ -360,6 +362,15 @@ class AgentRuntime:
                         finish_reason = chunk.finish or ""
                         if chunk.usage:
                             self.last_usage = {k: v for k, v in chunk.usage.items() if v is not None}
+                            # D5: accumulate across every step of the turn;
+                            # counters sum, descriptive fields take the latest.
+                            for uk, uv in self.last_usage.items():
+                                if isinstance(uv, (int, float)) and not isinstance(uv, bool):
+                                    prev = self._turn_usage.get(uk)
+                                    base = prev if isinstance(prev, (int, float)) and not isinstance(prev, bool) else 0
+                                    self._turn_usage[uk] = base + uv
+                                else:
+                                    self._turn_usage[uk] = uv
                             # LM Studio reports completion_tokens; Ollama reports eval_count
                             comp = int(self.last_usage.get("eval_count")
                                        or self.last_usage.get("completion_tokens") or 0)
@@ -650,8 +661,19 @@ class AgentRuntime:
                 decision = Decision(True, True, max(decision.risk, 6),
                                     (*decision.reasons, verdict.reason(name)))
             elif verdict.error:
-                decision = Decision(decision.allowed, decision.requires_approval,
-                                    decision.risk, (*decision.reasons, verdict.reason(name)))
+                # Fail-closed: an unreachable guard must never silently widen
+                # permissions — force a fresh approval instead of proceeding.
+                decision = Decision(True, True, max(decision.risk, 6),
+                                    (*decision.reasons, verdict.reason(name)))
+        if (decision.allowed and not decision.requires_approval
+                and self.audit.enabled and not self.audit.healthy
+                and classify(name) not in (ToolClass.READ, ToolClass.STATUS,
+                                           ToolClass.MEMORY_READ)):
+            # Fail-closed auditing: persistent audit failure means mutating
+            # calls lose their journal — require a human until health returns.
+            decision = Decision(True, True, max(decision.risk, 6),
+                                (*decision.reasons,
+                                 "audit log unhealthy — approval required (fail-closed)"))
         preview = self.registry.preview(name, args, ctx) if (decision.requires_approval or decision.allowed) else ""
         plan = {
             "type": "tool_plan", "name": name, "args": args, "risk": decision.risk,
@@ -666,7 +688,7 @@ class AgentRuntime:
             # refused call is audited (fail-closed auditing; matches the schema
             # the runtime tests and docs use for denied decisions).
             self._audit(name, args, "denied", False, started, mode, model, error=reason)
-            result.calls.append({"name": name, "status": "blocked", "approval": "blocked", "args": args, "risk": decision.risk})
+            result.calls.append({"name": name, "status": "blocked", "approval": "blocked", "args": args, "risk": decision.risk, "output": body[:400]})
             session.add_message("assistant", f"[attempted {name}]")
             session.add_message("tool", body, name=name, tool_call_id=call.id)
             emit({"type": "tool_result", "name": name, "ok": False, "blocked": True, "output": body, "call_id": call.id})
@@ -709,7 +731,7 @@ class AgentRuntime:
                 args = current_args
         if not outcome.approved:
             self._audit(name, args, "denied", False, started, mode, model, error="user denied")
-            result.calls.append({"name": name, "status": "denied", "approval": "denied", "args": args, "risk": decision.risk})
+            result.calls.append({"name": name, "status": "denied", "approval": "denied", "args": args, "risk": decision.risk, "output": "denied"})
             session.add_message("assistant", f"[asked to run {name}]")
             session.add_message("tool", "The user DENIED this tool call. Do not retry it; adapt your answer.", name=name, tool_call_id=call.id)
             emit({"type": "tool_result", "name": name, "ok": False, "denied": True, "output": "denied", "call_id": call.id})
@@ -762,7 +784,7 @@ class AgentRuntime:
             parts += [{"type": "image_url", "image_url": {"url": u}} for u in media_imgs[:8]]
             session.add_message("user", parts)
         session.record_tool(name, args, "ok" if tool_result.ok else "error", outcome.value, duration, tool_result.error)
-        result.calls.append({"name": name, "status": "ok" if tool_result.ok else "error", "approval": outcome.value, "args": args, "risk": decision.risk, "duration_ms": duration})
+        result.calls.append({"name": name, "status": "ok" if tool_result.ok else "error", "approval": outcome.value, "args": args, "risk": decision.risk, "duration_ms": duration, "output": out_text[:400]})
         self._audit(name, args, outcome.value, tool_result.ok, started, mode, model, error=tool_result.error)
         meta_public = {k: v for k, v in (tool_result.meta or {}).items() if k != "images"}
         if tool_result.meta.get("images"):
@@ -826,11 +848,15 @@ class AgentRuntime:
         openai_shape = self.backend.name.value in ("lmstudio", "mock", "cloud")
         for m in session.messages:
             role = m.get("role")
-            content = str(m.get("content", ""))
+            raw = m.get("content", "")
+            # D1: structured multimodal content (text/image part lists) must
+            # reach the wire verbatim — str() flattens it into a Python repr.
+            content: Any = raw if isinstance(raw, (str, list)) else str(raw)
             if role == "tool":
+                tool_text = content if isinstance(content, str) else str(content)
                 if openai_shape:
                     anchor = m.get("tool_call_id") or "call_0"
-                    out.append({"role": "tool", "content": content,
+                    out.append({"role": "tool", "content": tool_text,
                                 "tool_call_id": anchor, "name": m.get("name") or "tool"})
                     # repair history written before tool_calls were persisted:
                     # synthesize the assistant anchor the template demands
@@ -849,10 +875,15 @@ class AgentRuntime:
                                                 "function": {"name": m.get("name") or "tool",
                                                              "arguments": "{}"}}]})
                 else:
-                    out.append({"role": "tool", "content": content, "tool_name": m.get("name")})
+                    out.append({"role": "tool", "content": tool_text, "tool_name": m.get("name")})
             elif role in ("user", "assistant", "system"):
-                if role == "assistant" and not content.strip() and not m.get("tool_calls"):
-                    continue  # empty assistant turns break some chat templates
+                if role == "assistant" and not m.get("tool_calls"):
+                    if isinstance(content, str):
+                        if not content.strip():
+                            continue  # empty assistant turns break some chat templates
+                    elif not any(isinstance(p, dict) and (p.get("text") or p.get("type") == "image_url")
+                                 for p in content):
+                        continue  # no visible parts — same template hazard
                 entry = {"role": role, "content": content}
                 if role == "assistant" and m.get("tool_calls"):
                     entry["tool_calls"] = m["tool_calls"]
@@ -973,6 +1004,19 @@ class AgentRuntime:
         if ttft is not None:
             result.ttft_s = round(ttft, 2)
         self.last_usage["tokens_per_s"] = result.tokens_per_s
+        # D5: surface the turn's aggregated backend usage on the result so
+        # every consumer (turn_end payload, bridge done event, plain footer)
+        # sees real token counts instead of an always-empty dict.
+        usage = dict(self._turn_usage)
+        if usage:
+            comp = usage.get("eval_count") or usage.get("completion_tokens") or 0
+            prompt = usage.get("prompt_eval_count") or usage.get("prompt_tokens") or 0
+            usage.setdefault("eval_count", comp)
+            usage.setdefault("prompt_eval_count", prompt)
+            if comp and prompt:
+                usage.setdefault("total_tokens", comp + prompt)
+            usage["tokens_per_s"] = result.tokens_per_s
+            result.usage = usage
 
     def _result_payload(self, result: TurnResult, text: str) -> dict[str, Any]:
         return {"text": text, "steps": result.steps, "calls": result.calls,

@@ -34,10 +34,10 @@ pasted into a chat window or uploaded anywhere.
 
 ## 3. Privacy drafting in chat mode
 
-In the TUI: `/chat`, then draft your message. Chat mode is conversation-only
-— no file writes, no shell, no tool calls — so sensitive text (legal,
-medical, personal) cannot trigger side effects. Combined with a local
-backend, the draft never leaves the machine.
+In the TUI: `/chat`, then draft your message. Chat mode blocks file
+writes, shell and mail at the safety layer; reads and research stay open —
+so sensitive text (legal, medical, personal) cannot trigger those side
+effects. Combined with a local backend, the draft never leaves the machine.
 
 ## 4. Shell copilot with a hard deny floor
 
@@ -112,21 +112,23 @@ step. No cancel-and-retype, no lost tool progress.
 
 ## 10. Tutor mode: plan first, or stay strict
 
-`/plan` switches to research-and-design mode (no writes, no shell) — good
-for "teach me how this works" sessions where the model should explain, not
-do. For stricter gating, keep the default safe permission mode: every
-write/shell step asks, and approvals are scoped to the exact payload and
-file identity.
+`/plan` switches to research-and-design mode (no writes, no shell, no
+mail; reads and research stay open) — good for "teach me how this works"
+sessions where the model should explain, not do. For stricter gating, keep
+the default sandboxed permission mode: workspace writes ask by default
+(outside writes are blocked), and only allowlisted shell forms can run,
+each with fresh one-shot approval.
 
-## 11. Batch transforms over local files
+## 11. Batch file work over local files
 
 ```sh
-oml run "convert every .csv in ./data to parquet, keep a manifest" --yes
+oml run "read every .csv in ./data and write a combined summary to ./data/summary.md" --yes
 ```
 
-Unattended runs fail closed on approvals unless you explicitly opt in;
-sandboxed mode confines writes to the workspace. The audit log records
-every tool decision (allowed/denied/blocked) for later review.
+`--yes` auto-approves non-shell tool calls for this run; shell commands
+still require fresh approval, so a truly unattended batch must stay
+shell-free. Sandboxed mode confines writes to the workspace. The audit log
+records every tool decision (allowed/denied/blocked) for later review.
 
 ## 12. Debugging the context budget
 
