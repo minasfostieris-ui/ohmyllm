@@ -6,14 +6,6 @@ All notable changes to OhMyLLM are documented here. Format follows
 
 ## [0.1.1] - 2026-11-13
 
-### Security
-- **Deny-floor glob normalization** (`safety/normalize.py`): deny globs are normalized and matched against the real command shape, including chains, subshells, `eval`, `env`, and `xargs` wrapper-flag unwrapping. Invalid deny rules fail closed instead of silently disabling the floor.
-- **Context-ref secret parity**: `@file`/`@folder`/`@diff`/`@staged`/`@git` references pass the same secret redaction as typed input, including `@git` paths.
-- **Git seam hardening**: sanitized environment and argv construction for git invocations, with bounded output capture.
-- **Bridge hardening**: per-route request body caps, approval race fix, and an additive `stale` flag on `/api/state` (existing fields unchanged).
-- **CLI `--mode` grant invalidation**: switching modes invalidates stale approval grants.
-- **Corrupt-trash restore safety**: restoring a session with corrupt trash no longer destroys data.
-
 ### Added
 - `safety.deny` glob list — a hard deny floor matched before allowlists and SAFE_COMMANDS.
 - Context references: `@file`, `@folder`, `@diff`, `@staged`, `@git`.
@@ -25,10 +17,27 @@ All notable changes to OhMyLLM are documented here. Format follows
 ### Changed
 - **GUI rewrite**: OpenCode×Qoder dark design, bottom-middle composer, single approval cards, no empty agent bubbles; headless verification via `scripts/gui_headless_check.py`.
 - Docs: new `docs/USE-CASES.md`; `docs/PERMISSIONS.md` updated for the deny floor and mode grants.
+- Version bumped to 0.1.1 in `pyproject.toml`, `src/ohmyllm/__init__.py`, and `gui/src-tauri/Cargo.toml` (+ `Cargo.lock`).
+- Repo hygiene: `.gitignore` extended for tooling caches, validation evidence, runtime artifacts, and credential-bearing files.
+
+### Fixed
+- **Empty duplicate AGENT bubble + approval echo dedupe** (GUI): a message that turns into a tool approval no longer leaves an empty AGENT row behind; `[asked to run X]` / `[attempted X]` echoes for denied/blocked calls render once, inside the approval card, never as a second row.
+- Release-test reconciliation: doctor audit tests assert nested-value redaction, record caps, and zero-query behavior; media tests force the missing-ffprobe path so the honest no-ffmpeg error is exercised under the subprocess guard; GUI launch tests use the new bridge port-file discovery; bridge tests cover the per-route body caps.
+- W292 lint: missing trailing newlines fixed.
+- Interjection (`/steer`) tests made deterministic.
+- `/yolo` help wording now matches the actual shell-consent semantics (regression-tested).
+
+### Security
+- **Deny-floor glob normalization** (`safety/normalize.py`): deny globs are normalized and matched against the real command shape — chains (`&&`, `||`, `;`, pipes, single-`&` background), parenthesized subshells, `${IFS}` whitespace, and `eval`/`env`/`xargs` wrapper unwrapping with attached and separated flag values, including `xargs -E`'s required argument (vs optional `-e`). Invalid deny rules fail closed instead of silently disabling the floor.
+- **Context-ref secret parity**: `@file`/`@folder`/`@diff`/`@staged`/`@git` references pass the same secret redaction as typed input, including `@git` paths.
+- **Git seam hardening**: sanitized environment and argv construction for git invocations, with bounded output capture.
+- **Bridge hardening**: per-route request body caps, approval race fix, and an additive `stale` flag on `/api/state` (existing fields unchanged).
+- **CLI `--mode` grant invalidation**: switching modes invalidates stale approval grants.
+- **Corrupt-trash restore safety**: restoring a session with corrupt trash no longer destroys data.
 
 ### Verified
-- Integration gate: 862 passed / 0 failed under guarded isolation (`scripts/verify_isolated.py`); 5 subprocess-dependent tests are standing exclusions of that harness, not skipped failures.
-- GUI headless check: 39/39. mypy and ruff clean; TUI smoke green at 80x24, 100x30, 140x46.
+- Integration gate: 862 passed / 0 failed / 5 deselected under guarded isolation (`scripts/verify_isolated.py`). The 5 standing subprocess exclusions: `test_run_command_output_and_timeout`, `test_shell_uses_resolved_cwd_sanitized_environment_and_output_cap`, `test_shell_timeout_terminates_descendants`, `test_shell_cleans_descendants_after_leader_exits`, `test_recorder_stop_is_fast`.
+- GUI headless check: 39/39. mypy: 83 files clean. ruff clean. e2e check OK. TUI smoke green at 80x24, 100x30, 140x46. cargo fmt/check/test green. L3 deep pre-push security review: 0 findings.
 
 ### Earlier in this cycle
 
