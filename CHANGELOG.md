@@ -20,6 +20,10 @@ All notable changes to OhMyLLM are documented here. Format follows
 - Version bumped to 0.1.1 in `pyproject.toml`, `src/ohmyllm/__init__.py`, and `gui/src-tauri/Cargo.toml` (+ `Cargo.lock`).
 - Repo hygiene: `.gitignore` extended for tooling caches, validation evidence, runtime artifacts, and credential-bearing files.
 
+### Removed
+- Stale v0.1.0 process docs: `PLAN.md`, `PROGRESS.md`, `DECISIONS.md`, `TEST_RESULTS.md`, `HANDOFF-FAILURES.md`, `CLAUDE-PROMPT.md`.
+- Accidental `--rate` junk file (4 MB CLI-output artifact).
+
 ### Fixed
 - **Empty duplicate AGENT bubble + approval echo dedupe** (GUI): a message that turns into a tool approval no longer leaves an empty AGENT row behind; `[asked to run X]` / `[attempted X]` echoes for denied/blocked calls render once, inside the approval card, never as a second row.
 - Release-test reconciliation: doctor audit tests assert nested-value redaction, record caps, and zero-query behavior; media tests force the missing-ffprobe path so the honest no-ffmpeg error is exercised under the subprocess guard; GUI launch tests use the new bridge port-file discovery; bridge tests cover the per-route body caps.
