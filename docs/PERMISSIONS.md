@@ -9,11 +9,11 @@ exact-phrase confirmation. Every gated decision is journaled to
 
 | Mode | Reads | File writes | Commands | Network | Notes |
 |---|---|---|---|---|---|
-| `strict` | workspace-scoped, auto | forbidden | always approval, allowlisted | blocked (unless allowlisted + approval) | memory writes only when you explicitly ask (`/remember`) |
-| `safe` (default) | workspace-scoped, auto | forbidden | approval by risk score | gated | balanced daily driver |
-| `sandboxed` | workspace-scoped, auto | workspace writes, confirmation optional | allowlisted base commands + subcommand gates | gated | strongest containment |
-| `dangerous` | mostly auto | auto outside workspace unless sensitive | auto except catastrophic/high risk | gated approvals | for trusted work |
-| `full_access` | auto | auto | auto, except catastrophic | auto | **no approvals at all** |
+| `strict` | workspace-scoped | forbidden | forbidden | forbidden | memory writes only when explicitly requested |
+| `safe` (default) | workspace-scoped | forbidden | forbidden | forbidden | conservative daily driver |
+| `sandboxed` | workspace auto; outside asks | workspace writes ask by default; outside blocked | allowlisted forms require fresh approval | disabled by default; enabled allowlist asks | strongest practical boundary |
+| `dangerous` | outside workspace asks | risk and boundary gated | every call requires fresh approval | disabled by default; enabled allowlist asks | for trusted work |
+| active `full_access` | auto except sensitive state | auto except protected/system gates | auto except catastrophic guard | only when enabled and allowlisted | process-local confirmation required |
 
 ## Honest limitations
 
@@ -29,22 +29,22 @@ sandbox or VM; `sandboxed` mode is the strongest the engine itself offers.
 
 These hold in **every** mode, including `full_access`:
 
-- **Sensitive paths** (`~/.ssh`, `~/.gnupg`, browser profiles, `.env`, keyring
-  files…) are denied unless you explicitly set
-  `safety.allow_sensitive_paths` to a matching prefix. The read gate uses the
-  same rule.
+- **Sensitive paths** (`~/.ssh`, `~/.gnupg`, browser profiles, `.env` variants,
+  private OhMyLLM state, keyring files…) are denied unless an explicit
+  component-aware `safety.allow_sensitive_paths` boundary permits them. Prefix
+  siblings do not match, and filesystem tools reject symlink traversal.
 - **Catastrophic commands** (`rm -rf /`, fork bombs, `mkfs`, `dd` to block
   devices, `curl | sh`, history wipes, …) are blocked unless
-  `safety.block_catastrophic = false` — a config option deliberately named so
-  it can never be flipped casually, and the block reason is always audited.
+  `safety.catastrophic_override = true`; the decision remains audited.
 - **Unknown tools** are denied (fail closed).
 - **Approval failures fail closed**: a crashed UI or timed-out approval means
   *denied*.
 
 ## Granting full_access
 
-`full_access` cannot be set from the CLI, the config file, or the GUI settings
-form. In the TUI (or GUI permission chip) you must type the exact phrase:
+`full_access` cannot become active from persisted configuration alone. In the
+TUI, plain UI, or dedicated GUI permission control, you must type the exact
+phrase in the current process:
 
 ```
 I ACCEPT FULL ACCESS
@@ -52,6 +52,8 @@ I ACCEPT FULL ACCESS
 
 The phrase gate exists because full_access means the agent runs tools with no
 human in the loop; the catastrophic-command guard remains as the last backstop.
+On restart, persisted `full_access` is deactivated to `dangerous`, advances the
+policy generation, and invalidates prior approvals.
 
 
 ## Danger guard (Clef-Flash)
@@ -89,17 +91,39 @@ point `guard.base_url` at it and set `guard.model`.
 
 When the engine asks, you can answer:
 
-- **Allow once** — this call only.
-- **Allow for session** — same tool + same risk level, rest of the session.
-- **Permanent rule** — persisted to `~/.ohmyllm/approvals.json`; manage them
-  with `ohmyllm audit` / the settings screen.
+- **Allow once** — this exact call only.
+- **Allow for session** — this exact validated request in the current workspace,
+  chat session, and policy generation.
+- **Permanent rule** — the same exact scoped identity, persisted privately to
+  `~/.ohmyllm/rules.json`.
 - **Deny** — the model is told the call was denied and must adapt.
+
+Approval identities hash the complete canonical arguments; values are neither
+whitespace-normalized nor truncated. Shell approvals are always one-shot outside
+active `full_access`, even if “session” or “always” is selected. Legacy unscoped
+approval files are intentionally ignored.
 
 ## Tool classes
 
 `read`, `write`, `shell`, `net`, `memory_read`, `memory_write`, `status` — each
 with its own risk scoring. `risk` is 0–10; `level` is `low|medium|high|critical`
 and decides which approvals are unavoidable regardless of mode.
+
+## Network and bridge boundaries
+
+`http_fetch` is an unconditional denial while disabled. Enabling it also
+requires an explicit exact-host or `.suffix` allowlist. URL credentials,
+private/local/metadata/reserved addresses, redirects, and inherited proxy
+settings are rejected. Remote model backend URLs separately require
+`safety.allow_remote_backends = true`; automatic backend startup remains
+loopback-only.
+
+The GUI bridge binds loopback and accepts its token only in the
+`X-OMLLM-Token` header. Query tokens do not authenticate. Browser launch uses a
+transient fragment that the page immediately removes; discovery state is a
+private, bounded JSON file cleaned up on exit. Host, Origin, body size, JSON
+shape, request concurrency, event queues, and interjection queues are bounded
+and fail closed.
 
 ## Auditing
 

@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import socket
 import stat
 import threading
+import time
 
 import httpx
 import pytest
@@ -43,37 +45,44 @@ def test_partial_cloud_patch_keeps_other_fields(bridge):
 
 
 # ---- #2 port/token file owner-only; log never contains the token
-def test_port_file_owner_only(tmp_path):
-    from ohmyllm.bridge import serve
+def test_port_file_owner_only(oml_env, svc):
+    from ohmyllm import bridge as B
+    from ohmyllm.secureio import read_bridge_discovery
 
-    pf = tmp_path / "x.port"
-    th = threading.Thread(target=lambda: serve(port=0, write_port_file=str(pf)), daemon=True)
+    pf = oml_env["home"] / "x.port"
+    stop = threading.Event()
+    th = threading.Thread(
+        target=lambda: B.serve(workspace=str(oml_env["ws"]), port=0,
+                               write_port_file=str(pf), stop=stop),
+        daemon=True,
+    )
     th.start()
-    for _ in range(50):
-        if pf.exists():
-            break
-        __import__("time").sleep(0.1)
-    assert pf.exists()
-    if os.name == "posix":
-        assert stat.S_IMODE(pf.stat().st_mode) == 0o600
-    content = pf.read_text()
-    tok = content.split(" ")[1]
-    # log redaction: fake a request line through the handler's logger
-    from ohmyllm import paths
-
-    log = paths.app_log_path()
-    if log.exists():
-        assert tok not in log.read_text()
-    # stop the server
-    import urllib.request
-
-    port = int(content.split(" ")[0])
-    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/shutdown", method="POST")
-    req.add_header("X-OMLLM-Token", tok)
     try:
-        urllib.request.urlopen(req, timeout=5)
-    except Exception:  # noqa: BLE001
-        pass
+        deadline = time.time() + 60
+        while time.time() < deadline and not pf.exists():
+            time.sleep(0.02)
+        assert pf.exists(), "bridge never wrote the discovery file"
+        if os.name == "posix":
+            assert stat.S_IMODE(pf.stat().st_mode) == 0o600
+            # the parent directory must be owner-only too (_write_discovery
+            # refuses to publish into a group/world-readable directory)
+            assert stat.S_IMODE(pf.parent.stat().st_mode) & 0o077 == 0
+        # discovery is JSON {"version","port","token","pid"} — parse it through
+        # the same hardened reader the launchers use
+        port, tok = read_bridge_discovery(pf)
+        assert 0 < port < 65536 and len(tok) == 32
+        # log redaction: the token must never reach the app log
+        from ohmyllm import paths
+
+        log = paths.app_log_path()
+        if log.exists():
+            assert tok not in log.read_text()
+    finally:
+        # shut the server down even when an assertion fails — no daemon
+        # listener may outlive the test (mirrors the conftest bridge fixture)
+        stop.set()
+        th.join(timeout=10)
+        assert not th.is_alive(), "bridge thread refused to stop"
 
 
 # ---- #3 skill named ".." cannot rmtree the home
@@ -475,8 +484,40 @@ def test_bridge_key_caps(bridge):
     r = bridge.get("/api/providers")
     row = next(p for p in r["providers"] if p["pid"] == "groq")
     assert row["has_key"]  # falsy non-string didn't delete it
-    r = bridge.post("/api/providers/key", {"pid": "groq", "key": "x" * 5_000_000})
-    assert "error" in r
+    # (a) key-specific cap: ~5000 chars fits under the 1 MB body cap but is
+    # over the 4096-char key cap → a decoded 400 JSON error, not a broken pipe
+    r = bridge.post("/api/providers/key", {"pid": "groq", "key": "x" * 5000})
+    assert r.get("__status__") == 400 and "error" in r
+    # (b) oversized body refused from the Content-Length pre-check alone:
+    # declare 5 MB, send a tiny body, read the refusal WITHOUT uploading it
+    port = int(bridge.base.rsplit(":", 1)[1])
+    raw = b""
+    with socket.create_connection(("127.0.0.1", port), timeout=10) as s:
+        s.sendall(
+            b"POST /api/providers/key HTTP/1.1\r\n"
+            + f"Host: 127.0.0.1:{port}\r\n".encode()
+            + b"Content-Type: application/json\r\n"
+            b"Content-Length: 5000000\r\n"
+            + f"X-OMLLM-Token: {bridge.token}\r\n\r\n".encode()
+            + b"{}"
+        )
+        s.settimeout(10)
+        try:
+            while True:
+                chunk = s.recv(65_536)
+                if not chunk:
+                    break
+                raw += chunk
+        except (TimeoutError, OSError):
+            pass  # a clean close/reset after the refusal is acceptable
+    if raw:
+        status = raw.split(b"\r\n", 1)[0].split(b" ")[1]
+        assert status.startswith(b"4"), raw[:120]  # 4xx (400/413) refusal
+    # the server survived the refused request and still answers normally
+    assert bridge.get("/api/health", auth=False)["ok"]
+    r = bridge.get("/api/providers")
+    row = next(p for p in r["providers"] if p["pid"] == "groq")
+    assert row["has_key"]  # the original key survived both refused attempts
 
 
 def test_boot_reverts_orphaned_cloud_default(oml_env, monkeypatch):

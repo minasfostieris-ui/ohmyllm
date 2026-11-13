@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
+import os
 import threading
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from .. import paths
-from .redact import redact_secrets
+from ..secureio import append_private, canonical_json, private_mkdir
+from .redact import redact_secrets, redact_value
+
+_MAX_RECORD_BYTES = 32_768
+_MAX_READ_BYTES = 1_000_000
+_MAX_RECENT = 1000
 
 
 class AuditLogger:
@@ -23,9 +32,39 @@ class AuditLogger:
     ) -> None:
         self.path = Path(path) if path else paths.audit_log_path()
         self.enabled = enabled
-        self.max_bytes = max_bytes
-        self.keep = keep
+        self.max_bytes = max(4096, int(max_bytes))
+        self.keep = max(1, min(int(keep), 20))
         self._lock = threading.Lock()
+        self.last_error: str | None = None
+
+    @property
+    def healthy(self) -> bool:
+        return self.last_error is None
+
+    def health(self) -> dict[str, Any]:
+        return {"enabled": self.enabled, "healthy": self.healthy, "error": self.last_error}
+
+    @contextmanager
+    def _process_lock(self):
+        """Serialize rotation across processes where advisory locking exists."""
+        private_mkdir(self.path.parent)
+        lock_path = self.path.with_suffix(self.path.suffix + ".lock")
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(lock_path, flags, 0o600)
+        try:
+            if os.name == "posix":
+                import fcntl
+
+                fcntl.flock(fd, fcntl.LOCK_EX)
+                os.fchmod(fd, 0o600)
+            yield
+        finally:
+            if os.name == "posix":
+                with contextlib.suppress(OSError):
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
 
     def log(
         self,
@@ -43,53 +82,83 @@ class AuditLogger:
     ) -> None:
         if not self.enabled:
             return
-        entry = {
+        safe_args = redact_value(args or {})
+        entry: dict[str, Any] = {
             "timestamp": datetime.now(UTC).isoformat(timespec="milliseconds"),
-            "event": event or "tool_call",
-            "permission_mode": mode,
-            "tool": tool,
-            "arguments": redact_secrets(json.dumps(args or {}, default=str, sort_keys=True)),
-            "approval": approval,
-            "success": success,
-            "duration_ms": round(duration_ms, 2),
-            "backend": backend,
-            "model": model,
+            "event": str(event or "tool_call")[:80],
+            "permission_mode": str(mode)[:40],
+            "tool": str(tool)[:100],
+            "arguments": safe_args,
+            "approval": str(approval)[:40],
+            "success": bool(success),
+            "duration_ms": round(float(duration_ms), 2),
+            "backend": str(backend)[:80] if backend else None,
+            "model": str(model)[:160] if model else None,
         }
         if error:
-            entry["error"] = redact_secrets(str(error))[:400]
+            entry["error"] = redact_secrets(str(error))[:1000]
+        record = json.dumps(entry, ensure_ascii=False, default=str, separators=(",", ":")) + "\n"
+        if len(record.encode("utf-8")) > _MAX_RECORD_BYTES:
+            raw_args = canonical_json(safe_args).encode("utf-8")
+            entry["arguments"] = {
+                "omitted": True,
+                "bytes": len(raw_args),
+                "sha256": hashlib.sha256(raw_args).hexdigest(),
+            }
+            record = json.dumps(entry, ensure_ascii=False, default=str, separators=(",", ":")) + "\n"
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self._lock:
-                self._rotate_if_needed()
-                with open(self.path, "a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        except OSError:
-            pass  # auditing must never crash the agent; doctor surfaces it
+            with self._lock, self._process_lock():
+                self._rotate_if_needed(len(record.encode("utf-8")))
+                append_private(self.path, record, max_bytes=_MAX_RECORD_BYTES)
+            self.last_error = None
+        except OSError as exc:
+            # Agent execution continues, but health/status surfaces the loss of auditability.
+            self.last_error = f"{type(exc).__name__}: {exc}"[:300]
 
-    def _rotate_if_needed(self) -> None:
+    def _rotate_if_needed(self, incoming: int = 0) -> None:
         try:
             size = self.path.stat().st_size
         except FileNotFoundError:
             return
-        if size < self.max_bytes:
+        if size + incoming <= self.max_bytes:
             return
         for i in range(self.keep - 1, 0, -1):
             src = self.path.with_suffix(self.path.suffix + f".{i}")
             dst = self.path.with_suffix(self.path.suffix + f".{i + 1}")
-            if src.exists():
+            if src.exists() and not src.is_symlink():
                 src.replace(dst)
-        self.path.replace(self.path.with_suffix(self.path.suffix + ".1"))
+                if os.name == "posix":
+                    dst.chmod(0o600)
+        if not self.path.is_symlink():
+            rotated = self.path.with_suffix(self.path.suffix + ".1")
+            self.path.replace(rotated)
+            if os.name == "posix":
+                rotated.chmod(0o600)
 
     def recent(self, n: int = 50) -> list[dict[str, Any]]:
-        if not self.path.is_file():
+        count = max(0, min(int(n), _MAX_RECENT))
+        if count == 0 or not self.path.is_file() or self.path.is_symlink():
             return []
-        lines = self.path.read_text(encoding="utf-8", errors="replace").splitlines()
+        try:
+            with open(self.path, "rb") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                start = max(0, size - _MAX_READ_BYTES)
+                fh.seek(start)
+                raw = fh.read(_MAX_READ_BYTES)
+            lines = raw.decode("utf-8", errors="replace").splitlines()
+            if start and lines:
+                lines = lines[1:]
+        except OSError as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"[:300]
+            return []
         out: list[dict[str, Any]] = []
-        for line in lines[-max(n, 0):]:
+        for line in lines[-count:]:
             try:
-                out.append(json.loads(line))
+                value = json.loads(line)
+                out.append(value if isinstance(value, dict) else {"tool": "?", "error": "invalid audit record"})
             except json.JSONDecodeError:
-                out.append({"tool": "?", "error": "unparseable audit line", "raw": line[:200]})
+                out.append({"tool": "?", "error": "unparseable audit line", "raw": redact_secrets(line[:200])})
         return out
 
 

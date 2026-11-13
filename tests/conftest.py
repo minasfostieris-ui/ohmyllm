@@ -88,14 +88,16 @@ def bridge(oml_env, svc):
     deadline = time.time() + 60  # macOS CI runners can take ~30s cold
     while time.time() < deadline:
         if port_file.exists():
-            info = port_file.read_text().strip()
-            if len(info.split(" ", 1)) == 2:
+            try:
+                info = json.loads(port_file.read_text())
                 holder["info"] = info
                 break
+            except (ValueError, OSError):
+                pass
         time.sleep(0.02)
     assert "info" in holder, "bridge never wrote port file"
-    port, token = holder["info"].split(" ", 1)
-    c = Client(int(port), token)
+    info = holder["info"]
+    c = Client(info["port"], info["token"])
     # wait until the app answers
     for _ in range(100):
         try:

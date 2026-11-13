@@ -5,12 +5,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 from ..config.models import Config
 from ..memory import SoulManager
 
 JSON_TYPES = {"string", "integer", "number", "boolean", "object", "array"}
+
+
+class ToolCancelled(RuntimeError):
+    """A cooperative cancellation observed before a mutating commit boundary."""
 
 
 @dataclass(frozen=True)
@@ -35,6 +40,11 @@ class ToolContext:
     status_provider: Callable[[], dict[str, Any]] | None = None
     user_requested_memory: bool = False
     config_saver: Callable[[], None] | None = None
+    cancel_event: Event | None = None
+
+    def check_cancelled(self) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            raise ToolCancelled("tool execution was cancelled before commit")
 
 
 @dataclass(frozen=True)
@@ -54,7 +64,7 @@ class ToolSpec:
     description: str
     params: list[ParamSpec]
     handler: Callable[[ToolContext, dict[str, Any]], Any]  # sync or async -> str|ToolResult
-    preview: Callable[[dict[str, Any]], str] | None = None
+    preview: Callable[[dict[str, Any], ToolContext | None], str] | None = None
     examples: str = ""
     tags: tuple[str, ...] = field(default_factory=tuple)
 

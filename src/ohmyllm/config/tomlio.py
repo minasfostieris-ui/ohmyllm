@@ -8,12 +8,13 @@ array-of-tables, None values skipped).
 
 from __future__ import annotations
 
-import contextlib
 import json
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+
+from ..secureio import atomic_write, private_mkdir
 
 
 def _scalar(v: Any) -> str:
@@ -107,21 +108,7 @@ def load_file(path: Path) -> dict[str, Any]:
 
 
 def dump_file(path: Path, data: Mapping[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    import os
-    import tempfile
-
-    # unique temp + 0600 from creation: concurrent saves must not interleave on
-    # one fixed .tmp name, and the file may hold provider API keys
-    target = path.resolve() if path.is_symlink() else path  # dotfiles users symlink config.toml
-    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
-    try:
-        if hasattr(os, "fchmod"):  # NTFS has no POSIX modes
-            os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(dumps(data))
-        os.replace(tmp, target)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.unlink(tmp)
-        raise
+    private_mkdir(path.parent)
+    if path.is_symlink():
+        raise ValueError("config destination must not be a symlink")
+    atomic_write(path, dumps(data), mode=0o600)

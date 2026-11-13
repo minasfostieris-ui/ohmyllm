@@ -46,14 +46,14 @@ def test_build_mode_changes_nothing(svc):
     assert "disabled in" not in " ".join(d.reasons)
 
 
-def test_yolo_silences_approvals(svc):
+def test_yolo_preserves_sandbox_and_shell_consent(svc):
     svc.config.agent.op_mode = "build"
-    base = svc.policy.evaluate("write_file", {"path": "/tmp/zz.txt", "content": "hi"})
-    assert base.allowed and base.requires_approval, "outside-workspace write must ask first"
     svc.config.agent.yolo = True
-    d = svc.policy.evaluate("write_file", {"path": "/tmp/zz.txt", "content": "hi"})
-    assert d.allowed and not d.requires_approval
-    assert "YOLO" in " ".join(d.reasons)
+    assert not svc.policy.evaluate("write_file", {"path": "/tmp/zz.txt", "content": "hi"}).allowed
+    inside = svc.policy.evaluate("write_file", {"path": "zz.txt", "content": "hi"})
+    assert inside.allowed and not inside.requires_approval
+    shell = svc.policy.evaluate("run_command", {"command": "echo hi"})
+    assert shell.allowed and shell.requires_approval
 
 
 def test_yolo_never_runs_catastrophic(svc):

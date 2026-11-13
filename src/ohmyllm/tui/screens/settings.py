@@ -13,7 +13,7 @@ from textual.screen import Screen
 from textual.widgets import Button, Input, Label, OptionList, Static, Switch
 from textual.widgets._option_list import Option
 
-from ...config import Config
+from ...config import Config, deep_merge
 from ..themes import THEME_ORDER, THEMES, resolve_theme
 
 # (key, tab label) — order is the tab bar order
@@ -498,7 +498,8 @@ class SettingsScreen(Screen):
             self._show_errors(errors)
             return
         try:
-            new_cfg = Config.model_validate(payload)
+            live = self.app.svc.config.model_dump(mode="json")
+            new_cfg = Config.model_validate(deep_merge(live, payload))
         except Exception as exc:  # noqa: BLE001
             self._show_errors([str(exc)[:1500]])
             return

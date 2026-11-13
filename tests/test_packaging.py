@@ -8,8 +8,13 @@ import fnmatch
 import tomllib
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[1] / "src"
-PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+PYPROJECT = ROOT / "pyproject.toml"
+CREDENTIAL_PATTERNS = (
+    ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx",
+    "credentials*.json", "*credentials*.json", "secrets*.json", "*token*.json",
+)
 
 
 def _resource_files() -> list[str]:
@@ -53,3 +58,30 @@ def test_known_resources_present():
     files = _resource_files()
     assert "ohmyllm/tui/app.tcss" in files or "tui/app.tcss" in files
     assert any("gui_static/index.html" in f for f in files)
+
+
+def test_package_inventory_excludes_credential_like_resources():
+    resources = _resource_files()
+    for rel in resources:
+        name = Path(rel).name
+        assert not any(fnmatch.fnmatch(name.casefold(), pattern) for pattern in CREDENTIAL_PATTERNS), (
+            f"credential-like resource must not ship: {rel}"
+        )
+
+    # Guard future broad package-data globs even when no secret file exists yet.
+    package_globs = [pattern for patterns in _declared_patterns().values() for pattern in patterns]
+    synthetic_secrets = (
+        ".env", ".env.production", "client.pem", "private.key",
+        "credentials.json", "gui_static/session-token.json",
+    )
+    for rel in synthetic_secrets:
+        assert not any(fnmatch.fnmatch(rel, pattern) for pattern in package_globs), (
+            f"package-data pattern would include credential-like artifact: {rel}"
+        )
+
+
+def test_credential_files_are_explicitly_ignored():
+    ignored = set((ROOT / ".gitignore").read_text(encoding="utf-8").splitlines())
+    required = {".ohmyllm/", ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx",
+                "credentials*.json", "*credentials*.json", "secrets*.json", "*token*.json"}
+    assert required <= ignored

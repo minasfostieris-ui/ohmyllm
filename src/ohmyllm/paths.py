@@ -15,6 +15,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from .secureio import private_mkdir
+
 ENV_HOME = "OMLLM_HOME"
 ENV_WORKSPACE = "OMLLM_WORKSPACE"
 
@@ -96,8 +98,7 @@ def project_dir(start: Path | None = None) -> Path | None:
 
 def ensure_project_dir(start: Path | None = None) -> Path:
     pd = project_dir(start) or (workspace_root(start) / ".ohmyllm")
-    pd.mkdir(parents=True, exist_ok=True)
-    return pd
+    return private_mkdir(pd)
 
 
 def config_path() -> Path:
@@ -106,6 +107,11 @@ def config_path() -> Path:
 
 def logs_dir() -> Path:
     return global_home() / "logs"
+
+
+def runtime_dir() -> Path:
+    """Private, short-lived bridge discovery material."""
+    return global_home() / "run"
 
 
 def audit_log_path() -> Path:
@@ -162,6 +168,7 @@ def ensure_global_dirs() -> None:
     for d in (
         global_home(),
         logs_dir(),
+        runtime_dir(),
         backups_dir(),
         soul_backups_dir(),
         file_backups_dir(),
@@ -169,7 +176,7 @@ def ensure_global_dirs() -> None:
         global_history_dir() / "sessions",
         global_history_dir() / "trash",
     ):
-        d.mkdir(parents=True, exist_ok=True)
+        private_mkdir(d)
 
 
 def ensure_project_dirs() -> None:
@@ -178,4 +185,4 @@ def ensure_project_dirs() -> None:
     if pd is None:
         return
     for d in (pd, pd / "history", pd / "history" / "sessions"):
-        d.mkdir(parents=True, exist_ok=True)
+        private_mkdir(d)

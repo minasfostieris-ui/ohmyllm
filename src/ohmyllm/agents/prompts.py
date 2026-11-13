@@ -248,6 +248,8 @@ class PromptBuilder:
                 parts.append(
                     "## Skills (imported guides)\n"
                     "When the task matches a skill below, call skills_read(name) FIRST and follow it.\n"
+                    "Skills may bundle extra files under references/ — load them on demand with "
+                    "skills_read(name, path=\"references/…\") instead of guessing their content.\n"
                     + lines
                 )
         mode_note = {

@@ -5,7 +5,10 @@ TUI, plain mode and CLI all build on this so behavior is identical everywhere.
 
 from __future__ import annotations
 
+import contextlib
+import copy
 import time
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -16,6 +19,7 @@ from .backends import BaseBackend, make_backend
 from .config import BackendName, Config, ConfigStore, PermissionMode
 from .memory import SoulManager
 from .safety import ApprovalManager, AuditLogger, PolicyEngine
+from .secureio import url_is_loopback
 from .sessions import Session, SessionStore
 from .tools import ToolRegistry, build_default_registry
 
@@ -26,6 +30,7 @@ class Services:
     config: Config
     registry: ToolRegistry = field(default_factory=build_default_registry)
     _backend_cache: dict[str, BaseBackend] = field(default_factory=dict, repr=False)
+    _runtimes: weakref.WeakSet[AgentRuntime] = field(default_factory=weakref.WeakSet, repr=False)
 
     # ------------------------------------------------------------- factory
     @classmethod
@@ -34,6 +39,12 @@ class Services:
         paths.ensure_project_dirs()
         store = ConfigStore()
         cfg = store.load()
+        # Persisted full access is never active without confirmation in this process.
+        stale_full_access = cfg.permission_mode is PermissionMode.FULL_ACCESS
+        if stale_full_access:
+            cfg.permission_mode = PermissionMode.DANGEROUS
+            cfg.policy_generation += 1
+            store.last_problems.append("persisted full_access requires fresh process-local confirmation")
         if workspace:
             cfg.workspace = str(Path(workspace).expanduser().resolve(strict=False))
         if cfg.workspace:
@@ -49,6 +60,8 @@ class Services:
                 cfg.default_backend = best_local_backend(cfg)
                 store.save(cfg)
         svc = cls(config_store=store, config=cfg)
+        if stale_full_access:
+            svc.approvals.invalidate_all()
         svc.soul.ensure()
         return svc
 
@@ -115,6 +128,10 @@ class Services:
 
     def backend(self, name: str | None = None) -> BaseBackend:
         key = name or self.config.default_backend.value
+        section = getattr(self.config, key, None)
+        endpoint = getattr(section, "host", None) or getattr(section, "base_url", None)
+        if endpoint and not self.config.safety.allow_remote_backends and not url_is_loopback(str(endpoint)):
+            raise ValueError(f"remote backend endpoint requires safety.allow_remote_backends: {endpoint}")
         if key not in self._backend_cache:
             self._backend_cache[key] = make_backend(key, self.config)
         return self._backend_cache[key]
@@ -130,7 +147,7 @@ class Services:
 
     def runtime(self, name: str | None = None) -> AgentRuntime:
         be = self.backend(name)
-        return AgentRuntime(
+        runtime = AgentRuntime(
             backend=be,
             registry=self.registry,
             policy=self.policy,
@@ -141,32 +158,94 @@ class Services:
             skills=self.skills,
             config_saver=self.save_config,
         )
+        self._runtimes.add(runtime)
+        return runtime
+
+    def _retire_runtimes(self) -> None:
+        for runtime in tuple(self._runtimes):
+            runtime.retire()
+        self._runtimes.clear()
 
     # ------------------------------------------------------------- actions
     def save_config(self) -> None:
         self.config_store.save(self.config)
 
-    def apply_config(self, cfg: Config) -> None:
-        """Swap the live config and rewire everything that captured the old one."""
-        self.config = cfg
-        self._backend_cache.clear()  # backends hold config refs; rebuild lazily
-        self.save_config()
+    @staticmethod
+    def _security_snapshot(cfg: Config) -> dict[str, Any]:
+        return {
+            "permission_mode": cfg.permission_mode.value,
+            "workspace": cfg.workspace,
+            "safety": cfg.safety.model_dump(mode="json"),
+            "memory": cfg.memory.model_dump(mode="json"),
+            "guard": cfg.guard.model_dump(mode="json"),
+            "logging": cfg.logging.model_dump(mode="json"),
+            "operation_mode": cfg.agent.op_mode,
+            "yolo": cfg.agent.yolo,
+            "mail": cfg.mail.model_dump(mode="json"),
+            "cloud": cfg.cloud.model_dump(mode="json"),
+            "backend_boundary": {
+                "ollama_host": cfg.ollama.host,
+                "ollama_binary": cfg.ollama.binary,
+                "ollama_auto_start": cfg.ollama.auto_start,
+                "lmstudio_url": cfg.lmstudio.base_url,
+                "lmstudio_binary": cfg.lmstudio.binary_path,
+                "lmstudio_auto_start": cfg.lmstudio.auto_start,
+            },
+        }
+
+    def apply_config(self, cfg: Config, *, persist: bool = True) -> None:
+        """Apply validated config in place so existing runtimes cannot retain stale policy."""
+        if cfg.permission_mode is PermissionMode.FULL_ACCESS and self.config.permission_mode is not PermissionMode.FULL_ACCESS:
+            cfg = cfg.model_copy(deep=True)
+            cfg.permission_mode = PermissionMode.DANGEROUS
+        old_security = self._security_snapshot(self.config)
+        new_security = self._security_snapshot(cfg)
+        security_changed = old_security != new_security
+        config_changed = self.config.model_dump(mode="json") != cfg.model_dump(mode="json")
+        cfg.policy_generation = max(self.config.policy_generation, cfg.policy_generation)
+        if security_changed:
+            cfg.policy_generation += 1
+        old_workspace = self.workspace
+        old_memory = self.config.memory.model_dump(mode="json")
+        old_logging = self.config.logging.model_dump(mode="json")
+        if config_changed:
+            self._retire_runtimes()
+        # Existing PolicyEngine and AgentRuntime objects reference this instance.
+        for name in Config.model_fields:
+            setattr(self.config, name, copy.deepcopy(getattr(cfg, name)))
+        self._backend_cache.clear()
+        if old_workspace != self.workspace:
+            for attr in ("_policy", "_policy_cfg", "_policy_ws"):
+                with contextlib.suppress(AttributeError):
+                    delattr(self, attr)
+        if old_memory != self.config.memory.model_dump(mode="json") and hasattr(self, "_soul"):
+            del self._soul
+        if old_logging != self.config.logging.model_dump(mode="json") and hasattr(self, "_audit"):
+            del self._audit
+        if security_changed:
+            self.approvals.invalidate_all()
+        if persist:
+            self.save_config()
 
     def reload_config(self) -> Config:
         """Re-read config.toml from disk without writing anything back: the
         GUI bridge is a separate process, so keys/provider/model changes it
         saves are invisible to this TUI until now."""
         cfg = self.config_store.load()
-        self.config = cfg
-        self._backend_cache.clear()
-        return cfg
+        self.apply_config(cfg, persist=False)
+        return self.config
 
     def set_mode(self, mode: PermissionMode, *, phrase: str | None = None) -> bool:
-        """Full access requires the exact phrase; every change is audited."""
+        """Full access requires fresh process-local confirmation; changes invalidate grants."""
         if mode is PermissionMode.FULL_ACCESS:
             if (phrase or "").strip() != self.full_access_phrase():
                 return False
+        changed = self.config.permission_mode is not mode
         self.config.permission_mode = mode
+        if changed:
+            self.config.policy_generation += 1
+            self._retire_runtimes()
+            self.approvals.invalidate_all()
         self.save_config()
         self.audit.log(
             mode=mode.value, tool="__permission_mode__", args={"new_mode": mode.value},
@@ -202,8 +281,6 @@ class Services:
     async def release_model(self) -> None:
         """Eject the current model from the backend so closing the app frees
         VRAM. Best-effort: never raises (quit paths must not hang)."""
-        import contextlib
-
         be_name = self.config.default_backend.value
         model = self.current_model()
         if not model or be_name == "mock":
@@ -215,11 +292,9 @@ class Services:
                 if unload is not None:
                     await unload(model)
             elif be_name == "ollama":
-                import httpx
-
                 url = self.config.ollama.host.rstrip("/")
-                async with httpx.AsyncClient(timeout=10.0) as c:
-                    await c.post(url + "/api/generate", json={"model": model, "keep_alive": 0})
+                async with be._client(url, timeout=10.0) as client:
+                    await client.post("/api/generate", json={"model": model, "keep_alive": 0})
 
     def status_snapshot(self, tok_s: float = 0.0, ctx_used: int = 0) -> dict[str, Any]:
         gen = self.config.settings_for(self.config.default_backend, self.current_model())
@@ -241,6 +316,7 @@ class Services:
             "ctx_used": ctx_used,
             "ctx_pct": round(100 * ctx_used / max(1, ctx_total)),
             "tokens_s": tok_s,
+            "audit": self.audit.health(),
             "updated": time.time(),
             "op_mode": self.config.agent.op_mode,
             "yolo": bool(getattr(self.config.agent, "yolo", False)),

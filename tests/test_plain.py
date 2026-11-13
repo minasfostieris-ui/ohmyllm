@@ -42,6 +42,32 @@ def test_plain_export_and_chats(oml_env, svc):
     assert svc.sessions.get(app.sess.id).title == "my great chat"
 
 
+def test_memory_editor_uses_argv_without_shell_or_secret_environment(oml_env, svc, monkeypatch):
+    import os
+    import subprocess
+
+    app = make_app(svc)
+    marker = svc.workspace / "must-not-exist"
+    captured = {}
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setenv("EDITOR", f"safe-editor --label '; touch {marker}'")
+    monkeypatch.setenv("OMLLM_EDITOR_TOKEN", "must-not-leak")
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    asyncio.run(app._memory("edit"))
+
+    assert isinstance(captured["argv"], list)
+    assert captured.get("shell") is not True
+    assert not marker.exists()
+    assert "OMLLM_EDITOR_TOKEN" not in captured["env"]
+    if os.name == "posix":
+        assert captured["cwd"] == svc.soul.path.parent
+
+
 def test_plain_write_requires_approval_denied(oml_env, svc):
     app = make_app(svc)
     be = svc.backend()

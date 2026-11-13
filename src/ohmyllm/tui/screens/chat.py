@@ -8,18 +8,26 @@ import re
 import time
 from typing import Any
 
+from rich.markup import escape
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
 from textual.screen import Screen
-from textual.widgets import Collapsible, Input, Markdown, OptionList, Static
+from textual.widgets import Button, Collapsible, Input, Markdown, OptionList, Static
 from textual.widgets._option_list import Option
 
 from ... import paths
 from ...agents.runtime import AgentCancelled
 from ...backends.base import BackendError
+from ...secureio import (
+    atomic_write,
+    private_temp_dir,
+    read_bridge_discovery,
+    sanitized_environment,
+    trusted_executable,
+)
 from ...sessions import make_title
 from ...verbs import verb
 from ..widgets import ModeBanner, SepBar, StatusBar, ToolPanel
@@ -46,9 +54,11 @@ class ChatScreen(Screen):
         ("/chat", "", "chat mode — conversation only, no writes or shell"),
         ("/plan", "", "plan mode — research and design, no writes or shell"),
         ("/build", "", "build mode — full agent (default)"),
-        ("/yolo", "[on|off]", "this prompt skips approvals (catastrophic commands stay blocked)"),
+        ("/yolo", "[on|off]", "auto-approves routine tool calls; shell/network/mail still ask; catastrophic commands stay blocked"),
         ("/memory", "", "soul.md editor"), ("/soul", "", "soul.md editor"), ("/doctor", "", "diagnostics"),
         ("/settings", "", "all settings"), ("/chats", "", "browse chats"), ("/new", "", "fresh chat"),
+        ("/search", "<term>", "full-text search across saved chats"),
+        ("/steer", "<text>", "guide the running turn — injected at the next tool step"),
         ("/clear", "", "fresh chat"), ("/rename", "<title>", "rename this chat"),
         ("/delete", "", "delete this chat"), ("/export", "[markdown|json]", "export chat"),
         ("/remember", "<fact>", "save to memory"), ("/forget", "<thing>", "remove from memory"),
@@ -60,6 +70,7 @@ class ChatScreen(Screen):
         Binding("up", "slash_prev", "", show=False, priority=False),
         Binding("down", "slash_next", "", show=False, priority=False),
         Binding("tab", "slash_complete", "", show=False, priority=False),
+        Binding("ctrl+end", "jump_latest", "latest activity", priority=True),
         Binding("ctrl+t", "toggle_thinking", "hide/show live thinking", priority=True),
         Binding("ctrl+j", "toggle_tools", "hide/show tool dock", priority=True),
         Binding("ctrl+v", "paste_image", "paste image from clipboard", priority=True),
@@ -171,6 +182,7 @@ class ChatScreen(Screen):
         with Horizontal(id="chat-root"):
             with Vertical(id="chat-left"):
                 yield VerticalScroll(id="history")
+                yield Button("↓ Latest activity · Ctrl+End", id="jump-latest")
             yield SepBar("", id="panel-sep")
             yield ToolPanel()
         with Vertical(classes="band", id="slash-band"):
@@ -180,6 +192,7 @@ class ChatScreen(Screen):
         yield StatusBar()
 
     def on_mount(self) -> None:
+        self.query_one("#jump-latest").display = False
         self._buffer = ""
         self._stream_md: Markdown | None = None
         self._last_flush = 0.0
@@ -265,11 +278,12 @@ class ChatScreen(Screen):
             return
         hints = "  ·  ctrl+K · F2 chats" if self.size.width >= 100 else ""
         title.update(
-            f"[bold]💬 {sess.title[:70]}[/]  [dim]·  {cfg.default_backend.value}:{sess.model or '—'}"
+            f"[bold]💬 {escape(sess.title[:70])}[/]  [dim]·  {cfg.default_backend.value}:{escape(sess.model or '—')}"
             f"  ·  mode {cfg.permission_mode.value}  ·  {sess.message_count} msgs  ·  {saved}{hints}[/dim]"
         )
 
     def on_resize(self, event) -> None:
+        self.set_class(self.size.width < 100, "compact-chat")
         self._refresh_title()
 
     def _push_status(self) -> None:
@@ -360,8 +374,25 @@ class ChatScreen(Screen):
             h = hist or self.query_one("#history", VerticalScroll)
         except NoMatches:
             return
-        if force or h.scroll_y >= h.max_scroll_y - 2:
+        following = force or h.scroll_y >= h.max_scroll_y - 2
+        self.query_one("#jump-latest").display = not following
+        if following:
             h.scroll_end(animate=False)
+
+    @on(Button.Pressed, "#jump-latest")
+    def action_jump_latest(self) -> None:
+        self._follow(force=True)
+
+    def _recover_input(self, text: str) -> None:
+        try:
+            inp = self.query_one("#chat-input", Input)
+            if not inp.value:
+                inp.value = text
+            elif self.app.session:
+                self.app.drafts[self.app.session.id] = text
+        except NoMatches:
+            if self.app.session:
+                self.app.drafts[self.app.session.id] = text
 
     def action_toggle_thinking(self) -> None:
         cfg = self.app.svc.config.agent
@@ -633,6 +664,7 @@ class ChatScreen(Screen):
         app.save_state = False
         self._push_status()
         rt = app.svc.runtime()
+        app.active_runtime = rt
         sess = app.session
         assert sess is not None
         try:
@@ -650,19 +682,23 @@ class ChatScreen(Screen):
             if self._stream_md is not None:
                 self._finalize(result.text if (result.text and not result.error) else None)
             if result.error:
+                self._recover_input(text)
                 self._sysline(f"backend error: {result.error} — check /backend or Ctrl+B", "error")
             app.tok_s = result.tokens_per_s or app.tok_s
         except AgentCancelled:
             self._finalize()
             self._sysline("turn cancelled", "system")
         except BackendError as exc:
+            self._recover_input(text)
             self._finalize()
             self._sysline(str(exc), "error")
         except Exception as exc:  # noqa: BLE001 — surface, never crash the UI
+            self._recover_input(text)
             self._finalize()
             self._sysline(f"unexpected error: {type(exc).__name__}: {exc}", "error")
         finally:
             app.busy = False
+            app.active_runtime = None
             try:
                 app.svc.sessions.save(sess)
                 app.save_state = True
@@ -681,6 +717,9 @@ class ChatScreen(Screen):
         except NoMatches:
             return  # turn outlived its screen (user switched chats); drop UI events
         t = ev.get("type")
+        if t == "steer":
+            self._sysline(f"steer injected · {str(ev.get('text', ''))[:120]}", "system")
+            return
         if t == "turn_start":
             self._turn_model = str(ev.get("model") or "")
             self._reasoning = ""
@@ -1007,88 +1046,92 @@ class ChatScreen(Screen):
         import os
         import subprocess
         import sys
-        import tempfile
         import time
         import webbrowser
         from pathlib import Path
 
         home = pathlib_home()
+        extra = {"OMLLM_PYTHON": sys.executable}
+        for key in ("OMLLM_HOME", "OMLLM_WORKSPACE"):
+            if value := os.environ.get(key):
+                extra[key] = value
+        env = sanitized_environment(extra)
+
+        def launch_file(prefix: str) -> tuple[Path, Path]:
+            directory = private_temp_dir(home / "bridge-launches", prefix)
+            return directory, directory / "bridge.json"
+
+        def cleanup(directory: Path, discovery: Path) -> None:
+            with contextlib.suppress(OSError):
+                discovery.unlink()
+            with contextlib.suppress(OSError):
+                directory.rmdir()
+
         native = next((c for c in [
             Path.home() / ".local" / "bin" / "ohmyllm-gui",
             Path("/usr/local/bin/ohmyllm-gui"),
         ] if c.is_file()), None)
-        if shutil_which := __import__("shutil").which("ohmyllm-gui"):
-            native = Path(shutil_which) if native is None else native
+        if executable := trusted_executable("ohmyllm-gui"):
+            native = Path(executable) if native is None else native
         if native is not None:
-            env = dict(os.environ)
-            env["OMLLM_PYTHON"] = sys.executable
             try:
                 subprocess.Popen([str(native)], env=env, start_new_session=True,
                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             except OSError:
                 pass  # fall through to the plain web bridge below
-            # also expose the optional localhost console and surface its URL
+            launch_dir, wport = launch_file("tui-native-web-")
             try:
-                wport = Path(tempfile.gettempdir()) / f"ohmyllm-gui-tui-{os.getpid()}.port"
-                wport.unlink(missing_ok=True)
                 wchild = subprocess.Popen(
                     [sys.executable, "-m", "ohmyllm.bridge", "--port-file", str(wport)],
                     env=env, start_new_session=True,
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
-                (home / "gui-web.pid").write_text(str(wchild.pid))
+                atomic_write(home / "gui-web.pid", str(wchild.pid))
                 deadline = time.monotonic() + 8.0
                 while time.monotonic() < deadline:
-                    if wport.is_file() and len(wport.read_text().strip().split(" ")) == 2:
-                        port, token = wport.read_text().strip().split(" ")
-                        url = f"http://127.0.0.1:{port}/?t={token}"
-                        (home / "gui-web.url").write_text(url)
-                        self.app._notice(f"console up · web (optional): {url}")
+                    if wport.is_file():
+                        port, token = read_bridge_discovery(wport)
+                        webbrowser.open(f"http://127.0.0.1:{port}/#token={token}")
+                        self.app._notice(f"console up · optional web window opened on port {port}")
                         return
                     await asyncio.sleep(0.1)
-                self.app._notice("console launching · web URL will be in ~/.ohmyllm/gui-web.url")
-            except OSError:
-                self.app._notice("console launching in the background")
+                self.app._notice("console bridge did not come up in 8s — native window may still work")
+            except (OSError, ValueError) as exc:
+                self.app._notice(f"console launch failed safely: {exc}")
+            finally:
+                cleanup(launch_dir, wport)
             return
+
         pidf = home / "gui.pid"
-        urlf = Path(tempfile.gettempdir()) / "ohmyllm-gui.url"
         if pidf.is_file():
             try:
                 pid = int(pidf.read_text().strip())
                 os.kill(pid, 0)
-                if urlf.is_file():
-                    webbrowser.open(urlf.read_text().strip())
-                    self.app._notice("console already running — opened in browser")
-                    return
+                self.app._notice("console already running — use its existing browser window")
+                return
             except (ValueError, OSError):
                 pass
-        portf = Path(tempfile.gettempdir()) / f"ohmyllm-gui-{os.getpid()}.port"
-        portf.unlink(missing_ok=True)
+        launch_dir, portf = launch_file("tui-browser-")
         try:
             child = subprocess.Popen(
                 [sys.executable, "-m", "ohmyllm.bridge", "--port-file", str(portf)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 stdin=subprocess.DEVNULL, start_new_session=True,
             )
-        except OSError as exc:
-            self.app._notice(f"could not start console: {exc}")
-            return
-        pidf.write_text(str(child.pid))
-        deadline = time.monotonic() + 8.0
-        while time.monotonic() < deadline:
-            if portf.is_file():
-                info = portf.read_text().strip()
-                if len(info.split(" ")) == 2:
-                    port, token = info.split(" ")
-                    url = f"http://127.0.0.1:{port}/?t={token}"
-                    urlf.write_text(url)
-                    with contextlib.suppress(OSError):
-                        (home / "gui-web.url").write_text(url)
-                    webbrowser.open(url)
-                    self.app._notice(f"console up → {url}")
+            atomic_write(pidf, str(child.pid))
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                if portf.is_file():
+                    port, token = read_bridge_discovery(portf)
+                    webbrowser.open(f"http://127.0.0.1:{port}/#token={token}")
+                    self.app._notice(f"console up on loopback port {port}")
                     return
-            await asyncio.sleep(0.1)
-        self.app._notice("console bridge did not come up in 8s — check oml doctor")
+                await asyncio.sleep(0.1)
+            self.app._notice("console bridge did not come up in 8s — check oml doctor")
+        except (OSError, ValueError) as exc:
+            self.app._notice(f"could not start console safely: {exc}")
+        finally:
+            cleanup(launch_dir, portf)
 
     def _slash(self, line: str) -> None:
         parts = line[1:].split(maxsplit=1)
@@ -1183,8 +1226,8 @@ class ChatScreen(Screen):
             app.svc.config.agent.yolo = want == "on"
             self._push_status()
             app.notify(
-                "⚡ YOLO armed — the NEXT prompt skips approvals; catastrophic "
-                "commands (rm -rf /, fork bombs, disk wipes) stay blocked"
+                "⚡ YOLO armed — the NEXT prompt auto-approves routine tool calls; "
+                "shell/network/mail still ask; catastrophic commands stay blocked"
                 if want == "on" else "yolo off — approvals restored")
         elif cmd.startswith("skill:"):
             name = cmd.split(":", 1)[1]
@@ -1267,6 +1310,30 @@ class ChatScreen(Screen):
             self._launch_gui()
         elif cmd in ("quit", "exit"):
             self.run_worker(app.action_safe_quit(), exclusive=False)
+        elif cmd == "steer":
+            rt = getattr(app, "active_runtime", None)
+            if rt is None or not getattr(rt, "turn_active", False):
+                self._sysline("no turn is running — /steer only guides an active turn; "
+                              "send a normal message instead", "system")
+            elif not arg:
+                app.notify("usage: /steer <text>", severity="warning")
+            else:
+                try:
+                    pos = rt.steer(arg)
+                except (ValueError, RuntimeError) as exc:
+                    app.notify(f"steer refused: {exc}", severity="warning")
+                else:
+                    self._sysline(f"steer queued (#{pos}) — injected at the next tool step", "system")
+        elif cmd == "search":
+            if not arg:
+                app.notify("usage: /search <term>", severity="warning")
+            else:
+                hits = app.svc.sessions.search(arg, 10)
+                if not hits:
+                    self._sysline(f"no chats match {arg!r}", "system")
+                else:
+                    for h in hits:
+                        self._sysline(f"{h['session_id'][:8]} · {h['title']} · {h['snippet']}", "system")
         else:
             app.notify(f"unknown command /{cmd} — /help", severity="warning")
 
@@ -1352,4 +1419,4 @@ def _content_text(content: object) -> str:
 
 
 def _who(name: str, text: str) -> str:
-    return f"[bold {'cyan' if name == 'you' else 'magenta'}]{name} >[/] {text}"
+    return f"[bold {'cyan' if name == 'you' else 'magenta'}]{escape(name)} >[/] {escape(text)}"

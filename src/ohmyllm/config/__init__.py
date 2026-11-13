@@ -16,13 +16,14 @@ from .models import (
     SafetySettings,
     UiSettings,
 )
-from .store import ConfigStore
+from .store import ConfigStore, deep_merge
 
 __all__ = [
     "AgentSettings",
     "BackendName",
     "Config",
     "ConfigStore",
+    "deep_merge",
     "FULL_ACCESS_PHRASE",
     "GenerationSettings",
     "GuardSettings",

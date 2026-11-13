@@ -1,6 +1,8 @@
 import json
 import time
 
+import pytest
+
 from ohmyllm import paths
 from ohmyllm.sessions import SessionStore, export, make_title
 
@@ -77,6 +79,23 @@ def test_export_markdown_and_json(oml_env):
     assert any("md" in p for p in store.get(s.id).exported_paths)
 
 
+def test_exports_structurally_redact_messages_and_nested_tool_data(oml_env):
+    store = SessionStore(oml_env["home"] / "history")
+    session = store.create(first_message="safe", backend="mock", model="m")
+    password = "export-password-123"
+    token = "github_pat_11AA22BB33CC44DD55"
+    session.add_message("assistant", f'{{"password":"{password}"}}')
+    session.tool_calls.append({"name": "x", "args": {"credentials": {"token": token}}})
+
+    markdown = export(store, session, "markdown").read_text()
+    json_text = export(store, session, "json").read_text()
+    for rendered in (markdown, json_text):
+        assert password not in rendered
+        assert token not in rendered
+        assert "REDACTED" in rendered
+    assert json.loads(json_text)["tool_calls"][0]["args"]["credentials"]["token"] == "[REDACTED]"
+
+
 def test_atomic_no_tmp_leftovers(oml_env):
     store = SessionStore(oml_env["home"] / "history")
     store.create(first_message="x", backend="mock", model="m")
@@ -117,11 +136,11 @@ def test_save_survives_windows_sharing_violation(oml_env, monkeypatch):
     """Windows: a concurrent /api/chats reader can hold the dest open for a
     moment, so os.replace raises PermissionError. The save must retry and
     land the turn — silently losing it was the CI-red cancel-persist bug."""
-    from pathlib import Path
+    import os
 
     store = SessionStore(oml_env["home"] / "history" / "sessions")
     s = store.create(first_message="persist me", backend="mock", model="m")
-    real = Path.replace
+    real = os.replace
     calls = {"n": 0}
 
     def flaky(self, target):
@@ -130,7 +149,7 @@ def test_save_survives_windows_sharing_violation(oml_env, monkeypatch):
             raise PermissionError(13, "Permission denied: dest held open")
         return real(self, target)
 
-    monkeypatch.setattr(Path, "replace", flaky)
+    monkeypatch.setattr(os, "replace", flaky)
     dest = store.save(s)
     assert calls["n"] == 3
     assert dest.is_file()
@@ -141,7 +160,7 @@ def test_save_survives_windows_sharing_violation(oml_env, monkeypatch):
 
 def test_save_reraises_after_exhausting_retries(oml_env, monkeypatch):
     """A permanently locked file must surface as an error, not a silent loss."""
-    from pathlib import Path
+    import os
 
     store = SessionStore(oml_env["home"] / "history" / "sessions")
     s = store.create(first_message="loud failure", backend="mock", model="m")
@@ -149,10 +168,66 @@ def test_save_reraises_after_exhausting_retries(oml_env, monkeypatch):
     def always_locked(self, target):
         raise PermissionError(13, "Permission denied")
 
-    monkeypatch.setattr(Path, "replace", always_locked)
+    monkeypatch.setattr(os, "replace", always_locked)
     import pytest
 
     dest = store.dir / f"{s.id}.json"
     with pytest.raises(PermissionError):
         store.save(s)
     assert not list(dest.parent.glob("*.tmp"))  # temp cleaned up
+
+
+def test_invalid_session_ids_and_filename_mismatches_are_rejected(oml_env):
+    store = SessionStore(oml_env["home"] / "history")
+    session = store.create(first_message="safe")
+    session.id = "../escape"
+    with pytest.raises(ValueError):
+        store.save(session)
+    assert store.get("../../etc/passwd") is None
+
+    good_name = "a" * 12
+    wrong_id = "b" * 12
+    record = session.to_dict()
+    record["id"] = wrong_id
+    mismatch = store.dir / f"{good_name}.json"
+    mismatch.write_text(json.dumps(record))
+    assert all(item.id != wrong_id for item in store.list())
+
+
+def test_restore_requires_a_confined_opaque_trash_record(oml_env, tmp_path):
+    store = SessionStore(oml_env["home"] / "history")
+    session = store.create(first_message="safe")
+    external = tmp_path / f"{session.id}-20260101T000000.json"
+    external.write_text(json.dumps(session.to_dict()))
+    assert store.restore_from_trash(external) is None
+
+
+def test_restore_corrupt_trash_returns_none(oml_env):
+    """Task #14 F8: a corrupt trash record must never raise — None, and the
+    record stays in trash (nothing is consumed on a failed restore)."""
+    store = SessionStore(oml_env["home"] / "history")
+    session = store.create(first_message="corruptible")
+    trash = store.delete(session.id)
+    assert trash is not None and trash.is_file()
+    for payload in (
+        "{not json",                                # ValueError (json)
+        "[]",                                       # TypeError (not an object)
+        json.dumps({"id": session.id}),             # TypeError (missing fields)
+        json.dumps({"title": "no id"}),             # ValueError (bad id)
+    ):
+        trash.write_text(payload)
+        assert store.restore_from_trash(trash) is None, payload
+        assert trash.is_file()
+    assert store.get(session.id) is None
+
+
+def test_session_state_files_are_owner_private(oml_env):
+    import os
+    import stat
+
+    store = SessionStore(oml_env["home"] / "history")
+    session = store.create(first_message="safe")
+    path = store.dir / f"{session.id}.json"
+    if os.name == "posix":
+        assert stat.S_IMODE(store.dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600

@@ -19,6 +19,15 @@ from . import __version__, paths
 from .config import BackendName, Config, PermissionMode
 from .core import Services
 from .doctor import run_checks, summarize
+from .secureio import (
+    atomic_write,
+    editor_argv,
+    private_temp_dir,
+    read_bridge_discovery,
+    read_tail,
+    sanitized_environment,
+    trusted_executable,
+)
 
 app = typer.Typer(
     name="ohmyllm",
@@ -66,6 +75,20 @@ def mail_main(ctx: typer.Context) -> None:
         raise typer.Exit(0) from None
 app.add_typer(mail_app)
 console = Console()
+errors = Console(stderr=True, markup=False, highlight=False)
+
+
+def _options(ctx: typer.Context, workspace: str | None, resume: str | None = None):
+    root = ctx.find_root().obj or {}
+    return (workspace if workspace is not None else root.get("workspace"),
+            resume if resume is not None else root.get("resume"))
+
+
+def _failure(message: str, code: int, as_json: bool = False) -> None:
+    if as_json:
+        print(json.dumps({"ok": False, "error": message, "exit_code": code}))
+    errors.print(message)
+    raise typer.Exit(code)
 
 
 def _version_callback(value: bool) -> None:
@@ -109,19 +132,23 @@ def _launch(plain: bool, workspace: str | None, resume: str | None) -> None:
 # ----------------------------------------------------------------- commands
 @app.command()
 def tui(
+    ctx: typer.Context,
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Project/workspace directory."),
     resume: str | None = typer.Option(None, "--resume", help="Resume a chat session id."),
 ) -> None:
     """Open the full TUI (same as plain `oml`)."""
+    workspace, resume = _options(ctx, workspace, resume)
     _launch(plain=False, workspace=workspace, resume=resume)
 
 
 @app.command()
 def cli(
+    ctx: typer.Context,
     workspace: str | None = typer.Option(None, "--workspace", "-w", help="Project/workspace directory."),
     resume: str | None = typer.Option(None, "--resume", help="Resume a chat session id."),
 ) -> None:
     """Start the plain line-CLI session (basic terminals, pipes, low TTYS)."""
+    workspace, resume = _options(ctx, workspace, resume)
     _launch(plain=True, workspace=workspace, resume=resume)
 
 
@@ -163,16 +190,19 @@ def update(
 
 @app.command()
 def chat(
+    ctx: typer.Context,
     message: str | None = typer.Argument(None, help="Optional first message (one-shot when given)."),
     plain: bool = typer.Option(False, "--plain", "-p"),
     model: str | None = typer.Option(None, "--model", "-m"),
     resume: str | None = typer.Option(None, "--resume"),
 ) -> None:
     """Start chatting (TUI by default, --plain for fallback)."""
+    workspace, resume = _options(ctx, None, resume)
+    plain = plain or bool((ctx.obj or {}).get("plain"))
     if message:
-        _run_one(message, model=model)
+        _run_one(message, model=model, workspace=workspace, resume=resume, plain=plain)
         return
-    _launch(plain, None, resume)
+    _launch(plain, workspace, resume)
 
 
 @app.command()
@@ -314,51 +344,86 @@ def soul(
         print(mgr.path)
         return
     if edit:
-        editor = os.environ.get("EDITOR", "vi")
-        code = os.system(f'{editor} "{mgr.path}"')
-        raise typer.Exit(code)
+        import subprocess
+
+        try:
+            completed = subprocess.run(
+                editor_argv(mgr.path),
+                cwd=mgr.path.parent,
+                env=sanitized_environment(),
+                check=False,
+            )
+        except (OSError, ValueError) as exc:
+            console.print(f"[red]could not launch editor: {exc}[/red]")
+            raise typer.Exit(1) from None
+        raise typer.Exit(completed.returncode)
     console.print(Panel(mgr.read(), title=f"soul.md — {mgr.path}", border_style="magenta"))
 
 
 @app.command()
 def run(
-    task: str = typer.Argument(..., help="One-shot agentic task."),
+    ctx: typer.Context,
+    task: str = typer.Argument(..., help="One-shot task; '-' reads stdin explicitly."),
+    workspace: str | None = typer.Option(None, "--workspace", "-w"),
+    resume: str | None = typer.Option(None, "--resume"),
+    as_json: bool = typer.Option(False, "--json", help="One JSON result on stdout; diagnostics on stderr."),
+    quiet: bool = typer.Option(False, "--quiet", "-q", help="Print only the final answer."),
+    plain: bool = typer.Option(False, "--plain", help="Disable live rendering and decorations."),
     backend_name: str | None = typer.Option(None, "--backend", "-b"),
     model: str | None = typer.Option(None, "--model", "-m"),
     mode: str | None = typer.Option(None, "--mode", help="Permission mode for this run."),
     yes: bool = typer.Option(False, "--yes", "-y", help="Auto-approve tool calls this run."),
 ) -> None:
     """Run a single agentic task from the shell (permission mode enforced)."""
-    _run_one(task, model=model, backend_name=backend_name, mode=mode, yes=yes)
+    workspace, resume = _options(ctx, workspace, resume)
+    if task == "-":
+        if sys.stdin.isatty():
+            _failure("Pipe task text to stdin when using '-'.", 1, as_json)
+        task = sys.stdin.read(65_537)
+    if not task.strip() or len(task) > 65_536:
+        _failure("Task must contain 1–65536 characters.", 1, as_json)
+    _run_one(task, model=model, backend_name=backend_name, mode=mode, yes=yes,
+             workspace=workspace, resume=resume, as_json=as_json, quiet=quiet,
+             plain=plain or bool((ctx.obj or {}).get("plain")))
 
 
 def _run_one(task: str, model: str | None = None, backend_name: str | None = None,
-             mode: str | None = None, yes: bool = False) -> None:
-    svc = Services.boot()
-    if backend_name:
-        svc.config.default_backend = BackendName(backend_name)
+             mode: str | None = None, yes: bool = False, *, workspace: str | None = None,
+             resume: str | None = None, as_json: bool = False, quiet: bool = False,
+             plain: bool = False) -> None:
+    svc = Services.boot(workspace=workspace)
+    sess = svc.sessions.resolve(resume) if resume else None
+    if resume and sess is None:
+        _failure(f"No unique session matches {resume!r}; see 'oml chats list'.", 1, as_json)
+    if sess and not backend_name:
+        backend_name = sess.backend
+    try:
+        if backend_name:
+            svc.config.default_backend = BackendName(backend_name)
+    except ValueError:
+        _failure(f"Unknown backend {backend_name!r}.", 1, as_json)
     if mode:
         try:
             m = PermissionMode(mode)
         except ValueError:
-            console.print(f"[red]unknown mode {mode!r}[/red]")
-            raise typer.Exit(1) from None
+            _failure(f"Unknown mode {mode!r}.", 1, as_json)
         if m is PermissionMode.FULL_ACCESS:
-            console.print("[red]full_access cannot be granted from the CLI; use the TUI phrase confirmation.[/red]")
-            raise typer.Exit(1)
-        svc.config.permission_mode = m
-    be = svc.backend()
-    ok, _ = asyncio.run(_health(be))
+            _failure("full_access requires interactive phrase confirmation.", 1, as_json)
+        # Route through set_mode so the policy_generation bump, runtime
+        # retirement and grant invalidation happen exactly like /mode does.
+        svc.set_mode(m)
+    try:
+        be = svc.backend()
+        ok, _ = asyncio.run(_health(be))
+        if not ok and svc.may_autostart():
+            ok = asyncio.run(be.ensure_running()).ok
+    except Exception as exc:
+        _failure(f"Backend unavailable: {exc}. Run 'oml doctor'.", 3, as_json)
     if not ok:
-        res = asyncio.run(be.ensure_running())
-        if not res.ok:
-            console.print(f"[red]{res.message}[/red]")
-            for line in res.instructions:
-                console.print(f"  [dim]{line}[/dim]")
-            raise typer.Exit(3)
+        _failure("Backend unavailable. Start it explicitly with 'oml backend --start'.", 3, as_json)
     from .sessions import make_title
 
-    sess = svc.sessions.create(
+    sess = sess or svc.sessions.create(
         title=make_title(task), first_message="", backend=be.name.value,
         model=model or svc.current_model(), permission_mode=svc.config.permission_mode.value,
         workspace=str(svc.workspace),
@@ -370,6 +435,8 @@ def _run_one(task: str, model: str | None = None, backend_name: str | None = Non
     buf = Text()
 
     def on_event(ev: dict) -> None:
+        if as_json or quiet or plain:
+            return
         t = ev.get("type")
         if t == "token":
             buf.append(ev.get("text", ""))
@@ -377,7 +444,7 @@ def _run_one(task: str, model: str | None = None, backend_name: str | None = Non
             console.print(f"[cyan]⚙ {ev['name']} ({ev['level']}, approval={'yes' if ev['approval'] else 'no'})[/cyan]")
         elif t == "tool_result":
             mark = "✅" if ev.get("ok") else "❌"
-            console.print(f"{mark} {ev.get('name')}: {(ev.get('output') or '')[:200]}")
+            errors.print(f"{mark} {ev.get('name')}: {(ev.get('output') or '')[:200]}")
         elif t == "retry":
             console.print(f"[yellow]↻ {ev.get('reason','')[:150]}[/yellow]")
         elif t == "error":
@@ -386,19 +453,48 @@ def _run_one(task: str, model: str | None = None, backend_name: str | None = Non
     from .safety import ApprovalOutcome
 
     async def prompt_fn(req) -> ApprovalOutcome:
-        if yes:
-            return ApprovalOutcome.APPROVED_SESSION
-        label = f"allow [bold]{req.tool}[/bold]? {req.preview[:200]}"
-        ans = await asyncio.to_thread(console.input, label + " [y/N] ")
+        if yes and req.tool != "run_command":
+            return ApprovalOutcome.APPROVED
+        if as_json or not sys.stdin.isatty():
+            return ApprovalOutcome.DENIED
+        label = f"Allow {req.tool}? {req.preview[:200]}"
+        ans = await asyncio.to_thread(errors.input, label + " [y/N] ")
         return ApprovalOutcome.APPROVED if ans.strip().lower() in ("y", "yes") else ApprovalOutcome.DENIED
 
+    from .agents.runtime import AgentCancelled, TurnResult
+
     try:
-        with Live(buf, console=console, transient=True):
+        display = contextlib.nullcontext() if as_json or quiet or plain else Live(buf, console=console, transient=True)
+        with display:
             result = asyncio.run(rt.run_turn(
                 sess, task, model=model, on_event=on_event, prompt_fn=prompt_fn,
             ))
-    finally:
+    except (KeyboardInterrupt, AgentCancelled):
+        result = TurnResult(text="", cancelled=True, error="cancelled")
+    except Exception as exc:
+        result = TurnResult(text="", error=str(exc))
+    try:
         svc.sessions.save(sess)
+    except Exception as exc:
+        _failure(f"Session save failed: {exc}", 4, as_json)
+    code = 130 if result.cancelled else 4 if result.error else 0
+    if as_json:
+        print(json.dumps({"ok": code == 0, "text": result.text, "error": result.error,
+                          "session": sess.id, "model": sess.model, "saved": True,
+                          "cancelled": result.cancelled, "usage": result.usage,
+                          "steps": result.steps, "exit_code": code}, default=str))
+    elif quiet or plain:
+        print(result.text)
+    else:
+        console.print(result.text, markup=False, highlight=False)
+        errors.print(f"Saved session {sess.id}")
+    if result.error:
+        errors.print(result.error)
+    if code:
+        raise typer.Exit(code)
+    if as_json or quiet or plain:
+        return
+
     bits = [sess.model or ""]
     tok = (result.usage or {}).get("eval_count")
     if tok:
@@ -411,10 +507,30 @@ def _run_one(task: str, model: str | None = None, backend_name: str | None = Non
         bits.append(f"{result.steps} step{'s' if result.steps > 1 else ''}")
     if result.calls:
         bits.append(f"{len(result.calls)} tool call{'s' if len(result.calls) > 1 else ''}")
-    console.print(f"\n[bold]result:[/bold] {result.text}")
-    console.print("[dim]· " + " · ".join(b for b in bits if b) + "[/dim]")
-    if result.error:
-        raise typer.Exit(4)
+    errors.print("· " + " · ".join(b for b in bits if b), markup=False, highlight=False)
+
+
+@app.command(rich_help_panel="Diagnostics")
+def status(
+    ctx: typer.Context,
+    workspace: str | None = typer.Option(None, "--workspace", "-w"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Show local configuration status without connecting to a backend."""
+    from .config import ConfigStore
+
+    store = ConfigStore()
+    cfg = store.load()
+    workspace, _ = _options(ctx, workspace)
+    data = {"version": __version__, "backend": cfg.default_backend.value,
+            "workspace": str(Path(workspace or cfg.workspace or paths.workspace_root()).expanduser().resolve()),
+            "mode": "dangerous" if cfg.permission_mode is PermissionMode.FULL_ACCESS else cfg.permission_mode.value,
+            "operation_mode": cfg.agent.op_mode, "problems": store.last_problems}
+    if as_json:
+        print(json.dumps(data))
+    else:
+        for key, value in data.items():
+            console.print(f"{key}: {value}", markup=False, highlight=False)
 
 
 @app.command()
@@ -424,8 +540,15 @@ def logs(n: int = typer.Option(30, "-n", "--lines")) -> None:
     if not p.is_file():
         console.print("[dim]no log file yet[/dim]")
         return
-    lines = p.read_text(errors="replace").splitlines()
-    for ln in lines[-n:]:
+    count = max(0, min(int(n), 1000))
+    if count == 0:
+        return
+    try:
+        lines = read_tail(p).splitlines()
+    except (OSError, ValueError) as exc:
+        console.print(f"[yellow]cannot read log safely: {exc}[/yellow]")
+        return
+    for ln in lines[-count:]:
         console.print(ln)
 
 
@@ -547,6 +670,58 @@ def chats_export(
     console.print(f"[green]exported → {p}[/green]")
 
 
+@chats_app.command("search")
+def chats_search(
+    term: str = typer.Argument(..., help="Search text (FTS over messages + redacted tool metadata)."),
+    limit: int = typer.Option(10, "--limit", "-n", min=1, max=50),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    """Full-text search across saved chats (trash excluded, secrets redacted)."""
+    svc = Services.boot()
+    hits = svc.sessions.search(term, limit)
+    if as_json:
+        print(json.dumps({"results": hits}))
+        return
+    if not hits:
+        console.print("[dim]no matches[/dim]")
+        return
+    t = Table(title=f"search: {term}")
+    for col in ("id", "updated", "title", "snippet"):
+        t.add_column(col, overflow="fold")
+    for h in hits:
+        t.add_row(str(h["session_id"]), str(h["updated_iso"]), str(h["title"])[:44], str(h["snippet"]))
+    console.print(t)
+
+
+@app.command()
+def state(as_json: bool = typer.Option(False, "--json")) -> None:
+    """Show the agent machine state (idle/working/blocked/done/error)."""
+    import time as _time
+
+    from .secureio import read_private_json
+
+    path = paths.global_home() / "state.json"
+    data: dict = {"state": "idle", "session_id": None, "turn": 0, "backend": "", "model": "",
+                  "pending_approval_id": None, "seq": 0, "ts": 0.0}
+    try:
+        loaded = read_private_json(path)
+        if isinstance(loaded, dict):
+            data.update({k: loaded[k] for k in data if k in loaded})
+    except (OSError, ValueError):
+        pass  # missing/unreadable state ⇒ idle defaults
+    age = _time.time() - float(data["ts"] or 0.0)
+    if data["state"] in ("working", "blocked") and float(data["ts"] or 0.0) > 0 and age > 300:
+        errors.print(f"warning: state file is stale ({int(age)}s old) — the agent may have exited")
+    if as_json:
+        print(json.dumps(data))
+    else:
+        console.print(f"state: {data['state']} · turn {data['turn']} · session {data['session_id'] or '—'} · "
+                      f"backend {data['backend'] or '—'} · model {data['model'] or '—'}",
+                      markup=False, highlight=False)
+        if data["pending_approval_id"]:
+            console.print(f"pending approval: {data['pending_approval_id']}", markup=False, highlight=False)
+
+
 @app.command("skills")
 def skills_cmd(
     import_path: str | None = typer.Argument(None, help="Folder containing SKILL.md (or a parent of skill folders) to import."),
@@ -591,14 +766,12 @@ def gui(
     the policy engine and the approval flow, bound to 127.0.0.1 with a
     per-process token.
     """
-    import shutil
     import subprocess
-    import tempfile
     import time
     import webbrowser
 
     if stop:
-        stopf = Path.home() / ".ohmyllm" / "gui-web.pid"
+        stopf = paths.global_home() / "gui-web.pid"
         if stopf.is_file():
             try:
                 os.kill(int(stopf.read_text().strip()), 15)
@@ -610,10 +783,7 @@ def gui(
             console.print("[dim]no web console running[/dim]")
         return
 
-    env = dict(os.environ)
-    env["OMLLM_PYTHON"] = sys.executable
-    if workspace:
-        env["OMLLM_WORKSPACE"] = str(Path(workspace).expanduser().resolve())
+    env = _bridge_environment(workspace)
 
     native = None
     if not browser:
@@ -626,8 +796,8 @@ def gui(
             if (base / ".git").exists():
                 break
         cand.append(Path.home() / ".local" / "bin" / "ohmyllm-gui")
-        if w := shutil.which("ohmyllm-gui"):
-            cand.insert(0, Path(w))
+        if executable := trusted_executable("ohmyllm-gui"):
+            cand.insert(0, Path(executable))
         native = next((c for c in cand if c.is_file()), None)
 
     if native is not None:
@@ -635,7 +805,7 @@ def gui(
         # optional localhost web console
         subprocess.Popen([str(native)], env=env, start_new_session=True)
         console.print(f"[green]native console launching in the background[/green] [dim]({native})[/dim]")
-        stopf = Path.home() / ".ohmyllm" / "gui-web.pid"
+        stopf = paths.global_home() / "gui-web.pid"
         if stopf.is_file():
             try:
                 import os as _os
@@ -644,31 +814,33 @@ def gui(
                 return
             except (ValueError, OSError):
                 pass
-        wport = Path(tempfile.gettempdir()) / f"ohmyllm-gui-web-{os.getpid()}.port"
-        wport.unlink(missing_ok=True)
+        launch_dir, wport = _new_bridge_discovery("native-web-")
         wargs = [sys.executable, "-m", "ohmyllm.bridge", "--port-file", str(wport)]
         wchild = subprocess.Popen(wargs, env=env, start_new_session=True,
                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        stopf.parent.mkdir(parents=True, exist_ok=True)
-        stopf.write_text(str(wchild.pid))
-        deadline0 = time.time() + 8
-        while time.time() < deadline0:
-            if wport.is_file() and len(wport.read_text().strip().split(" ")) == 2:
-                a, t = wport.read_text().strip().split(" ")
-                console.print(f"[bold]web console (optional)[/bold] → [link]http://127.0.0.1:{a}/?t={t}[/link]")
-                console.print("[dim]loopback only · token required · `oml gui --stop` closes it[/dim]")
-                return
-            time.sleep(0.1)
-        console.print("[dim]web console did not come up in 8s — the native window still works[/dim]")
-        return
+        atomic_write(stopf, str(wchild.pid))
+        try:
+            deadline0 = time.time() + 8
+            while time.time() < deadline0:
+                if wport.is_file():
+                    a, t = read_bridge_discovery(wport)
+                    url = f"http://127.0.0.1:{a}/#token={t}"
+                    webbrowser.open(url)
+                    console.print(f"[bold]web console (optional)[/bold] opened at http://127.0.0.1:{a}/")
+                    console.print("[dim]loopback only · token handed to the browser only · `oml gui --stop` closes it[/dim]")
+                    return
+                time.sleep(0.1)
+            console.print("[dim]web console did not come up in 8s — the native window still works[/dim]")
+            return
+        finally:
+            _cleanup_bridge_discovery(launch_dir, wport)
 
     if not browser:
         console.print("[yellow]Native window not built yet — falling back to the browser console.[/yellow]")
         console.print("[dim]To get the native app: install Tauri prerequisites, then "
                       "run `cargo build --release` inside `gui/src-tauri` (or set OMLLM_GUI_BIN).[/dim]")
 
-    port_file = Path(tempfile.gettempdir()) / f"ohmyllm-gui-{os.getpid()}.port"
-    port_file.unlink(missing_ok=True)
+    launch_dir, port_file = _new_bridge_discovery("browser-")
     args = [sys.executable, "-m", "ohmyllm.bridge"]
     if port:
         args += ["--port", str(port)]
@@ -676,12 +848,10 @@ def gui(
     child = subprocess.Popen(args, env=env)
     try:
         deadline = time.time() + 15
-        info = ""
         while time.time() < deadline:
             if port_file.exists():
-                info = port_file.read_text().strip()
-                if len(info.split(" ")) >= 2:
-                    break
+                actual, token = read_bridge_discovery(port_file)
+                break
             if child.poll() is not None:
                 console.print("[red]bridge failed to start — run `ohmyllm doctor` for details.[/red]")
                 raise typer.Exit(1)
@@ -690,13 +860,15 @@ def gui(
             console.print("[red]bridge did not come up within 15s[/red]")
             child.kill()
             raise typer.Exit(1)
-        actual, token = info.split(" ", 1)
-        url = f"http://127.0.0.1:{actual}/?t={token}"
-        console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → [link]{url}[/link]\n"
-                            f"[dim]loopback only · token required · Ctrl+C closes the session[/dim]",
+        base_url = f"http://127.0.0.1:{actual}/"
+        url = f"{base_url}#token={token}"
+        console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → {base_url}\n"
+                            f"[dim]loopback only · capability token is never printed · Ctrl+C closes the session[/dim]",
                             border_style="dim"))
         if not no_open:
             webbrowser.open(url)
+        else:
+            console.print("[dim]--no-open suppresses secure token handoff; rerun without it to authenticate.[/dim]")
         while child.poll() is None:
             time.sleep(0.3)
     except KeyboardInterrupt:
@@ -706,10 +878,35 @@ def gui(
             child.terminate()
             with contextlib.suppress(subprocess.TimeoutExpired):
                 child.wait(timeout=4)
-        port_file.unlink(missing_ok=True)
+        _cleanup_bridge_discovery(launch_dir, port_file)
 
 
 # ------------------------------------------------------------------ helpers
+def _bridge_environment(workspace: str | None = None) -> dict[str, str]:
+    extra = {"OMLLM_PYTHON": sys.executable}
+    for key in ("OMLLM_HOME", "OMLLM_WORKSPACE"):
+        if value := os.environ.get(key):
+            extra[key] = value
+    if gui_bin := os.environ.get("OMLLM_GUI_BIN"):
+        if validated := trusted_executable(gui_bin):
+            extra["OMLLM_GUI_BIN"] = validated
+    if workspace:
+        extra["OMLLM_WORKSPACE"] = str(Path(workspace).expanduser().resolve())
+    return sanitized_environment(extra)
+
+
+def _new_bridge_discovery(prefix: str) -> tuple[Path, Path]:
+    launch_dir = private_temp_dir(paths.global_home() / "bridge-launches", prefix)
+    return launch_dir, launch_dir / "bridge.json"
+
+
+def _cleanup_bridge_discovery(launch_dir: Path, discovery: Path) -> None:
+    with contextlib.suppress(OSError):
+        discovery.unlink()
+    with contextlib.suppress(OSError):
+        launch_dir.rmdir()
+
+
 async def _health(be) -> tuple[bool, dict]:
     return await be.health()
 

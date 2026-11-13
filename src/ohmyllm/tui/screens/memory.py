@@ -56,8 +56,8 @@ class MemoryScreen(Screen):
         if text == soul.read():
             self.app.notify("no changes")
             return
-        soul.backup()
-        soul.path.write_text(text, encoding="utf-8")
+        # Keep manual edits on the same private, atomic, backed-up path as tools.
+        soul.write(text)
         self.app.notify("soul.md saved (backup created)")
         self._recent()
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ohmyllm"
-version = "0.1.0"
+version = "0.1.1"
 description = "OhMyLLM - local-first, privacy-respecting agentic AI platform for Ollama and LM Studio"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -38,6 +38,7 @@ dev = [
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
     "mypy>=1.10",
+    "playwright",
 ]
 
 [project.scripts]
@@ -60,6 +61,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 addopts = "-q"
 
 [tool.ruff]

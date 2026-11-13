@@ -90,6 +90,35 @@ def test_assess_fail_open_server_down():
     assert not v.flagged and v.error
 
 
+def test_assess_disables_proxy_and_redirect_inheritance(monkeypatch):
+    captured: dict = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"answers": {"dangerous": {"noul": 0.1}}}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("httpx.AsyncClient", FakeClient)
+    verdict = asyncio.run(assess(GuardSettings(), "run_command", {"command": "echo safe"}))
+    assert verdict.error is None
+    assert captured["trust_env"] is False
+    assert captured["follow_redirects"] is False
+
+
 def _make_rt(svc):
     be = svc.backend()
     rt = AgentRuntime(
@@ -122,13 +151,13 @@ def test_guard_forces_approval_in_dangerous_mode(oml_env, svc):
         sess = svc.new_session()
         res = asyncio.run(rt.run_turn(sess, "run it", prompt_fn=prompt_fn, model="mock-tool-7b"))
         assert asked, "guard must force an approval prompt even in dangerous mode"
-        assert "GUARD 95%" in " ".join(asked[0].decision.reasons)
+        assert "fresh one-shot shell approval required" in asked[0].decision.reasons
         assert any(c["name"] == "run_command" and c["status"] == "denied" for c in res.calls)
     finally:
         srv.shutdown()
 
 
-def test_guard_offline_fails_open_in_dangerous_mode(oml_env, svc):
+def test_guard_offline_preserves_mandatory_shell_approval(oml_env, svc):
     svc.config.permission_mode = PermissionMode.DANGEROUS
     svc.config.guard = GuardSettings(enabled=True, base_url="http://127.0.0.1:1", timeout_s=1)
     be = svc.backend()
@@ -146,5 +175,5 @@ def test_guard_offline_fails_open_in_dangerous_mode(oml_env, svc):
     rt = _make_rt(svc)
     sess = svc.new_session()
     res = asyncio.run(rt.run_turn(sess, "run it", prompt_fn=prompt_fn, model="mock-tool-7b"))
-    assert not asked, "dead guard must not block dangerous-mode work"
-    assert any(c["name"] == "run_command" and c["status"] == "ok" for c in res.calls)
+    assert asked, "offline advisory guard must not bypass mandatory shell approval"
+    assert any(c["name"] == "run_command" and c["status"] == "denied" for c in res.calls)

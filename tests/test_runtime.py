@@ -53,8 +53,8 @@ def test_write_outside_workspace_blocked_and_continues(oml_env, svc):
     res = asyncio.run(rt.run_turn(sess, "write something", model="mock-tool-7b"))
     assert not any(c["status"] == "ok" and c["name"] == "write_file" for c in res.calls)
     assert res.text == "Sorry, that was blocked."
-    # sandboxed now asks instead of hard-blocking; a non-interactive run fails closed
-    assert "DENIED" in json.dumps(sess.messages)
+    # Sandbox confinement is a hard block, not an approval bypass.
+    assert "BLOCKED" in json.dumps(sess.messages)
     import pathlib
 
     assert not pathlib.Path("/tmp/definitely-outside-omllm.txt").exists()
@@ -63,7 +63,7 @@ def test_write_outside_workspace_blocked_and_continues(oml_env, svc):
 
 def test_approval_deny_then_session_allow(oml_env, svc):
     sess = svc.new_session()
-    outcomes = iter([ApprovalOutcome.DENIED, ApprovalOutcome.APPROVED_SESSION])
+    outcomes = iter([ApprovalOutcome.DENIED, ApprovalOutcome.APPROVED_SESSION, ApprovalOutcome.APPROVED_SESSION])
     seen_requests = []
 
     async def prompt(req):
@@ -91,9 +91,31 @@ def test_approval_deny_then_session_allow(oml_env, svc):
     asyncio.run(turn())
     assert (svc.workspace / "notes.txt").read_text() == "hello"
     assert len(seen_requests) == 2  # second prompt (session rule from first approve? no—first was deny)
-    # third turn: session rule preapproved, prompt NOT called
+    # Creating a file changes its identity; the next write needs renewed consent.
     asyncio.run(turn())
-    assert len(seen_requests) == 2
+    assert len(seen_requests) == 3
+
+
+def test_approval_is_denied_when_policy_generation_changes_while_awaiting(oml_env, svc):
+    be = svc.backend()
+    call = {"id": "w-stale", "function": {"name": "write_file",
+            "arguments": {"path": "stale.txt", "content": "must not commit"}}}
+    be.script = [
+        [ChatChunk(content="", tool_calls=[call], done=True)],
+        [ChatChunk(content="policy changed; write skipped"), ChatChunk(done=True)],
+    ]
+    rt = make_rt(svc)
+    sess = svc.new_session()
+
+    async def approve_after_transition(_request):
+        svc.config.policy_generation += 1
+        return ApprovalOutcome.APPROVED
+
+    res = asyncio.run(rt.run_turn(
+        sess, "write a note", model="mock-tool-7b", prompt_fn=approve_after_transition,
+    ))
+    assert not (svc.workspace / "stale.txt").exists()
+    assert any(call_result["status"] == "denied" for call_result in res.calls)
 
 
 def test_model_cannot_change_its_own_mode(oml_env, svc):
@@ -317,7 +339,7 @@ def test_step_limit_forces_final_answer(oml_env, svc):
     assert not res.text.startswith("(stopped"), "placeholder answer is forbidden"
 
 
-def test_duplicate_tool_call_is_cached(oml_env, svc):
+def test_duplicate_tool_calls_are_reauthorized_and_executed(oml_env, svc):
     be = svc.backend()
     call = {"id": "c1", "type": "function", "function": {"name": "list_dir", "arguments": "{}"}}
     be.script.append([ChatChunk(tool_calls=[call], done=True, finish="tool_calls")])
@@ -327,9 +349,9 @@ def test_duplicate_tool_call_is_cached(oml_env, svc):
     sess = svc.new_session()
     res = asyncio.run(rt.run_turn(sess, "list twice", model="mock-tool-7b"))
     statuses = [c["status"] for c in res.calls]
-    assert "cached" in statuses, f"second identical call must hit cache: {statuses}"
+    assert statuses == ["ok", "ok"], "lossy result caching must not bypass later policy checks"
     tool_msgs = [m for m in sess.messages if m["role"] == "tool"]
-    assert any("duplicate" in str(m["content"]) for m in tool_msgs)
+    assert len(tool_msgs) == 2
 
 
 def test_reasoning_channel_streams_and_persists(oml_env, svc):

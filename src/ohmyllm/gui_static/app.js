@@ -1,110 +1,63 @@
-/* OhMyLLM console front-end. Vanilla, no deps, talks to the local bridge. */
+/* OhMyLLM console — dark OpenCode × Qoder hybrid front-end.
+   Vanilla, no deps, fully offline. Talks to the local loopback bridge.
+   Security UX is ported 1:1 from the previous console (approvals, IME guards,
+   drafts, dirty editors, fail-closed expiry) and restyled. */
 "use strict";
 
-/* provider brand glyphs — paths from simple-icons (CC0-4.0, https://simpleicons.org) */
+/* provider brand glyphs (simple-icons, CC0) — offline data, letter fallback */
 const PROV_ICONS = {
   "openrouter": ["#94A3B8", "M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"],
-  "anthropic": ["#191919", "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"],
-  "openai": ["#412991", "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"],
+  "anthropic": ["#D97757", "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"],
+  "openai": ["#74AA9C", "M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"],
   "google": ["#8E75B2", "M11.04 19.32Q12 21.51 12 24q0-2.49.93-4.68.96-2.19 2.58-3.81t3.81-2.55Q21.51 12 24 12q-2.49 0-4.68-.93a12.3 12.3 0 0 1-3.81-2.58 12.3 12.3 0 0 1-2.58-3.81Q12 2.49 12 0q0 2.49-.96 4.68-.93 2.19-2.55 3.81a12.3 12.3 0 0 1-3.81 2.58Q2.49 12 0 12q2.49 0 4.68.96 2.19.93 3.81 2.55t2.55 3.81"],
-  "deepseek": ["#5786FE", "M23.748 4.651c-.254-.124-.364.113-.512.233-.051.04-.094.09-.137.137-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.155-.708-.311-.955-.65-.172-.24-.219-.509-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.094.172.187.129.323-.082.28-.18.553-.266.833-.055.179-.137.218-.328.14a5.5 5.5 0 0 1-1.737-1.179c-.857-.828-1.631-1.743-2.597-2.46a12 12 0 0 0-.689-.47c-.985-.957.13-1.743.387-1.836.27-.098.094-.433-.778-.428-.872.003-1.67.295-2.687.685a3 3 0 0 1-.465.136 9.6 9.6 0 0 0-2.883-.101c-1.885.21-3.39 1.1-4.497 2.622C.082 8.776-.231 10.854.152 13.02c.403 2.284 1.568 4.175 3.36 5.653 1.857 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.132-.284 4.994-1.86.47.234.962.328 1.78.398.629.058 1.235-.031 1.705-.129.735-.155.684-.836.418-.961-2.155-1.004-1.682-.595-2.112-.926 1.095-1.295 2.768-3.598 3.284-6.733.05-.346.115-.834.108-1.114-.004-.171.035-.238.23-.257a4.2 4.2 0 0 0 1.545-.475c1.397-.763 1.96-2.016 2.093-3.517.02-.23-.004-.467-.247-.588M11.58 18.168c-2.088-1.642-3.101-2.183-3.52-2.16-.39.024-.32.472-.234.763.09.288.207.487.371.74.114.167.192.416-.113.603-.673.416-1.842-.14-1.897-.168-1.361-.801-2.5-1.86-3.301-3.306-.775-1.393-1.225-2.888-1.299-4.482-.02-.385.094-.522.477-.592a4.7 4.7 0 0 1 1.53-.038c2.131.311 3.946 1.264 5.467 2.774.868.86 1.525 1.887 2.202 2.89.72 1.066 1.494 2.082 2.48 2.915.348.291.626.513.892.677-.802.09-2.14.109-3.055-.615zm1.001-6.44a.306.306 0 0 1 .415-.287.3.3 0 0 1 .113.074.3.3 0 0 1 .086.214c0 .17-.136.307-.308.307a.303.303 0 0 1-.306-.307m3.11 1.596c-.2.081-.4.151-.591.16a1.25 1.25 0 0 1-.798-.254c-.274-.23-.47-.358-.551-.758a1.7 1.7 0 0 1 .015-.588c.07-.327-.007-.537-.238-.727-.188-.156-.426-.199-.689-.199a.6.6 0 0 1-.254-.078.253.253 0 0 1-.114-.358 1 1 0 0 1 .192-.21c.356-.202.767-.136 1.146.016.352.144.618.408 1.001.782.392.451.462.576.685.915.176.264.336.536.446.848.066.194-.02.353-.25.45"],
-  "opencode": ["#000000", "M22 24H2V0h20zM17 4.8H7v14.4h10z"],
+  "deepseek": ["#5786FE", "M23.748 4.651c-.254-.124-.364.113-.512.233-.051.04-.094.09-.137.137-.372.397-.806.657-1.373.626-.829-.046-1.537.214-2.163.848-.133-.782-.575-1.248-1.247-1.548-.352-.155-.708-.311-.955-.65-.172-.24-.219-.509-.305-.774-.055-.16-.11-.323-.293-.35-.2-.031-.278.136-.356.276-.313.572-.434 1.202-.422 1.84.027 1.436.633 2.58 1.838 3.393.137.094.172.187.129.323-.082.28-.18.553-.266.833-.055.179-.137.218-.328.14a5.5 5.5 0 0 1-1.737-1.179c-.857-.828-1.631-1.743-2.597-2.46a12 12 0 0 0-.689-.47c-.985-.957.13-1.743.387-1.836.27-.098.094-.433-.778-.428-.872.003-1.67.295-2.687.685a3 3 0 0 1-.465.136 9.6 9.6 0 0 0-2.883-.101c-1.885.21-3.39 1.1-4.497 2.622C.082 8.776-.231 10.854.152 13.02c.403 2.284 1.568 4.175 3.36 5.653 1.857 1.533 3.997 2.284 6.438 2.14 1.482-.085 3.132-.284 4.994-1.86.47.234.962.328 1.78.398.629.058 1.235-.031 1.705-.129.735-.155.684-.836.418-.961-2.155-1.004-1.682-.595-2.112-.926 1.095-1.295 2.768-3.598 3.284-6.733.05-.346.115-.834.108-1.114-.004-.171.035-.238.23-.257a4.2 4.2 0 0 0 1.545-.475c1.397-.763 1.96-2.016 2.093-3.517.02-.23-.004-.467-.247-.588"],
   "mistral": ["#FA520F", "M17.143 3.429v3.428h-3.429v3.429h-3.428V6.857H6.857V3.43H3.43v13.714H0v3.428h10.286v-3.428H6.857v-3.429h3.429v3.429h3.429v-3.429h3.428v3.429h-3.428v3.428H24v-3.428h-3.43V3.429z"],
-  "vercel": ["#000000", "m12 1.608 12 20.784H0Z"],
-  "alibaba-token-plan": ["#FF6A00", "M3.996 4.517h5.291L8.01 6.324 4.153 7.506a1.668 1.668 0 0 0-1.165 1.601v5.786a1.668 1.668 0 0 0 1.165 1.6l3.857 1.183 1.277 1.807H3.996A3.996 3.996 0 0 1 0 15.487V8.513a3.996 3.996 0 0 1 3.996-3.996m16.008 0h-5.291l1.277 1.807 3.857 1.182c.715.227 1.17.889 1.165 1.601v5.786a1.668 1.668 0 0 1-1.165 1.6l-3.857 1.183-1.277 1.807h5.291A3.996 3.996 0 0 0 24 15.487V8.513a3.996 3.996 0 0 0-3.996-3.996m-4.007 8.345H8.002v-1.804h7.995Z"],
-  "alibaba-coding-plan": ["#FF6A00", "M3.996 4.517h5.291L8.01 6.324 4.153 7.506a1.668 1.668 0 0 0-1.165 1.601v5.786a1.668 1.668 0 0 0 1.165 1.6l3.857 1.183 1.277 1.807H3.996A3.996 3.996 0 0 1 0 15.487V8.513a3.996 3.996 0 0 1 3.996-3.996m16.008 0h-5.291l1.277 1.807 3.857 1.182c.715.227 1.17.889 1.165 1.601v5.786a1.668 1.668 0 0 1-1.165 1.6l-3.857 1.183-1.277 1.807h5.291A3.996 3.996 0 0 0 24 15.487V8.513a3.996 3.996 0 0 0-3.996-3.996m-4.007 8.345H8.002v-1.804h7.995Z"],
-  "alibaba": ["#FF6A00", "M3.996 4.517h5.291L8.01 6.324 4.153 7.506a1.668 1.668 0 0 0-1.165 1.601v5.786a1.668 1.668 0 0 0 1.165 1.6l3.857 1.183 1.277 1.807H3.996A3.996 3.996 0 0 1 0 15.487V8.513a3.996 3.996 0 0 1 3.996-3.996m16.008 0h-5.291l1.277 1.807 3.857 1.182c.715.227 1.17.889 1.165 1.601v5.786a1.668 1.668 0 0 1-1.165 1.6l-3.857 1.183-1.277 1.807h5.291A3.996 3.996 0 0 0 24 15.487V8.513a3.996 3.996 0 0 0-3.996-3.996m-4.007 8.345H8.002v-1.804h7.995Z"],
-  "moonshot": ["#000000", "m1.053 16.91 9.538 2.55a21 20.981 0 0 0 .06 2.031l5.956 1.592a12 11.99 0 0 1-15.554-6.172m-1.02-5.79 11.352 3.035a21 20.981 0 0 0-.469 2.01l10.817 2.89a12 11.99 0 0 1-1.845 2.004L.658 15.918a12 11.99 0 0 1-.625-4.796m1.593-5.146L13.573 9.17a21 20.981 0 0 0-1.01 1.874l11.297 3.02a21 20.981 0 0 1-.67 2.362l-11.55-3.087L.125 10.26a12 11.99 0 0 1 1.499-4.285ZM6.067 1.58l11.285 3.016a21 20.981 0 0 0-1.688 1.719l7.824 2.091a21 20.981 0 0 1 .513 2.664L2.107 5.218a12 11.99 0 0 1 3.96-3.638M21.68 4.866 7.222 1.003A12 11.99 0 0 1 21.68 4.866"],
-  "nvidia": ["#76B900", "M8.948 8.798v-1.43a6.7 6.7 0 0 1 .424-.018c3.922-.124 6.493 3.374 6.493 3.374s-2.774 3.851-5.75 3.851c-.398 0-.787-.062-1.158-.185v-4.346c1.528.185 1.837.857 2.747 2.385l2.04-1.714s-1.492-1.952-4-1.952a6.016 6.016 0 0 0-.796.035m0-4.735v2.138l.424-.027c5.45-.185 9.01 4.47 9.01 4.47s-4.08 4.964-8.33 4.964c-.37 0-.733-.035-1.095-.097v1.325c.3.035.61.062.91.062 3.957 0 6.82-2.023 9.593-4.408.459.371 2.34 1.263 2.73 1.652-2.633 2.208-8.772 3.984-12.253 3.984-.335 0-.653-.018-.971-.053v1.864H24V4.063zm0 10.326v1.131c-3.657-.654-4.673-4.46-4.673-4.46s1.758-1.944 4.673-2.262v1.237H8.94c-1.528-.186-2.73 1.245-2.73 1.245s.68 2.412 2.739 3.11M2.456 10.9s2.164-3.197 6.5-3.533V6.201C4.153 6.59 0 10.653 0 10.653s2.35 6.802 8.948 7.42v-1.237c-4.84-.6-6.492-5.936-6.492-5.936z"],
-  "github": ["#181717", "M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"],
-  "huggingface": ["#FFD21E", "M12.025 1.13c-5.77 0-10.449 4.647-10.449 10.378 0 1.112.178 2.181.503 3.185.064-.222.203-.444.416-.577a.96.96 0 0 1 .524-.15c.293 0 .584.124.84.284.278.173.48.408.71.694.226.282.458.611.684.951v-.014c.017-.324.106-.622.264-.874s.403-.487.762-.543c.3-.047.596.06.787.203s.31.313.4.467c.15.257.212.468.233.542.01.026.653 1.552 1.657 2.54.616.605 1.01 1.223 1.082 1.912.055.537-.096 1.059-.38 1.572.637.121 1.294.187 1.967.187.657 0 1.298-.063 1.921-.178-.287-.517-.44-1.041-.384-1.581.07-.69.465-1.307 1.081-1.913 1.004-.987 1.647-2.513 1.657-2.539.021-.074.083-.285.233-.542.09-.154.208-.323.4-.467a1.08 1.08 0 0 1 .787-.203c.359.056.604.29.762.543s.247.55.265.874v.015c.225-.34.457-.67.683-.952.23-.286.432-.52.71-.694.257-.16.547-.284.84-.285a.97.97 0 0 1 .524.151c.228.143.373.388.43.625l.006.04a10.3 10.3 0 0 0 .534-3.273c0-5.731-4.678-10.378-10.449-10.378M8.327 6.583a1.5 1.5 0 0 1 .713.174 1.487 1.487 0 0 1 .617 2.013c-.183.343-.762-.214-1.102-.094-.38.134-.532.914-.917.71a1.487 1.487 0 0 1 .69-2.803m7.486 0a1.487 1.487 0 0 1 .689 2.803c-.385.204-.536-.576-.916-.71-.34-.12-.92.437-1.103.094a1.487 1.487 0 0 1 .617-2.013 1.5 1.5 0 0 1 .713-.174m-10.68 1.55a.96.96 0 1 1 0 1.921.96.96 0 0 1 0-1.92m13.838 0a.96.96 0 1 1 0 1.92.96.96 0 0 1 0-1.92M8.489 11.458c.588.01 1.965 1.157 3.572 1.164 1.607-.007 2.984-1.155 3.572-1.164.196-.003.305.12.305.454 0 .886-.424 2.328-1.563 3.202-.22-.756-1.396-1.366-1.63-1.32q-.011.001-.02.006l-.044.026-.01.008-.03.024q-.018.017-.035.036l-.032.04a1 1 0 0 0-.058.09l-.014.025q-.049.088-.11.19a1 1 0 0 1-.083.116 1.2 1.2 0 0 1-.173.18q-.035.029-.075.058a1.3 1.3 0 0 1-.251-.243 1 1 0 0 1-.076-.107c-.124-.193-.177-.363-.337-.444-.034-.016-.104-.008-.2.022q-.094.03-.216.087-.06.028-.125.063l-.13.074q-.067.04-.136.086a3 3 0 0 0-.135.096 3 3 0 0 0-.26.219 2 2 0 0 0-.12.121 2 2 0 0 0-.106.128l-.002.002a2 2 0 0 0-.09.132l-.001.001a1.2 1.2 0 0 0-.105.212q-.013.036-.024.073c-1.139-.875-1.563-2.317-1.563-3.203 0-.334.109-.457.305-.454m.836 10.354c.824-1.19.766-2.082-.365-3.194-1.13-1.112-1.789-2.738-1.789-2.738s-.246-.945-.806-.858-.97 1.499.202 2.362c1.173.864-.233 1.45-.685.64-.45-.812-1.683-2.896-2.322-3.295s-1.089-.175-.938.647 2.822 2.813 2.562 3.244-1.176-.506-1.176-.506-2.866-2.567-3.49-1.898.473 1.23 2.037 2.16c1.564.932 1.686 1.178 1.464 1.53s-3.675-2.511-4-1.297c-.323 1.214 3.524 1.567 3.287 2.405-.238.839-2.71-1.587-3.216-.642-.506.946 3.49 2.056 3.522 2.064 1.29.33 4.568 1.028 5.713-.624m5.349 0c-.824-1.19-.766-2.082.365-3.194 1.13-1.112 1.789-2.738 1.789-2.738s.246-.945.806-.858.97 1.499-.202 2.362c-1.173.864.233 1.45.685.64.451-.812 1.683-2.896 2.322-3.295s1.089-.175.938.647-2.822 2.813-2.562 3.244 1.176-.506 1.176-.506 2.866-2.567 3.49-1.898-.473 1.23-2.037 2.16c-1.564.932-1.686 1.178-1.464 1.53s3.675-2.511 4-1.297c.323 1.214-3.524 1.567-3.287 2.405.238.839 2.71-1.587 3.216-.642.506.946-3.49 2.056-3.522 2.064-1.29.33-4.568 1.028-5.713-.624"],
-  "perplexity": ["#1FB8CD", "M22.3977 7.0896h-2.3106V.0676l-7.5094 6.3542V.1577h-1.1554v6.1966L4.4904 0v7.0896H1.6023v10.3976h2.8882V24l6.932-6.3591v6.2005h1.1554v-6.0469l6.9318 6.1807v-6.4879h2.8882V7.0896zm-3.4657-4.531v4.531h-5.355l5.355-4.531zm-13.2862.0676 4.8691 4.4634H5.6458V2.6262zM2.7576 16.332V8.245h7.8476l-6.1149 6.1147v1.9723H2.7576zm2.8882 5.0404v-3.8852h.0001v-2.6488l5.7763-5.7764v7.0111l-5.7764 5.2993zm12.7086.0248-5.7766-5.1509V9.0618l5.7766 5.7766v6.5588zm2.8882-5.0652h-1.733v-1.9723L13.3948 8.245h7.8478v8.087z"],
+  "github": ["#e8e8e8", "M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"],
+  "huggingface": ["#FFD21E", "M12.025 1.13c-5.77 0-10.449 4.647-10.449 10.378 0 1.112.178 2.181.503 3.185.064-.222.203-.444.416-.577a.96.96 0 0 1 .524-.15c.293 0 .584.124.84.284.278.173.48.408.71.694.226.282.458.611.684.951v-.014c.017-.324.106-.622.264-.874s.403-.487.762-.543c.3-.047.596.06.787.203s.31.313.4.467c.15.257.212.468.233.542.01.026.653 1.552 1.657 2.54.616.605 1.01 1.223 1.082 1.912.055.537-.096 1.059-.38 1.572.637.121 1.294.187 1.967.187.657 0 1.298-.063 1.921-.178-.287-.517-.44-1.041-.384-1.581.07-.69.465-1.307 1.081-1.913 1.004-.987 1.647-2.513 1.657-2.539.021-.074.083-.285.233-.542.09-.154.208-.323.4-.467a1.08 1.08 0 0 1 .787-.203c.359.056.604.29.762.543s.247.55.265.874v.015c.225-.34.457-.67.683-.952.23-.286.432-.52.71-.694.257-.16.547-.284.84-.285a.97.97 0 0 1 .524.151c.228.143.373.388.43.625l.006.04a10.3 10.3 0 0 0 .534-3.273c0-5.731-4.678-10.378-10.449-10.378"],
   "minimax": ["#E73562", "M11.43 3.92a.86.86 0 1 0-1.718 0v14.236a1.999 1.999 0 0 1-3.997 0V9.022a.86.86 0 1 0-1.718 0v3.87a1.999 1.999 0 0 1-3.997 0V11.49a.57.57 0 0 1 1.139 0v1.404a.86.86 0 0 0 1.719 0V9.022a1.999 1.999 0 0 1 3.997 0v9.134a.86.86 0 0 0 1.719 0V3.92a1.998 1.998 0 1 1 3.996 0v11.788a.57.57 0 1 1-1.139 0zm10.572 3.105a2 2 0 0 0-1.999 1.997v7.63a.86.86 0 0 1-1.718 0V3.923a1.999 1.999 0 0 0-3.997 0v16.16a.86.86 0 0 1-1.719 0V18.08a.57.57 0 1 0-1.138 0v2a1.998 1.998 0 0 0 3.996 0V3.92a.86.86 0 0 1 1.719 0v12.73a1.999 1.999 0 0 0 3.996 0V9.023a.86.86 0 1 1 1.72 0v6.686a.57.57 0 0 0 1.138 0V9.022a2 2 0 0 0-1.998-1.997"],
+  "alibaba": ["#FF6A00", "M3.996 4.517h5.291L8.01 6.324 4.153 7.506a1.668 1.668 0 0 0-1.165 1.601v5.786a1.668 1.668 0 0 0 1.165 1.6l3.857 1.183 1.277 1.807H3.996A3.996 3.996 0 0 1 0 15.487V8.513a3.996 3.996 0 0 1 3.996-3.996m16.008 0h-5.291l1.277 1.807 3.857 1.182c.715.227 1.17.889 1.165 1.601v5.786a1.668 1.668 0 0 1-1.165 1.6l-3.857 1.183-1.277 1.807h5.291A3.996 3.996 0 0 0 24 15.487V8.513a3.996 3.996 0 0 0-3.996-3.996m-4.007 8.345H8.002v-1.804h7.995Z"],
 };
-
-/* dark-theme legibility: near-black brand marks (GitHub, Vercel, Anthropic,
- * Moonshot) render as white instead of vanishing into the surface */
 function _logoColor(hex) {
   const n = parseInt(hex.slice(1), 16);
   const lum = 0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255);
   return lum < 96 ? "#e8e8e8" : hex;
 }
 
-const BOOT = window.__OMLLM__ || { token: "", port: 0 };
-// the boot URL (?t=…) only authenticates the first HTML fetch; the token is
-// already injected into the page — scrub the query so it never lingers in
-// browser history / the address bar
-if (location.search && BOOT.token) { history.replaceState(null, "", location.pathname); }
+const bootData = window.__OMLLM__ || { port: 0 };
+const fragment = new URLSearchParams(window.location.hash.slice(1));
+const BOOT = { ...bootData, token: fragment.get("token") || "" };
+// The fragment is never sent to the bridge; erase it before any navigation,
+// logging, copying, or browser persistence can retain the capability token.
+if (window.location.hash) history.replaceState(null, "", window.location.pathname + window.location.search);
 const BASE = `http://127.0.0.1:${BOOT.port}`;
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => Array.from(document.querySelectorAll(s));
 
 const state = {
-  view: "chat",
-  status: null,
-  config: null,
-  session: null,
-  streaming: false,
-  approvalQueue: [],
-  modeModal: false,
+  view: "chat", status: null, config: null, session: null,
+  streaming: false, stopping: false, connected: true, everConnected: false,
+  approvalQueue: [], answeringApproval: false, changingChat: false,
+  drafts: new Map(), following: true, unread: 0,
+  soulDirty: false, settingsDirty: false, _draft: null,
+  chats: [], tabStates: {}, modelsCache: {},
+  thinkNode: null, reasonBuf: "", fileNode: null, writeNode: null,
+  toolEntries: new Map(),
 };
 
 /* ------------------------------------------------------------------ api */
 async function api(path, opts = {}) {
-  const headers = { "Content-Type": "application/json", "X-OMLLM-Token": BOOT.token };
+  const headers = { "Content-Type": "application/json", "X-OMLLM-Token": BOOT.token, ...(opts.headers || {}) };
   const res = await fetch(BASE + path, { ...opts, headers });
-  if (!res.ok && res.status === 401) throw new Error("bridge token rejected — restart the GUI");
+  if (res.status === 401) { const e = new Error("bridge token rejected — restart the GUI"); e.status = 401; throw e; }
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) { const e = new Error(data.error || `HTTP ${res.status}`); e.status = res.status; throw e; }
   return data;
 }
-const get = (p) => api(p);
+const get = (p, opts) => api(p, opts);
 const post = (p, body) => api(p, { method: "POST", body: JSON.stringify(body || {}) });
 const patch = (p, body) => api(p, { method: "PATCH", body: JSON.stringify(body || {}) });
 const del = (p) => api(p, { method: "DELETE" });
-
-function promptModal(title, hint, secret, def) {
-  return new Promise((resolve) => {
-    const m = $("#prompt-modal"), inp = $("#pm-input");
-    $("#pm-title").textContent = title;
-    const hintEl = $("#pm-hint");
-    hintEl.innerHTML = "";
-    if (hint) {
-      const span = document.createElement("span");
-      span.textContent = hint + "  ";
-      hintEl.appendChild(span);
-      const link = hint.match(/https:\/\/[^\s)]+/);
-      if (link) {
-        const a = document.createElement("a");
-        a.href = link[0]; a.target = "_blank"; a.rel = "noopener"; a.textContent = "open";
-        hintEl.appendChild(a);
-      }
-    }
-    inp.type = secret ? "password" : "text";
-    inp.value = def || "";
-    m.hidden = false; $("#scrim").hidden = false;
-    inp.focus();
-    const done = (val) => { m.hidden = true; $("#scrim").hidden = true; $("#pm-ok").onclick = null; $("#pm-cancel").onclick = null; inp.onkeydown = null; resolve(val); };
-    $("#pm-ok").onclick = () => done(inp.value.trim());
-    $("#pm-cancel").onclick = () => done(null);
-    inp.onkeydown = (e) => { if (e.key === "Enter") done(inp.value.trim()); if (e.key === "Escape") done(null); };
-  });
-}
-
-function confirmModal(title, body, okLabel = "Confirm") {
-  return new Promise((resolve) => {
-    const m = $("#confirm-modal");
-    $("#cf-title").textContent = title;
-    $("#cf-body").textContent = body;
-    $("#cf-ok").textContent = okLabel;
-    m.hidden = false; $("#scrim").hidden = false;
-    $("#cf-ok").focus();
-    const done = (val) => { m.hidden = true; $("#scrim").hidden = true; $("#cf-ok").onclick = null; $("#cf-cancel").onclick = null; m.onkeydown = null; resolve(val); };
-    $("#cf-ok").onclick = () => done(true);
-    $("#cf-cancel").onclick = () => done(false);
-    m.onkeydown = (e) => { if (e.key === "Escape") done(false); if (e.key === "Enter") done(true); };
-  });
-}
+function debounce(f, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; }
 
 function toast(msg, kind = "") {
   const t = document.createElement("div");
@@ -114,16 +67,14 @@ function toast(msg, kind = "") {
   setTimeout(() => t.remove(), 4200);
 }
 
-/* -------------------------------------------------------------- markdown */
-function esc(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
+/* ------------------------------------------------------------- markdown */
+function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
 const KEYWORDS = /\b(fn|def|class|const|let|var|use|mod|pub|struct|enum|impl|if|else|elif|for|while|return|import|from|async|await|try|except|catch|throw|new|match|switch|case|break|continue|self|this|null|None|nil|true|false|True|False)\b/g;
 function hl(code, lang) {
   if (/^(json|toml|ini|yaml)$/.test(lang)) return esc(code);
   let out = esc(code);
-  out = out.replace(/(&quot;.*?&quot;|&#x27;.*?&#x27;|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, '<span class="str">$1</span>');
-  out = out.replace(/(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)/g, (m) => (m.includes("class=\"") ? m : `<span class="cmt">${m}</span>`));
+  out = out.replace(/(&quot;.*?&quot;|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/g, '<span class="str">$1</span>');
+  out = out.replace(/(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)/g, (m) => (m.includes('class="') ? m : `<span class="cmt">${m}</span>`));
   out = out.replace(KEYWORDS, '<span class="kw">$1</span>');
   out = out.replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="num">$1</span>');
   return out;
@@ -138,10 +89,7 @@ function inline(s) {
 }
 function md(src) {
   const blocks = [];
-  let text = String(src).replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => {
-    const i = blocks.push({ lang: lang || "text", code }) - 1;
-    return `\u0000B${i}\u0000`;
-  });
+  const text = String(src).replace(/```(\w*)\n([\s\S]*?)```/g, (m, lang, code) => `\u0000B${blocks.push({ lang: lang || "text", code }) - 1}\u0000`);
   const lines = text.split("\n");
   let html = "", list = null, para = [];
   const flushPara = () => { if (para.length) { html += `<p>${inline(para.join(" "))}</p>`; para = []; } };
@@ -152,13 +100,12 @@ function md(src) {
     if (bm) {
       flushPara(); flushList();
       const b = blocks[+bm[1]];
-      html += `<pre class="codeblock"><code>${hl(b.code, b.lang)}</code><button class="btn small copy-code" data-code="${esc(b.code)}">copy</button></pre>`;
+      html += `<pre class="codeblock"><code>${hl(b.code, b.lang)}</code><button class="btn small copy-code" type="button" data-code="${esc(b.code)}">copy</button></pre>`;
       continue;
     }
     const h = line.match(/^(#{1,3})\s+(.*)/);
     if (h) { flushPara(); flushList(); html += `<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`; continue; }
-    const ul = line.match(/^[-*]\s+(.*)/);
-    const ol = line.match(/^\d+[.)]\s+(.*)/);
+    const ul = line.match(/^[-*]\s+(.*)/), ol = line.match(/^\d+[.)]\s+(.*)/);
     if (ul || ol) {
       flushPara();
       const want = ul ? "ul" : "ol";
@@ -175,25 +122,117 @@ function md(src) {
 document.addEventListener("click", (e) => {
   const b = e.target.closest(".copy-code");
   if (!b) return;
-  navigator.clipboard.writeText(b.dataset.code).then(() => toast("copied"));
+  navigator.clipboard.writeText(b.dataset.code).then(() => toast("copied")).catch(() => toast("Copy unavailable — select the text and copy manually", "err"));
 });
 
-/* ----------------------------------------------------------------- chat */
-function clearStream() { $("#stream").innerHTML = ""; }
+/* ------------------------------------------------- modals (stacked, LIFO) */
+const modalStack = [];
+function focusables(m) {
+  return Array.from(m.querySelectorAll('button, input, textarea, select, [tabindex="0"]'))
+    .filter((x) => !x.disabled && !x.hidden && !x.closest("[hidden]") && x.getClientRects().length);
+}
+function openModal(sel, focusSel) {
+  const m = typeof sel === "string" ? $(sel) : sel;
+  if (!m || modalStack.some((e) => e.el === m)) return;
+  modalStack.push({ el: m, prev: document.activeElement });
+  m.style.zIndex = 60 + modalStack.length * 2;
+  const scrim = $("#scrim");
+  scrim.hidden = false;
+  scrim.style.zIndex = 59 + modalStack.length * 2;
+  m.hidden = false;
+  (focusSel ? m.querySelector(focusSel) : focusables(m)[0])?.focus();
+}
+function closeModal(sel) {
+  const m = typeof sel === "string" ? $(sel) : sel;
+  const i = modalStack.findIndex((e) => e.el === m);
+  if (i < 0) { m.hidden = true; return; }
+  const [entry] = modalStack.splice(i, 1);
+  m.hidden = true;
+  const top = modalStack[modalStack.length - 1];
+  const scrim = $("#scrim");
+  if (top) { top.el.style.zIndex = 60 + modalStack.length * 2; scrim.style.zIndex = 59 + modalStack.length * 2; scrim.hidden = false; }
+  else scrim.hidden = true;
+  // restore focus to whatever opened this modal, in LIFO order
+  const prev = entry.prev;
+  if (prev && document.contains(prev) && prev.getClientRects().length && !prev.closest("[hidden]")) prev.focus();
+  else if (top) focusables(top.el)[0]?.focus();
+}
+function dismissModal(m) {
+  if (m.id === "approval-modal") return answerApproval("deny"); // fail-closed
+  if (m.id === "palette-modal") return closeModal(m);
+  const cancel = m.querySelector(".modal-cancel");
+  if (cancel) cancel.click(); else closeModal(m);
+}
+$("#scrim").onclick = () => { const top = modalStack[modalStack.length - 1]; if (top) dismissModal(top.el); };
+document.addEventListener("keydown", (e) => {
+  const top = modalStack[modalStack.length - 1];
+  if (!top || e.isComposing || e.keyCode === 229) return;
+  const m = top.el;
+  if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); dismissModal(m); return; }
+  if (e.key === "Tab") {
+    const items = focusables(m);
+    const i = items.indexOf(document.activeElement);
+    if (items.length && (i < 0 || (e.shiftKey ? i === 0 : i === items.length - 1))) {
+      e.preventDefault(); items[e.shiftKey ? items.length - 1 : 0].focus();
+    }
+  }
+}, true);
 
+function promptModal(title, hint, secret, def) {
+  return new Promise((resolve) => {
+    const inp = $("#pm-input");
+    $("#pm-title").textContent = title;
+    const hintEl = $("#pm-hint");
+    hintEl.innerHTML = "";
+    if (hint) {
+      const span = document.createElement("span");
+      span.textContent = hint + "  ";
+      hintEl.appendChild(span);
+      const link = hint.match(/https:\/\/[^\s)]+/);
+      if (link) { const a = document.createElement("a"); a.href = link[0]; a.target = "_blank"; a.rel = "noopener"; a.textContent = "open"; hintEl.appendChild(a); }
+    }
+    inp.type = secret ? "password" : "text";
+    inp.value = def || "";
+    openModal("#prompt-modal", "#pm-input");
+    const done = (val) => { closeModal("#prompt-modal"); inp.value = ""; $("#pm-ok").onclick = null; $("#pm-cancel").onclick = null; inp.onkeydown = null; resolve(val); };
+    $("#pm-ok").onclick = () => done(inp.value.trim());
+    $("#pm-cancel").onclick = () => done(null);
+    inp.onkeydown = (e) => { if (e.isComposing || e.keyCode === 229) return; if (e.key === "Enter") { e.preventDefault(); done(inp.value.trim()); } };
+  });
+}
+function confirmModal(title, body, okLabel = "Confirm") {
+  return new Promise((resolve) => {
+    $("#cf-title").textContent = title;
+    $("#cf-body").textContent = body;
+    $("#cf-ok").textContent = okLabel;
+    openModal("#confirm-modal", "#cf-cancel");
+    const done = (val) => { closeModal("#confirm-modal"); $("#cf-ok").onclick = null; $("#cf-cancel").onclick = null; resolve(val); };
+    $("#cf-ok").onclick = () => done(true);
+    $("#cf-cancel").onclick = () => done(false);
+  });
+}
+
+/* ----------------------------------------------------------------- chat */
+function clearStream() { $("#stream").innerHTML = ""; state.following = true; state.unread = 0; $("#jump-latest").hidden = true; state.toolEntries.clear(); }
+const TEACH = [
+  ["@file:path", "attach a file as context"],
+  ["@diff · @staged", "review working-tree or staged changes"],
+  ["/steer note", "redirect a turn while it is running"],
+  ["/mode name", "change the permission mode (you only)"],
+  ["/skill:name", "cast a saved skill into this chat"],
+  ["/remember fact", "write a durable memory to soul.md"],
+];
+function teachHtml() { return `<ul class="teach">${TEACH.map(([c, d]) => `<li><code>${esc(c)}</code><span>${esc(d)}</span></li>`).join("")}</ul>`; }
 function emptyState() {
   clearStream();
   $("#stream").innerHTML = `
     <div class="stream-empty">
-      <svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="16"/><circle cx="24" cy="24" r="6"/></svg>
-      <p class="big">Ask the agent anything.</p>
-      <p>It reads its <b>soul.md</b> memory, runs <b>permission-gated tools</b>, and everything stays on this machine.</p>
-      <p class="small">Try: <button class="btn small remember-demo">"remember my name is Minas"</button> or press <kbd>Ctrl</kbd>+<kbd>K</kbd> for commands.</p>
+      <span class="hero-glyph"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="16" cy="16" r="4.5" fill="currentColor"/></svg></span>
+      <h2>Local agent, <em>your rules.</em></h2>
+      <p>Tools are permission-gated, memory lives in a plain soul.md you own, and every shell command asks first. Start with a real command:</p>
+      ${teachHtml()}
     </div>`;
-  const d = $(".remember-demo");
-  if (d) d.onclick = () => { $("#input").value = "remember: my name is Minas"; $("#input").focus(); };
 }
-
 function addMsg(role, content, extraClass = "") {
   if (document.querySelector(".stream-empty")) clearStream();
   const el = document.createElement("div");
@@ -204,14 +243,37 @@ function addMsg(role, content, extraClass = "") {
   scrollBottom();
   return el.querySelector(".content");
 }
+/* Approval artifacts in persisted history are not agent prose: the runtime
+   journals an empty assistant placeholder for pure tool-call turns and
+   "[asked to run X]" / "[attempted X]" echoes for denied/blocked calls. The
+   placeholder renders no row at all; the echo renders a single decided
+   approval card, so every approval request owns exactly one visible row,
+   live or replayed. */
+function approvalEcho(text) {
+  return /^\[(asked to run|attempted) ([^\]]+)\]$/.exec((text || "").trim());
+}
+function replayAssistant(m) {
+  const text = Array.isArray(m.content)
+    ? m.content.filter((p) => p && p.type === "text").map((p) => p.text || "").join("")
+    : String(m.content ?? "");
+  if (!text.trim()) return; // empty tool-call placeholder: no row
+  const echo = approvalEcho(text);
+  if (echo) {
+    const denied = echo[1] === "asked to run";
+    const card = document.createElement("div");
+    card.className = "app-card decided";
+    card.innerHTML = `<div class="head"><span class="tag">approval</span><b>${esc(echo[2])}</b><span class="muted small">${denied ? "denied" : "blocked"}</span></div>
+      <div class="state">${denied ? "denied by you" : "blocked by policy"}</div>`;
+    $("#stream").appendChild(card);
+    return;
+  }
+  addMsg("assistant", text);
+}
 function userHtml(content) {
-  // user messages may be multimodal parts (agent-side images from read_file)
   if (Array.isArray(content)) {
     const txt = content.filter((p) => p && p.type === "text").map((p) => inline(p.text || "")).join("<br>");
-    const imgs = content
-      .filter((p) => p && p.type === "image_url" && String((p.image_url || {}).url || "").startsWith("data:"))
-      .map((p) => `<img class="msg-img" src="${p.image_url.url}" alt="attached image" loading="lazy">`)
-      .join("");
+    const imgs = content.filter((p) => p && p.type === "image_url" && String((p.image_url || {}).url || "").startsWith("data:"))
+      .map((p) => `<img class="msg-img" src="${p.image_url.url}" alt="attached image" loading="lazy">`).join("");
     return (txt || "") + (imgs ? `<div class="msg-imgs">${imgs}</div>` : "");
   }
   return inline(content);
@@ -227,34 +289,51 @@ function addEvline(tag, text, cls = "", dur) {
 }
 function scrollBottom(force) {
   const s = $("#stream");
-  // follow the stream only while the user is at the bottom; scrolling up to
-  // read must not be yanked back by the next token
-  if (force || s.scrollHeight - s.scrollTop - s.clientHeight < 48) s.scrollTop = s.scrollHeight;
+  // follow only while at the bottom; reading up must not be yanked back
+  if (force || state.following) {
+    state.following = true; state.unread = 0;
+    s.scrollTop = s.scrollHeight; $("#jump-latest").hidden = true;
+  } else {
+    $("#jump-latest").hidden = false;
+    $("#jump-latest").textContent = `↓ Latest · ${++state.unread} updates`;
+  }
 }
+$("#stream").addEventListener("scroll", () => {
+  const s = $("#stream");
+  state.following = s.scrollHeight - s.scrollTop - s.clientHeight < 48;
+  if (state.following) { state.unread = 0; $("#jump-latest").hidden = true; }
+});
+$("#jump-latest").onclick = () => scrollBottom(true);
 
 let liveNode = null, liveText = "";
-function ensureLive() {
-  if (!liveNode) { liveNode = addMsg("assistant", ""); }
-  return liveNode;
-}
+function ensureLive() { if (!liveNode) liveNode = addMsg("assistant", ""); return liveNode; }
 function updateLive(chunk) {
-  liveText += chunk;
-  ensureLive().innerHTML = md(liveText);
-  scrollBottom();
+  // an empty chunk must not birth a placeholder row: a turn that resolves
+  // into a tool approval would otherwise leave an empty AGENT label behind
+  if (!liveNode && !chunk) return;
+  liveText += chunk; ensureLive().innerHTML = md(liveText); scrollBottom();
 }
-function sealLive() { liveNode = null; liveText = ""; sealThinkLive(); }
+function sealLive() {
+  // a placeholder that never received content is removed, not sealed
+  if (liveNode && !liveNode.textContent.trim()) liveNode.closest(".msg").remove();
+  liveNode = null; liveText = ""; sealThinkLive();
+}
+const VERBS = ["pondering", "ruminating", "untangling", "connecting dots", "consulting the oracle", "crunching", "squinting", "following the white rabbit", "feeding the hamster", "rubber-ducking", "reading the fine print", "overthinking", "marinating", "negotiating with the tokens"];
+function thinkVerb() {
+  const w = Math.floor(Date.now() / 2700);
+  const pick = (x) => VERBS[Math.imul(x + 1, 2654435761) >>> 0 % VERBS.length];
+  let v = pick(w); if (v === pick(w - 1)) v = pick(w + 1);
+  return v;
+}
+setInterval(() => { const n = state.thinkNode; if (n && n !== "sealed" && n.sm) n.sm.textContent = "💭 " + thinkVerb() + "…"; }, 1000);
 function liveThink(t) {
   state.reasonBuf = (state.reasonBuf || "") + t;
   if (state.config && state.config.agent && state.config.agent.thinking_visible === false) {
     const k = Math.max(1, Math.round(state.reasonBuf.length / 100) / 10);
     const label = `💭 thinking · hidden · ${k}k chars`;
-    if (!state.thinkNode || state.thinkNode === "sealed") {
-      state.thinkNode = { hidden: true, el: addEvline("think", label, "dim") };
-    } else if (state.thinkNode.el) {
-      state.thinkNode.el.querySelector(".txt").textContent = label;
-    }
-    scrollBottom();
-    return;
+    if (!state.thinkNode || state.thinkNode === "sealed") state.thinkNode = { hidden: true, el: addEvline("think", label, "dim") };
+    else if (state.thinkNode.el) state.thinkNode.el.querySelector(".txt").textContent = label;
+    scrollBottom(); return;
   }
   if (!state.thinkNode || state.thinkNode === "sealed") {
     const det = document.createElement("details"); det.open = true; det.className = "think-details";
@@ -266,11 +345,67 @@ function liveThink(t) {
   state.thinkNode.pre.textContent += t;
   scrollBottom();
 }
+function sealThinkLive() {
+  if (state.thinkNode && state.thinkNode !== "sealed") {
+    if (state.thinkNode.hidden) { state.thinkNode = "sealed"; return; }
+    if (!state.thinkNode.pre.textContent.trim()) { state.thinkNode.det.remove(); state.thinkNode = null; }
+    else { state.thinkNode.det.open = false; state.thinkNode.sm.textContent = "💭 thinking process"; state.thinkNode = "sealed"; }
+  }
+}
+const ACTION = {
+  write_file: ["write", "📝"], patch_file: ["edit", "✏️"], run_command: ["exec", "⚡"],
+  read_file: ["read", "📖"], list_dir: ["ls", "📂"], glob: ["find", "🔎"], grep: ["find", "🔎"],
+  web_fetch: ["net", "🌐"], web_search: ["net", "🌐"], soul_write: ["memory", "🧠"],
+  soul_remember: ["memory", "🧠"], soul_forget: ["memory", "🧠"], soul_append: ["memory", "🧠"],
+};
+const actionOf = (n) => ACTION[n] || ["tool", "🔧"];
+function firstLine(s) { const x = String(s || "").trim().split("\n")[0]; return x.length > 140 ? x.slice(0, 140) + "…" : x; }
+function shortArgs(a) { try { const s = JSON.stringify(a || {}); return s.length > 90 ? s.slice(0, 90) + "…" : s; } catch { return ""; } }
+function planSummary(d) {
+  const a = d.args || {};
+  switch (d.name) {
+    case "run_command": return `⚡ run_command ${firstLine(a.command || "")}`;
+    case "write_file": return `📝 write_file ${a.path || "?"} · ${String(a.content || "").length} chars${a.append ? " (append)" : ""}`;
+    case "patch_file": return `✏️ patch_file ${a.path || "?"} · −${String(a.old_text || "").split("\n").length} +${String(a.new_text || "").split("\n").length} lines`;
+    case "read_file": return `📖 read_file ${a.path || "?"}`;
+    default: return `→ ${d.name} ${shortArgs(a)}`;
+  }
+}
+/* tool dock: chronological inline collapsible entries, monospace output only */
+function toolEntry(d) {
+  const det = document.createElement("details"); det.className = "tool-entry";
+  const sm = document.createElement("summary");
+  sm.innerHTML = `<span class="tag">${esc((d.level || "low").toLowerCase())}/L${d.risk ?? "?"}</span><span class="txt"></span>`;
+  sm.querySelector(".txt").textContent = planSummary(d);
+  const args = document.createElement("pre"); args.textContent = JSON.stringify(d.args || {}, null, 1);
+  const out = document.createElement("pre"); out.hidden = true;
+  det.append(sm, args, out);
+  $("#stream").appendChild(det);
+  scrollBottom();
+  const entry = { det, sm, out, tag: sm.querySelector(".tag") };
+  state.toolEntries.set(d.name, entry);
+  return entry;
+}
+function toolResult(d) {
+  const entry = state.toolEntries.get(d.name) || toolEntry({ name: d.name, args: {} });
+  const cls = d.ok ? "ok" : "err";
+  entry.det.classList.add(cls);
+  entry.tag.textContent = d.blocked ? "blocked" : d.denied ? "denied" : d.ok ? "ok" : "fail";
+  const f = d.file;
+  const isWrite = f && (f.created != null || f.added != null || f.removed != null || f.changed != null);
+  const head = f && d.ok && isWrite
+    ? (f.created ? `created ${f.path} +${f.added || 0}` : `edited ${f.path} -${f.removed || 0} ~${f.changed || 0} +${f.added || 0}`)
+    : f && d.ok && f.media ? `read ${f.media}` : "";
+  entry.out.hidden = false;
+  entry.out.textContent = (head ? head + "\n" : "") + String(d.output ?? "");
+  if (d.duration_ms != null) entry.sm.querySelector(".txt").textContent += ` · ${Math.round(d.duration_ms)} ms`;
+  scrollBottom();
+}
 function liveFileProgress(d) {
   let partial;
   if (d.content_tail) {
     let raw = d.content_tail;
-    const cm = /^((?:[^"\\]|\\.)*)"/.exec(raw);   // final event carries the JSON close
+    const cm = /^((?:[^"\\]|\\.)*)"/.exec(raw);
     if (cm) raw = cm[1];
     partial = raw.replace(/\\n/g, "\n").replace(/\\"/g, '"');
   } else {
@@ -281,108 +416,63 @@ function liveFileProgress(d) {
   const lines = partial.split("\n").slice(-12).join("\n");
   if (!state.fileNode || state.fileNode.name !== d.name) {
     const det = document.createElement("details"); det.open = true; det.className = "think-details";
-    const verb = d.name === "patch_file" ? "patching" : "writing";
-    const sm = document.createElement("summary"); sm.textContent = `${actionOf(d.name)[1]} ${verb} ${d.name}…`;
+    const sm = document.createElement("summary"); sm.textContent = `${actionOf(d.name)[1]} ${d.name === "patch_file" ? "patching" : "writing"} ${d.name}…`;
     const pre = document.createElement("pre"); pre.className = "think-body";
     det.append(sm, pre); $("#stream").append(det);
-    state.fileNode = { name: d.name, det, sm, pre };
+    state.fileNode = { name: d.name, det, pre };
   }
   state.fileNode.pre.textContent = lines;
   scrollBottom();
 }
-const VERBS = ['pondering', 'ruminating', 'contemplating', 'deliberating', 'thinking hard', 'finding x', 'divining', 'untangling', 'synapsing', 'connecting dots', 'reading tea leaves', 'consulting the oracle', 'vibing', 'crunching', 'warming up', 'spinning up', 'cracking knuckles', 'squinting', 'deep-diving', 'following the white rabbit', 'asking the void', 'feeding the hamster', 'oiling the gears', 'summoning context', 'unfolding', 'digesting', 'reflecting', 'brooding', 'scheming', 'daydreaming', 'muttering', 'pacing', 'counting to ten', 'checking assumptions', 'double-checking', 'triple-checking', 'brainstorming', 'whiteboarding', 'rubber-ducking', 'reading the fine print', 'hitting the books', 'putting on glasses', 'sharpening pencils', 'unrolling the map', 'stirring the pot', 'steeping the tea', 'spinning the globe', 'flipping pages', 'cross-referencing', 'triangulating', 'extrapolating', 'hypothesizing', 'theorizing', 'overthinking', 'second-guessing', 'third-guessing', 'panicking (productively)', 'sweating', 'calculating', 'estimating', 'gesturing vaguely', 'nodding slowly', 'stroking the beard', 'pondering the orb', 'questioning reality', "asking \"but why?\"", "asking \"and then what?\"", 'stacking context', 'tidying the desk', 'brewing', 'marinating', 'buffering dramatically', 'channeling the machine spirit', 'negotiating with the tokens'];
-function _pick(w) {
-  let h = Math.imul(w + 1, 2654435761) >>> 0;
-  h = (h ^ (h >>> 13)) >>> 0;
-  return VERBS[h % VERBS.length];
-}
-function thinkVerb() {
-  const w = Math.floor(Date.now() / 2700);
-  let v = _pick(w);
-  if (v === _pick(w - 1)) v = _pick(w + 1);  // never twice in a row
-  return v;
-}
-setInterval(() => {
-  const n = state.thinkNode;
-  if (n && n !== "sealed" && n.sm) n.sm.textContent = "💭 " + thinkVerb() + "…";
-}, 1000);
-const ACTION = {
-  write_file: ["write", "📝"], patch_file: ["edit", "✏️"], run_command: ["exec", "⚡"],
-  read_file: ["read", "📖"], list_dir: ["ls", "📂"], glob: ["find", "🔎"], grep: ["find", "🔎"],
-  web_fetch: ["net", "🌐"], web_search: ["net", "🌐"], soul_write: ["memory", "🧠"],
-  soul_remember: ["memory", "🧠"], soul_forget: ["memory", "🧠"],
-};
-function actionOf(name) { return ACTION[name] || ["tool", "🔧"]; }
-function planSummary(d) {
-  const a = d.args || {};
-  switch (d.name) {
-    case "run_command": return `⚡ run_command ${firstLine(a.command || "")}`;
-    case "write_file": return `📝 write_file ${a.path || "?"} · ${String(a.content || "").length} chars${a.append ? " (append)" : ""}`;
-    case "patch_file": {
-      const o = String(a.old_text || "").split("\n").length, n = String(a.new_text || "").split("\n").length;
-      return `✏️ patch_file ${a.path || "?"} · −${o} +${n} lines`;
-    }
-    case "read_file": return `📖 read_file ${a.path || "?"}`;
-    default: return `→ ${d.name} ${shortArgs(a)}`;
-  }
-}
 function liveThinkProgress(name, chars) {
   const k = ((chars / 1000) | 0) || 1;
-  if (state.writeNode && state.writeNode.name === name) {
-    state.writeNode.el.querySelector(".txt").textContent = `${actionOf(name)[1]} ${name} … ${k}k chars`;
-  } else {
-    state.writeNode = { name, el: addEvline(actionOf(name)[0], `${actionOf(name)[1]} ${name} … ${k}k chars`, "dim") };
-  }
-}
-function sealThinkLive() {
-  if (state.thinkNode && state.thinkNode !== "sealed") {
-    if (state.thinkNode.hidden) { state.thinkNode = "sealed"; return; }
-    if (!state.thinkNode.pre.textContent.trim()) {
-      state.thinkNode.det.remove();
-      state.thinkNode = null;
-    } else {
-      state.thinkNode.det.open = false;
-      state.thinkNode.sm.textContent = "💭 thinking process";
-      state.thinkNode = "sealed";
-    }
-  }
+  if (state.writeNode && state.writeNode.name === name) state.writeNode.el.querySelector(".txt").textContent = `${actionOf(name)[1]} ${name} … ${k}k chars`;
+  else state.writeNode = { name, el: addEvline(actionOf(name)[0], `${actionOf(name)[1]} ${name} … ${k}k chars`, "dim") };
 }
 
+/* session loading with abort + stale-guard against fetch races */
+let loadSeq = 0, loadAbort = null;
 async function loadSessionIntoView(sid) {
-  const sess = await get(`/api/chats/${sid}`);
+  if (state.streaming) { toast("Stop the current turn before switching chats", "warn"); return false; }
+  const seq = ++loadSeq;
+  loadAbort?.abort();
+  loadAbort = new AbortController();
+  let sess;
+  try { sess = await get(`/api/chats/${sid}`, { signal: loadAbort.signal }); }
+  catch (e) { if (seq === loadSeq && e.name !== "AbortError") toast(`chat load failed: ${e.message}`, "err"); return false; }
+  if (seq !== loadSeq) return false; // a newer switch won the race
+  state.drafts.set(state.session, $("#input").value);
   state.session = sid;
+  if (state.tabStates[sid] === "done") delete state.tabStates[sid]; // viewed → clear
+  $("#input").value = state.drafts.get(sid) || ""; autoGrow();
   clearStream();
   (sess.messages || []).forEach((m) => {
     if (m.role === "user") addMsg("user", m.content);
-    else if (m.role === "assistant") addMsg("assistant", m.content);
-    else if (m.role === "tool") addEvline(m.name || "tool", String(m.content).slice(0, 220), "ok");
-    else if (m.role === "system") { /* soul context — not shown */ }
+    else if (m.role === "assistant") replayAssistant(m);
+    else if (m.role === "tool") toolResult({ name: m.name || "tool", ok: true, output: String(m.content).slice(0, 4000) });
   });
   if (!sess.messages?.length) emptyState();
-  $("#g-title").textContent = sess.title;
+  renderTabs();
+  return true;
 }
 
-/* SSE reader over fetch (POST streaming). */
+/* SSE reader over fetch (POST streaming). Never auto-replays. */
 async function sendToAgent(text, memoryDirective) {
-  const body = JSON.stringify({ text, memory_directive: !!memoryDirective });
   let res;
   try {
     res = await fetch(`${BASE}/api/message`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-OMLLM-Token": BOOT.token },
-      body,
+      body: JSON.stringify({ text, memory_directive: !!memoryDirective, session: state.session || undefined }),
     });
-  } catch (e) { toast(`bridge unreachable: ${e.message}`, "err"); return false; }
-  if (res.status === 202) { toast("queued into the running turn", ""); return true; }
-  if (!res.ok) {
-    const d = await res.json().catch(() => ({}));
-    toast(d.error || "request failed", "err");
-    return false;
-  }
+  } catch (e) { const err = new Error(`bridge unreachable: ${e.message}`); err.partial = false; throw err; }
+  if (res.status === 202) { toast("queued into the running turn"); return true; }
+  if (!res.ok) { const d = await res.json().catch(() => ({})); toast(d.error || "request failed", "err"); return false; }
+  let partial = false;
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
-  while (true) {
+  for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buf += dec.decode(value, { stream: true });
@@ -391,11 +481,12 @@ async function sendToAgent(text, memoryDirective) {
       const frame = buf.slice(0, idx); buf = buf.slice(idx + 2);
       const ev = (frame.match(/^event: (.*)$/m) || [])[1] || "message";
       const dl = (frame.match(/^data: (.*)$/m) || [])[1] || "{}";
+      if (ev !== "ping") partial = true;
       handleEvent(ev, JSON.parse(dl));
       if (ev === "done") return true;
     }
   }
-  return true;
+  const err = new Error("Connection ended before completion."); err.partial = partial; throw err;
 }
 
 function handleEvent(ev, d) {
@@ -403,40 +494,22 @@ function handleEvent(ev, d) {
     case "token": updateLive(d.text || ""); break;
     case "assistant_note": {
       const nt = (d.text || "").trim();
-      if (nt && nt !== liveText.trim()) addMsg("systemish", nt, "systemish");
+      // approval echoes belong to the approval card, never a second row
+      if (nt && !approvalEcho(nt) && nt !== liveText.trim()) addMsg("systemish", nt, "systemish");
       sealLive();
       break;
     }
     case "tool_plan": {
       sealLive();
-      const cls = d.allowed ? "" : "err";
-      const el = addEvline(`${(d.level || "low").toLowerCase()}/L${d.risk ?? "?"}`, planSummary(d), cls);
-      if (d.args && Object.keys(d.args).length) {
-        const det = document.createElement("details"); det.className = "args-det";
-        const sm = document.createElement("summary"); sm.textContent = "args";
-        const pre = document.createElement("pre"); pre.textContent = JSON.stringify(d.args, null, 1);
-        det.append(sm, pre); el.appendChild(det);
-      }
-      pushToolLog(d.name, planSummary(d), "run");
+      toolEntry(d);
       break;
     }
     case "tool_result": {
       if (state.fileNode) { state.fileNode.det.remove(); state.fileNode = null; }
-      const cls = d.ok ? "ok" : "err";
-      const tag = d.blocked ? "blocked" : d.denied ? "denied" : d.ok ? "ok" : "fail";
-      const f = d.file;
-      const isWrite = f && (f.created != null || f.added != null || f.removed != null || f.changed != null);
-      const summary = f && d.ok && isWrite
-        ? (f.created ? `📄 created ${f.path}  +${f.added || 0}` : `✏️ edited ${f.path}  -${f.removed || 0} ~${f.changed || 0} +${f.added || 0}`)
-        : f && d.ok && f.media
-          ? `${({ image: "🖼️", audio: "🔊", video: "🎬" })[f.media] || "📎"} read ${f.media}` +
-            (f.images ? ` · ${f.images} image${f.images > 1 ? "s" : ""} attached to the model` : " · transcribed to text")
-          : `${d.name}: ${firstLine(d.output)}`;
-      addEvline(tag, summary, cls, d.duration_ms != null ? `${Math.round(d.duration_ms)} ms` : "");
-      pushToolLog(d.name, tag, d.ok ? "ok" : "err");
+      toolResult(d);
       break;
     }
-    case "memory_activity": toast(`memory: ${d.tool}`, d.ok ? "" : "err"); pulsePulse(); break;
+    case "memory_activity": toast(`memory: ${d.tool}`, d.ok ? "" : "err"); break;
     case "tool_stream": liveThinkProgress(d.name, d.chars); liveFileProgress(d); break;
     case "compaction": addEvline("ctx", `🗜 compacted ${d.before}→${d.after} messages`, "dim"); break;
     case "interjection": addMsg("user", d.text || ""); break;
@@ -446,48 +519,79 @@ function handleEvent(ev, d) {
     case "thinking": state.reasonBuf = ""; state.thinkNode = null; addEvline("think", `💭 ${thinkVerb()} (step ${d.step || "?"})`, "dim"); break;
     case "thinking_text": liveThink(d.text || ""); break;
     case "error": sealLive(); addEvline("error", d.message || "", "err"); break;
-    case "approval_request": queueApproval(d); break;
+    case "approval_request": {
+      // Two events share this name: the runtime's informational echo
+      // ({id, name, call_id, risk}) and the bridge's decidable request
+      // ({id, tool|name, args, reasons, ...}). Only the decidable payload can
+      // be answered — the echo carries call_id and no args, and queuing it
+      // would stack a phantom modal whose id the approval endpoint does not
+      // know. Discriminate by shape, not by which key names the tool, so the
+      // guard holds whether the bridge ships "tool", "name", or both.
+      const tool = d && (d.tool || d.name);
+      if (d && d.id && tool && d.args && !d.call_id) { queueApproval(d); pollState(); }
+      break;
+    }
     case "ping": break;
     case "done": {
       sealLive();
+      if (d.session) state.session = d.session;
       state.streaming = false;
       $("#cancel").hidden = true; $("#send").disabled = false;
       if (d.error) addEvline("error", d.error, "err");
-      const rtext = (state.thinkNode === "sealed" || state.thinkNode) ? "" : (d.reasoning || state.reasonBuf || "");
+      const rtext = state.thinkNode ? "" : (d.reasoning || state.reasonBuf || "");
       if (rtext.trim()) {
         const det = document.createElement("details"); det.className = "think-details";
         const sm = document.createElement("summary"); sm.textContent = "💭 thinking process";
-        const bd = document.createElement("div"); bd.className = "think-body"; bd.textContent = rtext;
+        const bd = document.createElement("pre"); bd.className = "think-body"; bd.textContent = rtext;
         det.append(sm, bd); $("#stream").append(det); scrollBottom();
       }
       state.reasonBuf = "";
       const bits = [d.model || "", d.usage?.eval_count ? `${d.usage.eval_count} tok` : "", d.ttft_s ? `ttft ${d.ttft_s.toFixed(1)}s` : "", d.tokens_per_s ? `${d.tokens_per_s.toFixed(1)} tok/s` : "", d.steps ? `${d.steps} step${d.steps > 1 ? "s" : ""}` : "", d.calls?.length ? `${d.calls.length} tool call${d.calls.length > 1 ? "s" : ""}` : ""].filter(Boolean).join(" · ");
       if (bits) addEvline("turn", bits, "ok");
-      refreshStatus();
+      hideSteerChip();
+      refreshStatus(); pollState(); renderSidebar();
       break;
     }
   }
 }
-function firstLine(s) { const x = String(s || "").trim().split("\n")[0]; return x.length > 140 ? x.slice(0, 140) + "…" : x; }
-function shortArgs(a) {
-  try { const s = JSON.stringify(a || {}); return s.length > 90 ? s.slice(0, 90) + "…" : s; } catch { return ""; }
-}
-function pushToolLog(name, detail, kind) {
-  const ul = $("#tools-log");
-  if (ul.firstChild?.classList?.contains("muted")) ul.innerHTML = "";
-  const li = document.createElement("li");
-  li.className = kind;
-  li.innerHTML = `<b>${esc(name)}</b> ${esc(String(detail).replace(/[{}"]+/g, " ").slice(0, 52))}`;
-  ul.prepend(li);
-  while (ul.children.length > 30) ul.lastChild.remove();
-}
-function pulsePulse() { const p = $("#backend-dot"); p.classList.add("on"); }
 
 /* ------------------------------------------------------------ approvals */
+function denyRuleOf(reasons) {
+  const r = (reasons || []).find((x) => /blocklist rule|denylist|deny rule/i.test(x));
+  return r || "";
+}
 function queueApproval(d) {
+  // normalize: the bridge may name the tool via "tool" or "name"; every
+  // renderer and the shell once/deny restriction below key off d.tool.
+  d = { ...d, tool: d.tool || d.name };
+  // exactly one card per request id, even if the bridge re-emits it
+  if (state.approvalQueue.some((x) => x.id === d.id)
+      || Array.from(document.querySelectorAll(".app-card")).some((c) => c.dataset.aid === d.id)) return;
+  sealLive(); // no unfilled placeholder may sit above the card
   state.approvalQueue.push(d);
+  // inline card stays in the stream chronologically; the modal decides
+  const card = document.createElement("div");
+  card.className = "app-card"; card.dataset.aid = d.id;
+  const rule = denyRuleOf(d.reasons);
+  card.innerHTML = `
+    <div class="head"><span class="tag">approval</span><b>${esc(d.tool)}</b><span class="muted small">${esc((d.level || "low").toUpperCase())} · risk ${d.risk ?? "?"}</span></div>
+    ${rule ? `<div class="rule">matched deny rule — ${esc(rule)}</div>` : ""}
+    <div class="reasons">${esc((d.reasons || []).join(" · "))}</div>
+    <div class="acts">
+      <button class="btn small ok" type="button" data-dec="approve">Allow once</button>
+      <button class="btn small" type="button" data-dec="session" ${d.tool === "run_command" ? "hidden" : ""}>Allow session</button>
+      <button class="btn small" type="button" data-dec="always" ${d.tool === "run_command" ? "hidden" : ""}>Permanent rule</button>
+      <button class="btn small no" type="button" data-dec="deny">Deny</button>
+    </div>
+    <div class="state">waiting for your decision…</div>`;
+  $("#stream").appendChild(card);
+  scrollBottom();
   if (state.approvalQueue.length === 1) showApproval(d);
 }
+$("#stream").addEventListener("click", (e) => {
+  const b = e.target.closest(".app-card button[data-dec]");
+  if (b) answerApproval(b.dataset.dec);
+});
 function showApproval(d) {
   $("#ap-risk").textContent = `${(d.level || "low").toUpperCase()} · risk ${d.risk ?? "?"}`;
   $("#ap-risk").className = `risk-badge ${d.level === "critical" || d.level === "high" ? "exec" : d.level === "medium" ? "write" : "read"}`;
@@ -495,11 +599,14 @@ function showApproval(d) {
   $("#ap-mode").textContent = ` — mode: ${d.mode}`;
   $("#ap-args").textContent = JSON.stringify(d.args, null, 1);
   $("#ap-reasons").textContent = (d.reasons || []).join(" · ");
+  const rule = denyRuleOf(d.reasons);
+  const ruleEl = $("#ap-rule");
+  ruleEl.hidden = !rule;
+  ruleEl.textContent = rule ? `matched deny rule — ${rule}` : "";
   const prev = $("#ap-preview");
   const previewText = d.preview || "";
   if (previewText) {
     prev.hidden = false;
-    prev.classList.add("diff");
     prev.innerHTML = previewText.split("\n").map((l) => {
       const e = esc(l);
       if (l.startsWith("+")) return `<span class="add">${e}</span>`;
@@ -508,7 +615,18 @@ function showApproval(d) {
       return e;
     }).join("\n");
   } else prev.hidden = true;
-  openModal("#approval-modal");
+  const shell = d.tool === "run_command";
+  // shell consent is one-shot only — never session, never permanent
+  $("#ap-session").hidden = shell; $("#ap-always").hidden = shell;
+  openModal("#approval-modal", "#ap-deny");
+  $("#run-state").textContent = "Waiting for approval";
+}
+function markCard(aid, cls, text) {
+  const card = document.querySelector(`.app-card[data-aid="${aid}"]`);
+  if (!card) return;
+  card.classList.add(cls);
+  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  card.querySelector(".state").textContent = text;
 }
 function closeApproval() {
   closeModal("#approval-modal");
@@ -517,1069 +635,1395 @@ function closeApproval() {
 }
 async function answerApproval(decision) {
   const d = state.approvalQueue[0];
-  if (!d) return;
-  try { await post(`/api/approval/${d.id}`, { decision }); }
-  catch (e) { toast(e.message, "err"); }
-  closeApproval();
-}
-["ap-allow", "ap-session", "ap-always", "ap-deny"].forEach((id) => {
-  document.getElementById(id).onclick = () => answerApproval(
-    ({ "ap-allow": "approve", "ap-session": "session", "ap-always": "always", "ap-deny": "deny" })[id]);
-});
-
-/* --------------------------------------------------------------- modals */
-function openModal(sel) { $("#scrim").hidden = false; $(sel).hidden = false; $(sel).querySelector("button, input, textarea")?.focus(); }
-function closeModal(sel) { $(sel).hidden = true; if (!$$(".modal").some((m) => !m.hidden)) $("#scrim").hidden = true; }
-$("#scrim").onclick = () => { if (state.approvalQueue.length) answerApproval("deny"); $$(".modal").forEach((m) => (m.hidden = true)); $("#scrim").hidden = true; };
-
-/* ---------------------------------------------------------------- views */
-function switchView(v) {
-  if (v === state.view && v !== "chats") return;
-  state.view = v;
-  $$(".nav-item").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
-  $$(".view").forEach((s) => (s.hidden = s.id !== `view-${v}`));
-  const titles = { chat: "Chat", chats: "Chats", models: "Models", backend: "Backend", memory: "Memory · soul.md", doctor: "Doctor", settings: "Settings", help: "Help & keys", providers: "Providers" };
-  $("#view-title").textContent = titles[v] || v;
-  if (v === "chats") renderChats();
-  if (v === "models") renderModels();
-  if (v === "market") renderMarket();
-  if (v === "providers") renderProviders();
-  if (v === "backend") renderBackends();
-  if (v === "memory") renderSoul();
-  if (v === "doctor") renderDoctor();
-  if (v === "settings") renderSettings();
-  if (v === "help") renderHelp();
-}
-$$(".nav-item").forEach((b) => (b.onclick = () => switchView(b.dataset.view)));
-
-/* ---------------------------------------------------------------- chats */
-async function renderChats() {
-  const q = $("#chat-search").value.trim();
-  const pinned = $("#pinned-only").checked;
-  const data = await get(`/api/chats?q=${encodeURIComponent(q)}`);
-  let rows = data.chats || [];
-  if (pinned) rows = rows.filter((r) => r.pinned);
-  $("#chats-count").textContent = rows.length || "";
-  const grid = $("#chats-grid");
-  grid.innerHTML = "";
-  if (!rows.length) { grid.innerHTML = `<p class="muted" style="grid-column:1/-1">No chats yet.</p>`; return; }
-  rows.sort((a, b) => (b.pinned - a.pinned) || (b.updated - a.updated));
-  for (const r of rows) {
-    const card = document.createElement("article");
-    card.className = `chat-card${r.id === data.active ? " active" : ""}`;
-    card.tabIndex = 0;
-    card.innerHTML = `
-      <h4>${r.pinned ? '<span class="pin">◆</span>' : ""}${esc(r.title)}</h4>
-      <div class="meta">${esc(r.backend || "—")} · ${esc(r.model || "default")} · ${r.messages} msg · ${fmtDate(r.updated)}${r.tags?.length ? ` · ${r.tags.map(esc).join(" ")}` : ""}</div>
-      <p class="prev">${esc(r.preview || "")}</p>
-      <div class="acts">
-        <button class="iconbtn pin" title="${r.pinned ? "Unpin this chat" : "Pin this chat to the top"}">${r.pinned ? "◆ pinned" : "◇ pin"}</button>
-        <button class="iconbtn exp" title="Export this chat to markdown (shift/ctrl-click for JSON)">↧ export</button>
-        <button class="iconbtn ren" title="Rename this chat">✎ rename</button>
-        <button class="iconbtn del" title="Move this chat to the trash (an export is written first)">✕ delete</button>
-      </div>`;
-    card.onclick = async (e) => {
-      const btn = e.target.closest(".iconbtn");
-      if (!btn) { await openChat(r.id); return; }
-      e.stopPropagation();
-      if (btn.classList.contains("pin")) { await patch(`/api/chats/${r.id}`, { pinned: !r.pinned }); renderChats(); }
-      if (btn.classList.contains("exp")) { const res = await post(`/api/chats/${r.id}/export`, { format: "markdown" }); toast(`exported → ${res.path}`); }
-      if (btn.classList.contains("ren")) {
-        const t = await promptModal("rename chat", "New title:", false, r.title);
-        if (t) { await patch(`/api/chats/${r.id}`, { title: t }); renderChats(); }
-      }
-      if (btn.classList.contains("del")) {
-        if (await confirmModal("move to trash", `Move "${r.title}" to trash? (exports a backup first)`, "Move to trash")) { await del(`/api/chats/${r.id}`); renderChats(); toast("moved to trash"); }
-      }
-    };
-    card.onkeydown = (e) => { if (e.key === "Enter") openChat(r.id); };
-    grid.appendChild(card);
-  }
-}
-async function openChat(sid) {
-  await loadSessionIntoView(sid);
-  switchView("chat");
-  refreshStatus();
-}
-$("#chat-search").oninput = debounce(renderChats, 250);
-$("#pinned-only").onchange = renderChats;
-$("#chats-refresh").onclick = renderChats;
-function debounce(f, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => f(...a), ms); }; }
-function fmtDate(ts) { const d = new Date(typeof ts === "number" ? ts * 1000 : ts); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }); }
-
-/* --------------------------------------------------------------- models */
-async function renderModels() {
-  const sel = $("#model-backend");
-  if (!sel.options.length) {
-    const opts = ["all", "ollama", "lmstudio"];
-    try {
-      const pv = await get("/api/providers");
-      if ((pv.providers || []).some((x) => x.has_key)) opts.push("cloud");
-    } catch { /* providers unavailable: local-only listing */ }
-    sel.innerHTML = opts.map((b) => `<option value="${b}"${b === "all" ? " selected" : ""}>${b === "all" ? "all backends" : b}</option>`).join("");
-  }
-  const want = sel.value || "all";
-  const beList = want === "all"
-    ? ["ollama", "lmstudio"].concat(sel.querySelector('option[value="cloud"]') ? ["cloud"] : [])
-    : [want];
-  const results = await Promise.all(beList.map(async (b) => {
-    try { return [b, await get(`/api/models?backend=${b}`)]; }
-    catch (e) { return [b, { error: String(e.message || e), models: [] }]; }
-  }));
-  const tb = $("#models-table tbody");
-  tb.innerHTML = "";
-  const q = ($("#model-search").value || "").toLowerCase();
-  const sort = ($("#model-sort") || {}).value || "name";
-  const QBITS = (qt) => { qt = (qt || "").toUpperCase(); if (qt.includes("IQ1")) return 1.2; if (qt.includes("IQ2")) return 2.2; if (qt.includes("IQ3")) return 3.3; if (qt.includes("IQ4") || qt.includes("MXFP4")) return 4.3; const m = qt.match(/Q(\d)/); const b = m ? +m[1] : (qt.includes("F16") || qt.includes("BF16") ? 16 : 8); return b + (qt.includes("XL") || qt.includes("_L") ? 0.4 : qt.includes("_S") ? -0.3 : 0); };
-  const TH = { levels: 0, forced: 1, "on-off": 2, none: 3 };
-  const FAM = (n) => (n.toLowerCase().split(/[/_ .-]+/)[0] || n);
-  const sortRows = (rows) => {
-    if (sort === "size") rows.sort((a, b) => (b.size_bytes || 0) - (a.size_bytes || 0));
-    else if (sort === "params") rows.sort((a, b) => (b.params_b || 0) - (a.params_b || 0));
-    else if (sort === "quant") rows.sort((a, b) => QBITS(a.quant) - QBITS(b.quant));
-    else if (sort === "family") rows.sort((a, b) => FAM(a.name).localeCompare(FAM(b.name)) || a.name.localeCompare(b.name));
-    else if (sort === "thinking") rows.sort((a, b) => (TH[a.thinking] ?? 4) - (TH[b.thinking] ?? 4));
-    else if (sort === "vision") rows.sort((a, b) => (b.vision === true) - (a.vision === true) || (a.vision === null) - (b.vision === null));
-    else rows.sort((a, b) => a.name.localeCompare(b.name));
-    return rows;
-  };
-  let total = 0; const errs = [];
-  for (const [b, data] of results) {
-    const rows = sortRows((data.models || []).filter((m) => m.name.toLowerCase().includes(q)));
-    if (data.error) errs.push(`${b}: ${data.error}`);
-    if (!rows.length) continue;
-    const sec = document.createElement("tr");
-    sec.className = "msection";
-    sec.innerHTML = `<td colspan="10">── ${b} ── <span class="muted">${data.error ? esc(data.error).slice(0, 80) : rows.length + " model(s)"}</span></td>`;
-    tb.appendChild(sec);
-    for (const m of rows) {
-      total++;
-      const tr = document.createElement("tr");
-      if (m.name === data.default) tr.className = "active";
-      const tools = m.tool_capable ? '<span class="fit-ok">yes</span>' : `<span class="fit-tight" title="${esc(m.why_weak || "")}">weak</span>`;
-      tr.innerHTML = `
-        <td style="white-space:normal">${m.loaded ? '<span class="pulse on"></span> ' : ""}<b>${esc(m.name)}</b>${m.warnings?.length ? `<br><small class="muted">${m.warnings.map(esc).join("; ")}</small>` : ""}</td>
-        <td>${m.size || "—"}${m.quant ? ` <span class="muted">· ${esc(m.quant)}</span>` : ""}</td>
-        <td>${m.params_b ? m.params_b + "B" : "—"}</td>
-        <td>${m.ctx_len || "—"}</td>
-        <td>${m.vram_min ? gib(m.vram_min) : "—"}</td>
-        <td class="fit-${{ comfortable: "ok", tight: "tight", too_large: "over" }[m.fit] || ""}">${{ comfortable: "comfortable", tight: "tight", too_large: "too large" }[m.fit] || "—"}</td>
-        <td>${tools}</td>
-        <td>${m.vision === true ? '<span class="fit-ok">👁 yes</span>' : m.vision === false ? '<span class="muted">no</span>' : `<button class="btn small ghost vision-test" title="Send two random numbers as images and check the model reads them (loads the model — up to a minute)">test vision</button>`}</td>
-        <td>${{ levels: '<span class="fit-ok">⚡ levels</span>', forced: '<span class="fit-ok">★ forced</span>', "on-off": '<span class="fit-tight">◐ on/off</span>', none: '<span class="muted">✗ none</span>' }[m.thinking] || '<span class="muted">?</span>'}</td>
-        <td><button class="btn small use">use</button></td>`;
-      const vt = tr.querySelector(".vision-test");
-      if (vt) vt.onclick = async (ev) => {
-        ev.stopPropagation();
-        vt.disabled = true; vt.textContent = "probing…";
-        try {
-          const r = await post("/api/vision/probe", { backend: b, model: m.name });
-          toast(`${m.name}: ${r.vision ? "CAN see images" : "cannot see images"} — cached`, r.vision ? "" : "bad");
-        } catch (e) { toast(`vision probe failed: ${e.message}`, "bad"); }
-        renderModels();
-      };
-      tr.querySelector(".use").onclick = async () => {
-        await post("/api/model", { backend: b, model: m.name });
-        toast(`${m.name} → default`); renderModels(); refreshStatus();
-      };
-      tr.ondblclick = () => tr.querySelector(".use").click();
-      tb.appendChild(tr);
-    }
-  }
-  $("#model-detail").textContent = errs.length
-    ? `${total} model(s) · ${errs.join(" · ")}`
-    : `${total} model(s)`;
-}
-
-const gib = (b) => (b / 2 ** 30).toFixed(1) + " GiB";
-
-// -------------------------------------------------------------- providers
-let _provData = null;
-
-async function renderProviders() {
-  const box = $("#prov-list");
-  if (!_provData) {
-    try { _provData = await get("/api/providers"); }
-    catch { box.innerHTML = '<p class="prov-sub">providers unavailable</p>'; return; }
-  }
-  const q = ($("#prov-search").value || "").toLowerCase();
-  const rows = _provData.providers.filter((p) =>
-    !q || p.name.toLowerCase().includes(q) || p.blurb.toLowerCase().includes(q) || p.pid.includes(q));
-  const groups = [["Popular", rows.filter((p) => p.popular)],
-                  ["Other", rows.filter((p) => !p.popular && p.pid.indexOf("custom-") !== 0)],
-                  ["Custom", rows.filter((p) => p.pid.indexOf("custom-") === 0)]];
-  box.innerHTML = groups.filter(([, list]) => list.length).map(([g, list]) =>
-    `<div class="prov-group">${g}</div>` + list.map((p) => {
-      const ic = PROV_ICONS[p.pid];
-      const glyph = ic ? `<svg viewBox="0 0 24 24" aria-hidden="true" fill="${_logoColor(ic[0])}"><path d="${ic[1]}"/></svg>`
-        : esc(p.name.slice(0, 1).toUpperCase());
-      const badges = [
-        p.active ? '<span class="pb active">active</span>' : "",
-        p.recommended ? '<span class="pb rec">Recommended</span>' : "",
-        p.has_key ? `<span class="pb ok">✓ ${esc(p.masked)}</span>` : "",
-      ].join("");
-      const blurb = p.models ? `${p.blurb} · ${p.models}` : p.blurb;
-      return `<div class="prov-row" data-pid="${esc(p.pid)}" tabindex="0" role="button" aria-label="Connect ${esc(p.name)}">
-        <span class="prov-glyph${ic ? " has-logo" : ""}">${glyph}</span>
-        <span class="prov-name">${esc(p.name)}</span>
-        <span class="prov-blurb">${esc(blurb)}</span>${badges}
-        <span class="prov-actions"></span>
-      </div>`;
-    }).join("")).join("")
-    + `<div class="prov-foot"><button type="button" class="btn ghost" id="prov-add-custom">✦ Custom OpenAI-compatible provider</button></div>`;
-  $$(".prov-row").forEach((r) => {
-    const go = () => provConnect(r.dataset.pid);
-    r.onclick = go;
-    r.onkeydown = (ev) => { if (ev.key === "Enter") go(); };
-  });
-  $("#prov-add-custom").onclick = provAddCustom;
-}
-
-async function provConnect(pid) {
-  const p = (_provData.providers || []).find((x) => x.pid === pid);
-  if (!p) return;
-  const cur = p.has_key ? `Stored key: ${p.masked} — paste to replace, empty to remove.` : "";
-  const signup = p.signup_url ? ` Get one: <a href="${esc(p.signup_url)}" target="_blank" rel="noopener">${esc(p.signup_url)}</a>` : "";
-  const key = await promptModal(`🔑 ${p.name} API key`, cur + (cur ? "\n" : "") + signup, true);
-  if (key === null) return;
-  let models = p.models || "";
-  const r = await post("/api/providers/key", { pid, key, models, probe: true });
-  if (r && r.error) { toast(r.error, "bad"); return; }
-  _provData = r; renderProviders();
-  toast(key ? `${p.name} key saved` : `${p.name} key removed`);
-  if (key && r.models_ok === false) {
-    // gateway has no /models listing — only now ask for ids
-    const m = await promptModal(`${p.name} model ids`,
-      "this gateway has no /models listing — comma-separated ids, e.g. qwen3-coder, llama-3.3-70b. Append :128k or :1m to a model to declare its context window.");
-    if (m) {
-      const r2 = await post("/api/providers/key", { pid, key, models: m });
-      if (r2 && !r2.error) { _provData = r2; renderProviders(); toast(`${p.name}: ${m.split(",").length} model(s) registered`); }
-    }
-  }
-  if (key) {
-    const u = await post("/api/providers/use", { pid });
-    if (u && !u.error) { _provData = u; renderProviders(); toast(`${p.name} → default backend (cloud)`); }
-  }
-}
-
-async function provAddCustom() {
-  const name = await promptModal("Custom provider — name", "e.g. Home vLLM");
-  if (!name) return;
-  const base = await promptModal("Custom provider — base URL", "https://host:port/v1 (OpenAI-compatible)");
-  if (!base) return;
-  const models = await promptModal("Model ids (optional)", "comma-separated, e.g. qwen3-coder, llama-3.3-70b — leave empty to list from /models");
-  if (models === null) return;
-  const r = await post("/api/providers/custom", { name, base_url: base, models: models || "" });
-  if (r && r.error) { toast(r.error, "bad"); return; }
-  _provData = r; renderProviders(); toast(`${name} added — click it to paste the key`);
-}
-
-$("#prov-search")?.addEventListener("input", () => renderProviders());
-
-// ------------------------------------------------------------- marketplace
-let _marketTimer = null;
-
-async function renderMarket() {
-  const grid = $("#market-grid");
-  const head = $("#market-head");
-  if (grid.dataset.loaded) { _paintMarket(_marketData); _pollMarket(); return; }
-  head.textContent = "scanning your hardware…";
-  let data = null;
-  try { data = await get("/api/market"); } catch { head.textContent = "market unavailable"; return; }
-  grid.dataset.loaded = "1";
-  _marketData = data;
-  _paintMarket(data);
-}
-let _marketData = null;
-function _paintMarket(data) {
-  const grid = $("#market-grid");
-  const head = $("#market-head");
-  const g = data.vram_bytes ? Math.round(data.vram_bytes / 1073741824) : null;
-  const badge = { fits: ["✓", "ok"], tight: ["⚠", "warn"], no: ["✗", "bad"], unknown: ["?", "dim"] };
-  const entries = data.entries || [];
-  const SECTIONS = [["llm", "💬 Models"], ["stt", "🎤 Speech-to-text"]];
-  const active = grid.dataset.section || "llm";
-  const tabs = SECTIONS.map(([k, label]) => {
-    const n = entries.filter((e) => (e.section || "llm") === k).length;
-    return `<button class="chip ${k === active ? "active" : ""}" data-sec="${k}">${label}<span class="cnt">${n}</span></button>`;
-  }).join(" ");
-  head.innerHTML = `<span class="market-gpu">${data.gpu ? esc(data.gpu) + " · " : ""}${g ? g + " GB VRAM" : "VRAM unknown — fit not judged"}</span><span class="market-seg">${tabs}</span>`;
-  $$("#market-head .chip").forEach((c) => (c.onclick = () => { grid.dataset.section = c.dataset.sec; _paintMarket(data); }));
-  const vramGb = data.vram_bytes ? data.vram_bytes / 1073741824 : null;
-  grid.innerHTML = entries.filter((e) => (e.section || "llm") === active).map((e) => {
-    const sec = e.section || "llm";
-    const [txt, cls] = badge[e.fit] || badge.unknown;
-    const size = sec === "llm" ? e.size_gb.toFixed(1) + " GB" : (e.size_gb * 1000).toFixed(0) + " MB";
-    const fit = sec === "llm"
-      ? `<span class="mc-fit ${cls}">${txt} ${esc(e.fit_label)}${e.kind !== "gguf" ? " · " + esc(e.kind) : ""}</span>`
-      : `<span class="mc-fit dim">🎤 speech-to-text · ~/.ohmyllm/voice/</span>`;
-    let bar = "";
-    if (sec === "llm" && vramGb) {
-      const pct = Math.min(100, Math.round((e.size_gb / vramGb) * 100));
-      bar = `<div class="mc-bar" title="${e.size_gb} GB of ${vramGb.toFixed(0)} GB VRAM"><i class="${cls}" style="width:${pct}%"></i></div>`;
-    }
-    return `<div class="market-card f-${cls}" data-mid="${esc(e.mid)}" tabindex="0" role="button" aria-label="Download ${esc(e.title)}">
-      <div class="mc-top"><span class="mc-title">${esc(e.title)}</span><span class="mc-size">${size}</span></div>
-      ${fit}
-      <div class="mc-blurb">${esc(e.blurb)}</div>
-      ${bar}
-      <div class="mc-foot"><span class="mc-repo">${esc(e.repo)}</span><span class="mc-dl">↓ Download</span></div>
-    </div>`;
-  }).join("");
-  $$(".market-card").forEach((c) => {
-    const go = () => marketDownload(c.dataset.mid);
-    c.onclick = go;
-    c.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); go(); } };
-  });
-  _pollMarket();
-}
-
-
-async function marketDownload(mid) {
-  let r = null;
-  try { r = await post("/api/market/download", { mid }); }
-  catch (e) { toast(String(e.message || e), "bad"); return; }
-  $("#market-dl").hidden = false;
-  toast(r.started ? `downloading ${r.started}…` : (r.error || ""), r.error ? "bad" : "");
-  _pollMarket();
-}
-
-async function _pollMarket() {
-  if (_marketTimer) return;
-  _marketTimer = setInterval(async () => {
-    let p = null;
-    try { p = await get("/api/market/progress"); } catch { return; }
-    if (!p || (p.active === false && !p.total)) return;
-    const box = $("#market-dl");
-    if (!p.active && !p.done && !p.error) { box.hidden = true; return; }
-    box.hidden = false;
-    const pct = p.total ? Math.min(100, (p.received / p.total) * 100) : 0;
-    $("#market-bar-fill").style.width = pct + "%";
-    const gb = (n) => (n / 1e9).toFixed(2);
-    $("#market-dl-label").textContent = p.error
-      ? `${p.title}: ${p.error}`
-      : p.done ? `✓ ${p.title} ready — reload Models and load it`
-      : `${p.title}  ${gb(p.received)}/${gb(p.total)} GB · ${p.mbps.toFixed(1)} MB/s · ${p.eta_s}s left`;
-    $("#market-dl-cancel").style.visibility = (p.done || p.error) ? "hidden" : "visible";
-    if (!p.active) {
-      clearInterval(_marketTimer); _marketTimer = null;
-      if (p.done || p.error) setTimeout(() => { $("#market-dl").hidden = true; }, 4000);
-    }
-  }, 600);
-}
-
-$("#market-dl-cancel").onclick = () => post("/api/market/cancel", {});
-
-$("#models-refresh").onclick = renderModels;
-$("#model-sort").onchange = renderModels;
-$("#model-backend").onchange = renderModels;
-$("#model-search").oninput = debounce(renderModels, 200);
-$("#models-pull").onclick = async () => {
-  const name = await promptModal("pull model", "Ollama model tag to pull (e.g. qwen2.5:7b-instruct):");
-  if (!name) return;
-  const bar = $("#pull-bar"); bar.hidden = false; bar.value = 0;
+  if (!d || state.answeringApproval) return; // duplicate-decision guard
+  if (d.tool === "run_command" && ["session", "always"].includes(decision)) return;
+  state.answeringApproval = true;
+  $$("#approval-modal button").forEach((b) => (b.disabled = true));
   try {
-    const res = await fetch(`${BASE}/api/pull`, { method: "POST", headers: { "Content-Type": "application/json", "X-OMLLM-Token": BOOT.token }, body: JSON.stringify({ backend: "ollama", name }) });
-    const r = res.body.getReader(), d = new TextDecoder(); let buf = "";
-    while (true) {
-      const { done, value } = await r.read(); if (done) break;
-      buf += d.decode(value, { stream: true });
-      let i;
-      while ((i = buf.indexOf("\n\n")) >= 0) {
-        const f = buf.slice(0, i); buf = buf.slice(i + 2);
-        const dl = (f.match(/^data: (.*)$/m) || [])[1] || "{}";
-        const j = JSON.parse(dl);
-        if (f.startsWith("event: progress")) { bar.value = (j.pct || 0) * 100; }
-        if (f.startsWith("event: done")) { bar.hidden = true; j.ok ? toast(`pulled ${name}`) : toast(`pull failed: ${j.error}`, "err"); renderModels(); }
-      }
+    await post(`/api/approval/${d.id}`, { decision });
+    markCard(d.id, "decided", decision === "deny" ? "denied by you" : `allowed · ${decision}`);
+    closeApproval();
+  } catch (e) {
+    if (e.status === 404) {
+      // fail-closed: the bridge no longer holds this approval → treat as denied
+      markCard(d.id, "expired", "expired — denied");
+      toast("Approval expired — denied (fail-closed)", "warn");
+      closeApproval();
+    } else {
+      toast(`Approval not confirmed: ${e.message}`, "err");
     }
-  } catch (e) { bar.hidden = true; toast(`pull failed: ${e.message}`, "err"); }
-};
-
-/* -------------------------------------------------------------- backend */
-async function renderBackends() {
-  const rows = await get("/api/backends");
-  const cards = $("#backend-cards");
-  cards.innerHTML = "";
-  const cur = state.config?.default_backend;
-  const meta = {
-    ollama: { t: "Ollama", d: "Local llama.cpp server with first-class tool calling.", url: state.config?.ollama?.host },
-    lmstudio: { t: "LM Studio", d: "Desktop app exposing an OpenAI-compatible API.", url: state.config?.lmstudio?.base_url },
-    cloud: { t: "☁ Cloud", d: "Hosted OpenAI-compatible providers (Alibaba, DeepSeek, OpenRouter, …) via a connected API key.", url: null },
-    mock: { t: "Mock backend", d: "Scripted agent for demos and tests — no model required.", url: null },
-  };
-  const keys = Object.keys(meta).filter((k) => k !== "mock" || cur === "mock");
-  for (const k of keys) {
-    const r = rows[k] || {};
-    const el = document.createElement("div");
-    el.className = `be-card-ui${k === cur ? " sel" : ""}`;
-    el.innerHTML = `
-      <h3><span class="pulse ${r.running ? "on" : k === "mock" ? "on" : "off"}"></span>${meta[k].t}</h3>
-      <p class="be-row">${meta[k].d}</p>
-      <p class="be-row mono small">${r.running ? (r.health ? "running · " + esc(r.health) : "running") : r.installed ? "installed · not running" : "not detected"}${meta[k].url ? ` · ${esc(meta[k].url)}` : ""}</p>
-      <div class="be-acts">
-        <button class="btn small use">default</button>
-        ${["mock", "cloud"].includes(k) ? "" : '<button class="btn small start">start</button>'}
-      </div>`;
-    el.querySelector(".use").onclick = async () => { await post("/api/backend", { name: k }); toast(`${meta[k].t} is now the default`); refreshStatus(); renderBackends(); };
-    const st = el.querySelector(".start");
-    if (st) st.onclick = async () => {
-      st.disabled = true; st.textContent = "starting…";
-      const res = await post("/api/backend", { name: k, start: true });
-      toast(res.message || (res.ok ? "started" : "not started"), res.ok ? "" : "warn");
-      if (!res.ok && res.instructions?.length) { const ins = $("#backend-instructions"); ins.hidden = false; ins.textContent = res.instructions.join("\n"); } else { $("#backend-instructions").hidden = true; }
-      st.disabled = false; st.textContent = "start";
-      renderBackends();
-    };
-    cards.appendChild(el);
+  } finally {
+    state.answeringApproval = false;
+    $$("#approval-modal button").forEach((b) => (b.disabled = false));
+    $("#run-state").textContent = state.streaming ? "Working" : "Ready";
   }
 }
-
-/* ---------------------------------------------------------------- soul */
-async function renderSoul() {
-  const d = await get("/api/soul");
-  $("#soul-editor").value = d.text;
-  $("#soul-path").textContent = d.path;
-  const w = $("#mem-writes"); w.checked = !!(state.config?.memory?.agent_writes);
-  w.onchange = async () => { await saveConfig({ memory: { ...state.config.memory, agent_writes: w.checked } }); };
-  $("#soul-recent").innerHTML = (d.recent || []).map((r) => `<div><b>${fmtDate(r.ts)}</b> ${esc(r.action)} ${esc((r.text || "").slice(0, 70))}</div>`).join("");
+[["ap-allow", "approve"], ["ap-session", "session"], ["ap-always", "always"], ["ap-deny", "deny"]].forEach(([id, dec]) => {
+  document.getElementById(id).onclick = () => answerApproval(dec);
+});/* ------------------------------------------------------- composer basics */
+const input = $("#input"), composer = $("#composer");
+const slashHint = $("#slash-hint"), atHint = $("#at-hint");
+function autoGrow() { input.style.height = "auto"; input.style.height = Math.min(input.scrollHeight, 240) + "px"; }
+function fmtTok(n) { n = Number(n) || 0; if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k"; return String(n); }
+function relTime(t) {
+  if (!t) return "";
+  const d = new Date(t); if (isNaN(d.getTime())) return "";
+  const s = (Date.now() - d.getTime()) / 1000;
+  if (s < 45) return "just now";
+  if (s < 3600) return Math.max(1, Math.floor(s / 60)) + "m ago";
+  if (s < 86400) return Math.floor(s / 3600) + "h ago";
+  if (s < 7 * 86400) return Math.floor(s / 86400) + "d ago";
+  return d.toLocaleDateString();
 }
-$("#soul-save").onclick = async () => { await post("/api/soul", { action: "write", text: $("#soul-editor").value }); toast("soul.md saved (backup kept)"); renderSoul(); };
-$("#soul-revert").onclick = async () => { await post("/api/soul", { action: "revert" }); toast("reverted to latest backup"); renderSoul(); };
-$("#soul-clear").onclick = async () => { if (await confirmModal("clear soul", "Clear soul.md? (a backup is kept first)", "Clear")) { await post("/api/soul", { action: "clear" }); renderSoul(); toast("cleared"); } };
+const GLYPH_COLORS = ["#7ac79f", "#58a6e8", "#e2a63d", "#c792ea", "#e0685c", "#8bd5ca", "#f78c6c", "#a6da95"];
+function glyphColor(id) { let h = 0; for (const ch of String(id)) h = (h * 31 + ch.charCodeAt(0)) >>> 0; return GLYPH_COLORS[h % GLYPH_COLORS.length]; }
 
-/* -------------------------------------------------------------- doctor */
-async function renderDoctor() {
-  const list = $("#doctor-list");
-  list.innerHTML = `<li class="muted">running checks…</li>`;
-  const d = await get("/api/doctor");
-  list.innerHTML = "";
-  const icon = { pass: "PASS", warn: "WARN", fail: "FAIL", skip: "SKIP" };
-  for (const c of d.checks) {
-    const li = document.createElement("li");
-    li.innerHTML = `<span class="st ${c.status}">${icon[c.status] || c.status}</span><span>${esc(c.label)}<br><small class="muted">${esc(c.detail)}</small></span>${c.fix ? `<span class="hint">${esc(c.fix)}</span>` : ""}`;
-    list.appendChild(li);
-  }
-  const sm = d.summary || {}; list.insertAdjacentHTML("beforeend", `<li class="muted">${sm.pass||0} pass · ${sm.warn||0} warn · ${sm.fail||0} fail</li>`);
-}
-$("#doctor-run").onclick = renderDoctor;
-
-/* ------------------------------------------------------------ settings */
-const SCHEMA = [
-  ["§", "general"],
-  ["default_backend", "backend", "select", ["ollama", "lmstudio", "cloud", "mock"]],
-  ["§", "ollama"],
-  ["ollama.host", "host", "text"], ["ollama.binary", "binary name", "text"],
-  ["ollama.startup_timeout", "startup timeout s", "num"],
-  ["§", "lm studio"],
-  ["lmstudio.base_url", "base URL", "text"],
-  ["lmstudio.binary_path", "app path (optional)", "text"],
-  ["§", "generation"],
-  ["generation.temperature", "temperature", "num"], ["generation.top_p", "top_p", "num"],
-  ["generation.top_k", "top_k", "num"], ["generation.repeat_penalty", "repeat penalty", "num"],
-  ["generation.num_ctx", "context window", "num"], ["generation.num_gpu", "gpu layers (-1=all)", "num"],
-  ["generation.num_batch", "batch size", "num"], ["generation.max_tokens", "max tokens", "num"],
-  ["generation.kv_cache", "K/V cache quant", "select", ["f16", "q8_0", "q4_0", "q4_1", "iq4_nl", "fp8", "auto"]],
-  ["generation.effort", "reasoning effort", "select", ["off", "low", "medium", "high", "xhigh", "max"]],
-  ["§", "agent"],
-  ["agent.max_steps", "max steps per turn", "num"], ["agent.max_parse_retries", "parse retries", "num"],
-  ["agent.tool_timeout", "tool timeout s", "num"],
-  ["agent.native_tools", "native tools", "select", ["auto", "force", "off"]],
-  ["agent.react_fallback", "ReAct fallback", "bool"],
-  ["agent.thinking_visible", "stream live thinking", "bool"],
-  ["agent.agent_loop", "relentless agent loop", "bool"],
-  ["agent.tone", "tone of voice", "select", ["default", "ruthless", "chill", "friendly", "professional", "terse"]],
-  ["agent.op_mode", "operation mode (chat/plan block writes+shell)", "select", ["build", "plan", "chat"]],
-  ["§", "memory"],
-  ["memory.enabled", "soul memory enabled", "bool"], ["memory.agent_writes", "agent may write memories", "bool"],
-  ["memory.require_explicit_save", "require explicit save intent", "bool"],
-  ["memory.max_inject_chars", "inject budget chars", "num"], ["memory.backups_keep", "backups kept", "num"],
-  ["§", "safety"],
-  ["safety.command_allowlist_extra", "extra allowlisted commands (comma)", "list"],
-  ["safety.command_denylist", "hard-denied commands (comma)", "list"],
-  ["safety.allow_sensitive_paths", "sensitive-path re-allow globs (comma)", "list"],
-  ["safety.workspace_write_requires_confirmation", "confirm workspace writes", "bool"],
-  ["safety.catastrophic_override", "override catastrophic block (dangerous!)", "bool"],
-  ["safety.http_fetch_enabled", "network tool enabled", "bool"],
-  ["§", "mail (see: oml mail)"],
-  ["mail.enabled", "mail tools enabled", "bool"],
-  ["mail.address", "account address", "text"],
-  ["mail.imap_host", "IMAP host", "text"],
-  ["mail.smtp_host", "SMTP host", "text"],
-  ["mail.signature", "signature appended to outgoing mail", "text"],
-  ["mail.recipient_allowlist", "send allowlist (comma; empty = unrestricted)", "text"],
-  ["§", "danger guard (clef-flash, cpu)"],
-  ["guard.enabled", "flag dangerous calls in dangerous/full-access modes", "bool"],
-  ["guard.base_url", "decision server URL", "text"],
-  ["guard.model", "decision model", "text"],
-  ["guard.danger_threshold", "danger threshold (0-1)", "num"],
-  ["guard.timeout_s", "guard timeout s", "num"],
-  ["§", "interface"],
-  ["ui.show_tool_panels", "tool dock in the TUI (calls always stay in chat)", "bool"],
-  ["ui.confirm_quit", "confirm before quit", "bool"],
-];
-async function renderSettings() {
-  if (!state.config) state.config = await get("/api/config");
-  const g = $("#settings-form");
-  g.innerHTML = "";
-  const gv = (p) => p.split(".").reduce((o, k) => (o || {})[k], state.config);
-  const sv = (p, v) => { const ks = p.split("."); let o = state._draft; ks.forEach((k, i) => { if (i === ks.length - 1) o[k] = v; else o = o[k] = { ...(o[k] || {}) }; }); };
-  state._draft = JSON.parse(JSON.stringify(state.config));
-  for (const row of SCHEMA) {
-    if (row[0] === "§") { g.insertAdjacentHTML("beforeend", `<div class="set-row section"><label>${row[1]}</label></div>`); continue; }
-    const [path, label, kind, min, max] = row;
-    const val = gv(path);
-    let input;
-    if (kind === "bool") input = `<input type="checkbox" data-p="${path}" ${val ? "checked" : ""}>`;
-    else if (kind === "select") input = `<select data-p="${path}">${min.map((o) => `<option ${o === val ? "selected" : ""}>${o}</option>`).join("")}</select>`;
-    else if (kind === "num") input = `<input type="number" data-p="${path}" value="${val ?? 0}" ${row[3] != null ? `min=${row[3]}` : ""} ${row[4] != null ? `max=${row[4]}` : ""} step="any">`;
-    else if (kind === "list") input = `<input type="text" class="wide" data-p="${path}" value="${esc((val || []).join(", "))}">`;
-    else input = `<input type="text" class="wide" data-p="${path}" value="${esc(val ?? "")}">`;
-    g.insertAdjacentHTML("beforeend", `<div class="set-row"><label>${label}</label>${input.replace("data-p=", 'data-k="${kind}" data-p=')}</div>`);
-  }
-  g.querySelectorAll("[data-p]").forEach((el) => {
-    el.onchange = () => {
-      let v = el.type === "checkbox" ? el.checked : el.type === "number" ? parseFloat(el.value) : el.value;
-      if (el.dataset.k === "list") v = String(v).split(",").map((x) => x.trim()).filter(Boolean);
-      sv(el.dataset.p, v);
-    };
-  });
-}
-$("#settings-save").onclick = async () => {
-  const merged = state._draft;
-  const res = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
-  state.config = res.config; toast("settings saved"); refreshStatus();
-};
-async function saveConfig(partial) {
-  const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
-  Object.assign(merged, partial);
-  const res = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
-  state.config = res.config; refreshStatus();
-}
-
-/* ---------------------------------------------------------------- help */
-function renderHelp() {
-  $("#help-body").innerHTML = `
-  <h3>keys</h3>
-  <table><tr><td><kbd>Ctrl K</kbd></td><td>command palette</td></tr>
-  <tr><td><kbd>Ctrl N</kbd></td><td>new chat</td></tr><tr><td><kbd>Ctrl O</kbd></td><td>chats</td></tr>
-  <tr><td><kbd>Ctrl M</kbd></td><td>models</td></tr><tr><td><kbd>Ctrl B</kbd></td><td>backend</td></tr>
-  <tr><td><kbd>Ctrl S</kbd></td><td>memory</td></tr><tr><td><kbd>Ctrl D</kbd></td><td>doctor</td></tr>
-  <tr><td><kbd>Ctrl G</kbd></td><td>settings</td></tr><tr><td><kbd>Ctrl P</kbd></td><td>permission mode</td></tr>
-  <tr><td><kbd>Esc</kbd></td><td>close modal / stop</td></tr><tr><td><kbd>Enter</kbd></td><td>send · <kbd>Shift Enter</kbd> newline</td></tr></table>
-  <h3>slash commands</h3>
-  <table>
-  <tr><td><code>/remember &lt;fact&gt;</code></td><td>write a durable memory to soul.md</td></tr>
-  <tr><td><code>/ultrathink [on|off]</code></td><td>deep reasoning: the agent thinks much longer and harder</td></tr>
-  <tr><td><code>/agentloop [on|off]</code></td><td>relentless loop: never stop until the result is verified perfect</td></tr>
-  <tr><td><code>/new</code></td><td>start a fresh session</td></tr>
-  <tr><td><code>/rename &lt;title&gt;</code></td><td>rename the current chat</td></tr>
-  <tr><td><code>/export [md|json]</code></td><td>export the current chat</td></tr>
-  <tr><td><code>/models</code></td><td>open the model list</td></tr>
-  <tr><td><code>/mode &lt;name&gt;</code></td><td>request a permission mode (full_access needs the typed phrase)</td></tr>
-  <tr><td><code>/clear</code></td><td>empty the visible stream</td></tr>
-  <tr><td><code>/market</code></td><td>models + voice models to download (Market tab)</td></tr>
-  <tr><td><code>/providers</code></td><td>connect cloud API keys — Providers tab</td></tr>
-  <tr><td><code>/voice</code></td><td>speech-to-text status · hold <kbd>Ctrl+E</kbd> anywhere to talk</td></tr>
-  <tr><td><code>/mail</code></td><td>email account status · <code>oml mail</code> to connect</td></tr>
-  <tr><td><code>/tone</code></td><td>how the AI talks: default · ruthless · chill · friendly · professional · terse</td></tr>
-  <tr><td><code>/chat · /plan · /build</code></td><td>operation mode: talk only / design first (writes+shell blocked) / full agent</td></tr>
-  <tr><td><code>/yolo [on|off]</code></td><td>the next prompt skips approval prompts — catastrophic commands stay blocked either way</td></tr>
-  <tr><td><code>/help</code></td><td>this screen</td></tr></table>
-  <h3>where do API keys go?</h3>
-  <p>Open the <b>Providers</b> tab (left sidebar) → pick OpenRouter / Anthropic / OpenAI / … →
-  paste the key. It is stored in <code>~/.ohmyllm/config.toml</code> (owner-only, chmod 600)
-  and only ever shown masked. Environment keys (<code>OMLLM_KEY_OPENROUTER</code>,
-  <code>OPENAI_API_KEY</code>, …) also work and take precedence over the file.</p>
-  <h3>permission modes</h3>
-  <table>
-  <tr><td><b>strict</b></td><td>read-only tools auto; every write/exec asks approval</td></tr>
-  <tr><td><b>safe</b> (default)</td><td>reads auto; writes/execs within risk bounds ask; network gated</td></tr>
-  <tr><td><b>sandboxed</b></td><td>exec limited to an allowlist; writes stay in the workspace</td></tr>
-  <tr><td><b>dangerous</b></td><td>most approvals skipped; destructive ops still gated</td></tr>
-  <tr><td><b>full_access</b></td><td>no approvals. Requires typing <code>I ACCEPT FULL ACCESS</code>. Catastrophic commands stay blocked.</td></tr></table>
-  <h3>memory</h3>
-  <p><code>soul.md</code> is plain Markdown the agent reads every session and may update (if allowed). Backups are kept automatically; use the Memory screen to edit, revert, or clear.</p>
-  <h3>privacy</h3>
-  <p>OhMyLLM talks only to local model servers (Ollama / LM Studio / mock) over loopback. Nothing leaves this machine unless you enable the gated <code>http_fetch</code> tool yourself. The GUI bridge binds 127.0.0.1 only and requires a per-process token.</p>`;
-}
-
-/* ------------------------------------------------------------- composer */
+/* ---------------------------------------------------- slash / @ completion */
 const SLASHES = [
-  ["/remember", "write a memory"], ["/new", "fresh chat"], ["/rename", "rename chat"], ["/market", "model marketplace"],
-  ["/export", "export chat"], ["/models", "model list"], ["/mode", "permission mode"],
-  ["/backend", "backend screen"], ["/clear", "clear stream"], ["/help", "help"], ["/mail", "email status"], ["/voice", "voice status"], ["/tone", "how the AI talks"],
-  ["/ultrathink", "deep reasoning on/off"], ["/agentloop", "relentless verified-completion loop"], ["/think", "off|low|medium|high|xhigh|max"], ["/skill:", "cast a skill: /skill:<name>"],
-  ["/chat", "chat mode: talk only"], ["/plan", "plan mode: design, no writes"], ["/build", "build mode: full agent"], ["/yolo", "next prompt skips approvals"],
+  { cmd: "/help", desc: "help & keyboard map" },
+  { cmd: "/new", desc: "start a new chat" },
+  { cmd: "/mode", desc: "permission mode…", arg: true },
+  { cmd: "/model", desc: "set model…", arg: true },
+  { cmd: "/models", desc: "browse models" },
+  { cmd: "/backend", desc: "choose backend…", arg: true },
+  { cmd: "/think", desc: "reasoning effort off…max", arg: true },
+  { cmd: "/ultrathink", desc: "toggle deep reasoning" },
+  { cmd: "/tone", desc: "agent voice…", arg: true },
+  { cmd: "/agentloop", desc: "toggle relentless completion" },
+  { cmd: "/chat", desc: "op mode: chat (no writes)" },
+  { cmd: "/plan", desc: "op mode: plan (no writes)" },
+  { cmd: "/build", desc: "op mode: build (full agent)" },
+  { cmd: "/remember", desc: "write a durable memory", arg: true },
+  { cmd: "/steer", desc: "redirect the running turn", arg: true },
+  { cmd: "/skill:", desc: "cast a saved skill", arg: true },
+  { cmd: "/soul", desc: "edit soul.md" },
+  { cmd: "/doctor", desc: "run health checks" },
+  { cmd: "/settings", desc: "open settings" },
+  { cmd: "/providers", desc: "connect cloud providers" },
+  { cmd: "/market", desc: "model market" },
+  { cmd: "/export", desc: "export this chat" },
+  { cmd: "/cancel", desc: "stop the current turn" },
+  { cmd: "/quit", desc: "shut down the bridge" },
 ];
-$("#input").addEventListener("input", () => {
-  autoGrow();
-  const v = $("#input").value;
-  if (v.startsWith("/") && !v.includes("\n")) {
-    const m = v.slice(1).split(" ")[0].toLowerCase();
-    const hits = SLASHES.filter((s) => s[0].slice(1).startsWith(m))
-      // exact match first: typing /mode must not let Enter accept /models
-      .sort((a, b) => (a[0].slice(1) === m ? 0 : 1) - (b[0].slice(1) === m ? 0 : 1) || a[0].length - b[0].length);
-    const hint = $("#slash-hint");
-    if (hits.length && hits.length < 9 && m) {
-      hint.hidden = false;
-      hint.innerHTML = hits.map(([c, d], i) => `<div class="${i === 0 ? "sel" : ""}" data-c="${c}"><b>${c}</b><span class="muted">${d}</span></div>`).join("");
-      hint.querySelectorAll("div").forEach((dv) => (dv.onclick = () => { $("#input").value = dv.dataset.c + " "; $("#input").focus(); hint.hidden = true; }));
-    } else hint.hidden = true;
-  } else $("#slash-hint").hidden = true;
-});
-$("#input").addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { $("#slash-hint").hidden = true; if (state.streaming) post("/api/cancel", {}); }
-  if ($("#slash-hint").hidden !== true && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) {
-    const sel = $("#slash-hint .sel");
-    // typed a complete command already? Enter sends it — never "autocorrect"
-    // /mode into /models just because a longer sibling is highlighted
-    const typed = $("#input").value.trim().toLowerCase().split(" ")[0];
-    if (sel && !(e.key === "Enter" && sel.dataset.c === typed)) { e.preventDefault(); sel.click(); return; }
+const REFS = ["file:", "folder:", "diff", "staged", "git:"];
+const REF_DESC = { "file:": "attach a file", "folder:": "attach a folder", "diff": "working-tree changes", "staged": "staged changes", "git:": "git ref / log" };
+let slashMatches = [], slashSel = 0, atMatches = [], atSel = 0;
+function computeHints() {
+  const v = input.value;
+  if (v.startsWith("/") && !v.includes(" ")) {
+    const head = v.toLowerCase();
+    slashMatches = SLASHES.filter((s) => s.cmd.startsWith(head));
+    slashSel = 0;
+  } else { slashMatches = []; }
+  const am = v.match(/@([\w:]*)$/);
+  if (am) { atMatches = REFS.filter((r) => r.startsWith(am[1].toLowerCase())); atSel = 0; }
+  else { atMatches = []; }
+  paintHints();
+}
+function paintHints() {
+  if (slashMatches.length) {
+    slashHint.innerHTML = slashMatches.map((s, i) => `<div role="option" aria-selected="${i === slashSel}" class="${i === slashSel ? "sel" : ""}" data-i="${i}"><b>${esc(s.cmd)}</b><span>${esc(s.desc)}</span></div>`).join("");
+    slashHint.hidden = false;
+  } else slashHint.hidden = true;
+  if (atMatches.length) {
+    atHint.innerHTML = atMatches.map((r, i) => `<div role="option" aria-selected="${i === atSel}" class="${i === atSel ? "sel" : ""}" data-i="${i}"><b>@${esc(r)}</b><span>${esc(REF_DESC[r] || "")}</span></div>`).join("");
+    atHint.hidden = false;
+  } else atHint.hidden = true;
+}
+function hideHints() { slashHint.hidden = true; atHint.hidden = true; }
+function cycleHint(dir) {
+  if (!slashHint.hidden && slashMatches.length) { slashSel = (slashSel + dir + slashMatches.length) % slashMatches.length; paintHints(); }
+  else if (!atHint.hidden && atMatches.length) { atSel = (atSel + dir + atMatches.length) % atMatches.length; paintHints(); }
+}
+function completeSlash(cmd) {
+  const meta = SLASHES.find((s) => s.cmd === cmd);
+  input.value = cmd + (meta && meta.arg ? " " : "");
+  input.focus(); autoGrow(); computeHints();
+}
+function completeAt(ref) {
+  const m = input.value.match(/@([\w:]*)$/); if (!m) return;
+  input.value = input.value.slice(0, m.index) + "@" + ref + (ref.endsWith(":") ? "" : " ");
+  input.focus(); autoGrow(); computeHints();
+}
+slashHint.addEventListener("click", (e) => { const d = e.target.closest("[data-i]"); if (d) completeSlash(slashMatches[+d.dataset.i].cmd); });
+atHint.addEventListener("click", (e) => { const d = e.target.closest("[data-i]"); if (d) completeAt(atMatches[+d.dataset.i]); });
+
+let composing = false;
+input.addEventListener("compositionstart", () => { composing = true; });
+input.addEventListener("compositionend", () => { composing = false; });
+input.addEventListener("input", () => { autoGrow(); computeHints(); state.drafts.set(state.session, input.value); });
+input.addEventListener("keydown", (e) => {
+  if (e.isComposing || e.keyCode === 229 || composing) return; // IME guard
+  const hintOpen = !slashHint.hidden || !atHint.hidden;
+  if (e.key === "ArrowDown" && hintOpen) { e.preventDefault(); cycleHint(1); return; }
+  if (e.key === "ArrowUp" && hintOpen) { e.preventDefault(); cycleHint(-1); return; }
+  if (e.key === "Tab" && hintOpen) {
+    e.preventDefault();
+    if (!slashHint.hidden) completeSlash(slashMatches[slashSel].cmd); else completeAt(atMatches[atSel]);
+    return;
   }
-  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); }
-  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-    const opts = $$("#slash-hint div");
-    if (opts.length) {
-      e.preventDefault();
-      const i = opts.findIndex((o) => o.classList.contains("sel"));
-      opts[i]?.classList.remove("sel");
-      const j = (i + (e.key === "ArrowDown" ? 1 : opts.length - 1)) % opts.length;
-      opts[j].classList.add("sel");
+  if (e.key === "Escape" && hintOpen) { e.preventDefault(); hideHints(); return; }
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    // exact-match rule: a fully typed command sends as-is, never autocorrected
+    if (!slashHint.hidden && slashMatches.length && input.value.trim() !== slashMatches[slashSel].cmd) { completeSlash(slashMatches[slashSel].cmd); return; }
+    if (!atHint.hidden && atMatches.length) { completeAt(atMatches[atSel]); return; }
+    submit();
+  }
+});
+composer.addEventListener("submit", (e) => { e.preventDefault(); if (composing) return; submit(); });
+
+/* ------------------------------------------------------------- submitting */
+function restoreDraft(text) { input.value = text; autoGrow(); state.drafts.set(state.session, text); input.focus(); }
+async function submit() {
+  const text = input.value.trim();
+  hideHints(); // complete synchronously before any async work
+  if (!text) return;
+  if (text.startsWith("/")) { await handleSlash(text); return; }
+  if (state.streaming) { await steerOrQueue(text); return; }
+  await sendNormal(text, false);
+}
+async function sendNormal(text, memoryDirective) {
+  state._draft = text;
+  input.value = ""; autoGrow();
+  const userNode = addMsg("user", text).closest(".msg");
+  state.streaming = true; state.stopping = false;
+  $("#send").disabled = true; $("#cancel").hidden = false; $("#cancel").disabled = false;
+  $("#run-state").textContent = "Working";
+  renderTabs();
+  let accepted = false, partial = false;
+  try {
+    accepted = await sendToAgent(text, memoryDirective);
+  } catch (e) {
+    sealLive();
+    if (e.partial) {
+      partial = true;
+      addEvline("error", "stream interrupted — the partial reply above is kept; nothing was replayed", "warn");
+      toast("Connection dropped mid-reply — partial output kept, send again to continue", "warn");
+    } else {
+      toast(e.message, "err");
     }
+  } finally {
+    state.streaming = false; state.stopping = false;
+    $("#send").disabled = false; $("#cancel").hidden = true;
+    if (!state.approvalQueue.length) $("#run-state").textContent = "Ready";
+    renderTabs();
   }
-});
-function autoGrow() { const t = $("#input"); t.style.height = "auto"; t.style.height = Math.min(t.scrollHeight, 240) + "px"; }
+  if (!accepted && !partial) { userNode.remove(); restoreDraft(text); } // rejected → draft survives
+  else { refreshStatus(); renderSidebar(); }
+}
+let steerTimer = null;
+function showSteerChip(text) { const c = $("#steer-chip"); c.textContent = text; c.hidden = false; clearTimeout(steerTimer); steerTimer = setTimeout(hideSteerChip, 6000); }
+function hideSteerChip() { $("#steer-chip").hidden = true; clearTimeout(steerTimer); }
+async function steerOrQueue(text) {
+  if (!text) { toast("nothing to steer", "warn"); return; }
+  let fallback = false, notice409 = false;
+  try {
+    const r = await post("/api/steer", { text });
+    if (r && r.queued) { showSteerChip(`steer queued · position ${r.position}`); input.value = ""; autoGrow(); return; }
+    fallback = true;
+  } catch (e) {
+    if (e.status === 400) { toast(e.message || "steer rejected (cap/queue full)", "err"); return; } // keep draft
+    if (e.status === 409 || e.status === 404) { fallback = true; notice409 = e.status === 409; }
+    else { toast(e.message, "err"); return; }
+  }
+  if (!fallback) return;
+  if (state.streaming) {
+    input.value = ""; autoGrow();
+    const ok = await sendToAgent(text).catch(() => false); // 202 interjection
+    if (ok) showSteerChip("queued into the running turn"); else toast("steer fallback failed", "err");
+  } else {
+    if (notice409) toast("no active turn — sent as a normal message", "warn");
+    await sendNormal(text, false);
+  }
+}
 
-$("#composer").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const text = $("#input").value.trim();
-  if (!text || state.streaming) return;
-  $("#input").value = ""; autoGrow(); $("#slash-hint").hidden = true;
-  if (text.startsWith("/") && !text.startsWith("/remember")) { handleSlash(text); return; }
-  addMsg("user", text);
-  scrollBottom(true);  // the user's own send always jumps to the new message
-  if (text.startsWith("/remember")) $("#input").value = "";
-  state.streaming = true;
-  $("#send").disabled = true; $("#cancel").hidden = false;
-  const mem = text.startsWith("/remember");
-  const payload = mem ? text.slice("/remember".length).trim() || "important fact from user" : text;
-  await sendToAgent(payload, mem);
-  if (state.streaming) { state.streaming = false; $("#send").disabled = false; $("#cancel").hidden = true; }
-});
-$("#cancel").onclick = () => post("/api/cancel", {});
-
+/* ---------------------------------------------------------- slash commands */
+async function setOpMode(mode) {
+  try {
+    try { await post("/api/mode", { mode }); }
+    catch (e) { if (e.status === 400) await patch("/api/config", { agent: { op_mode: mode } }); else throw e; }
+    toast(`op mode: ${mode}`); refreshStatus();
+  } catch (e) { toast(e.message, "err"); }
+}
 async function handleSlash(text) {
-  const [cmd, ...rest] = text.split(" ");
-  const arg = rest.join(" ");
-  switch (cmd.toLowerCase()) {
-    case "/new": newChat(); break;
-    case "/clear": emptyState(); break;
-    case "/help": switchView("help"); break;
-    case "/models": switchView("models"); break;
-    case "/market": switchView("market"); break;
-    case "/providers": switchView("providers"); break;
-    case "/onboarding": toast("the guided tutorial lives in the TUI — run: oml"); break;
-    case "/voice": {
-      const r = await get("/api/voice");
-      addEvline("note", "voice · " + (r.line || "unavailable"));
-      break;
-    }
-    case "/mail": {
-      const c = await get("/api/config");
-      const m = (c.mail || {});
-      addEvline("note", m.address
-        ? `mail · ${m.address} · ${m.enabled ? "ready (send asks first outside full_access)" : "disabled — enable in Settings"}`
-        : "mail · no account — run `oml mail` in a terminal (drafts work without it)");
-      break;
-    }
-    case "/backend": switchView("backend"); break;
-    case "/rename": if (state.session) patch(`/api/chats/${state.session}`, { title: arg || "renamed" }).then(refreshStatus); break;
-    case "/export": if (state.session) post(`/api/chats/${state.session}/export`, { format: arg.includes("json") ? "json" : "markdown" }).then((r) => toast(`exported → ${r.path}`)); break;
-    case "/mode": setModeUi(arg); break;
-    case "/think": {
-      const levels = ["off", "low", "medium", "high", "xhigh", "max"];
-      let want = (arg || "").toLowerCase();
-      if (want === "on") want = "medium";
-      if (!levels.includes(want)) {
-        const cur = (state.config && state.config.generation && state.config.generation.effort) || "off";
-        toast(`effort is ${cur} — /think ${levels.join("|")}`);
-        break;
+  const sp = text.indexOf(" ");
+  const cmd = (sp < 0 ? text : text.slice(0, sp)).toLowerCase();
+  const arg = sp < 0 ? "" : text.slice(sp + 1).trim();
+  const keep = () => { input.value = text; autoGrow(); };
+  const clear = () => { input.value = ""; autoGrow(); };
+  try {
+    switch (cmd) {
+      case "/help": clear(); switchView("help"); return;
+      case "/new": clear(); newChat(); return;
+      case "/mode": clear(); setModeUi(arg || null); return;
+      case "/models": clear(); switchView("models"); return;
+      case "/model":
+        clear();
+        if (arg) { await post("/api/model", { backend: state.status ? state.status.backend : "ollama", model: arg }); toast(`model: ${arg}`); refreshStatus(); }
+        else switchView("models");
+        return;
+      case "/backend":
+        clear();
+        if (arg) { await post("/api/backend", { name: arg }); toast(`backend: ${arg}`); refreshStatus(); }
+        else switchView("backend");
+        return;
+      case "/think": {
+        clear();
+        const levels = ["off", "low", "medium", "high", "xhigh", "max"];
+        if (!levels.includes(arg)) { toast("usage: /think off|low|medium|high|xhigh|max", "warn"); keep(); return; }
+        await patch("/api/config", { generation: { effort: arg } }); toast(`effort: ${arg}`); refreshStatus(); return;
       }
-      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
-      merged.generation.effort = want;
-      merged.generation.thinking = want !== "off";
-      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
-      if (r && r.error) { toast(`think: ${r.error}`); break; }
-      state.config = r.config;
-      toast(`reasoning effort → ${want}`);
-      refreshStatus();
-      break;
-    }
-    default: {
-      if (cmd.toLowerCase().startsWith("/skill:")) {
-        const name = cmd.slice(7);
-        const r = await post("/api/skills/cast", { name, session: state.session });
-        if (r && r.error) toast(r.error + (r.skills ? " · have: " + r.skills.slice(0, 6).join(", ") : ""));
-        else { toast(`skill cast · ${r.cast}`); if (state.session) loadSessionIntoView(state.session); }
-        break;
+      case "/ultrathink": {
+        clear();
+        const cur = state.config && state.config.generation ? state.config.generation.ultrathink : false;
+        await patch("/api/config", { generation: { ultrathink: !cur } }); toast(`ultrathink: ${!cur}`); refreshStatus(); return;
       }
-      addEvline("note", `unknown command ${cmd}`);
-    }
-    case "/ultrathink": {
-      const cur = !!(state.config && state.config.generation && state.config.generation.ultrathink);
-      const want = arg === "on" ? true : arg === "off" ? false : !cur;
-      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
-      merged.generation = merged.generation || {};
-      merged.generation.ultrathink = want;
-      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
-      if (r && r.error) { toast(`ultrathink: ${r.error}`); break; }
-      state.config = r.config;
-      toast(want ? "ultrathink ON — deep thinking from the next turn" : "ultrathink off");
-      refreshStatus();
-      break;
-    }
-    case "/agentloop": {
-      const cur = !!(state.config && state.config.agent && state.config.agent.agent_loop);
-      const want = arg === "on" ? true : arg === "off" ? false : !cur;
-      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
-      merged.agent = merged.agent || {};
-      merged.agent.agent_loop = want;
-      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
-      if (r && r.error) { toast(`agentloop: ${r.error}`); break; }
-      state.config = r.config;
-      toast(want ? "🔁 agent loop ON — verified completion from the next turn" : "agent loop off");
-      refreshStatus();
-      break;
-    }
-    case "/tone": {
-      const opts = ["default", "ruthless", "chill", "friendly", "professional", "terse"]
-        .concat(Object.keys((state.config && state.config.agent && state.config.agent.custom_tones) || {}));
-      const want = (arg || "").toLowerCase();
-      if (!want) {
-        const cur = (state.config && state.config.agent && state.config.agent.tone) || "default";
-        addEvline("note", `tone · current: ${cur} — /tone ${opts.filter((o) => o !== cur).join("|")}`);
-        break;
+      case "/tone":
+        clear();
+        if (!arg) { toast("usage: /tone default|ruthless|chill|friendly|professional|terse", "warn"); keep(); return; }
+        await patch("/api/config", { agent: { tone: arg } }); toast(`tone: ${arg}`); refreshStatus(); return;
+      case "/agentloop": {
+        clear();
+        const cur = state.config && state.config.agent ? state.config.agent.agent_loop : false;
+        await patch("/api/config", { agent: { agent_loop: !cur } }); toast(`agent loop: ${!cur}`); refreshStatus(); return;
       }
-      if (!opts.includes(want)) { toast(`unknown tone "${want}" — /tone ` + opts.join("|"), "bad"); break; }
-      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
-      merged.agent = merged.agent || {};
-      merged.agent.tone = want;
-      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
-      if (r && r.error) { toast(`tone: ${r.error}`, "bad"); break; }
-      state.config = r.config;
-      toast(`tone → ${want} (from the next turn)`);
-      refreshStatus();
-      break;
+      case "/chat": case "/plan": case "/build": clear(); setOpMode(cmd.slice(1)); return;
+      case "/remember":
+        if (!arg) { toast("usage: /remember <fact>", "warn"); keep(); return; }
+        clear(); await sendNormal(arg, true); return;
+      case "/steer": clear(); await steerOrQueue(arg); return;
+      case "/soul": clear(); switchView("memory"); return;
+      case "/doctor": clear(); switchView("doctor"); return;
+      case "/settings": clear(); switchView("settings"); return;
+      case "/providers": clear(); switchView("providers"); return;
+      case "/market": clear(); switchView("market"); return;
+      case "/export":
+        clear();
+        if (!state.session) { toast("no active chat to export", "warn"); return; }
+        { const r = await post(`/api/chats/${state.session}/export`, {}); toast(`exported → ${r.path}`); }
+        return;
+      case "/cancel": clear(); $("#cancel").click(); return;
+      case "/quit":
+        clear();
+        if (await confirmModal("Shut down?", "This stops the local bridge and ejects the model.", "Shut down")) { await post("/api/shutdown", {}); toast("bridge shutting down"); }
+        return;
+      default:
+        if (cmd.startsWith("/skill:")) {
+          clear();
+          const name = cmd.slice(7);
+          if (!state.session) { toast("start a chat first", "warn"); return; }
+          await post("/api/skills/cast", { name, session: state.session }); toast(`cast skill: ${name}`); renderSidebar(); return;
+        }
+        toast(`unknown command ${cmd} — try /help`, "err"); keep();
     }
-    case "/chat":
-    case "/plan":
-    case "/build": {
-      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
-      merged.agent = merged.agent || {};
-      merged.agent.op_mode = cmd.slice(1);
-      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
-      if (r && r.error) { toast(`${cmd}: ${r.error}`, "bad"); break; }
-      state.config = r.config;
-      addEvline("note", `mode → ${cmd.slice(1)} · ` + { chat: "conversation only — writes and shell blocked", plan: "planning — writes and shell blocked", build: "full agent" }[cmd.slice(1)]);
-      refreshStatus();
-      break;
-    }
-    case "/yolo": {
-      const want = (arg || "").toLowerCase();
-      const on = want === "on" || (want !== "off" && !(state.config && state.config.agent && state.config.agent.yolo));
-      const merged = JSON.parse(JSON.stringify(state.config || (await get("/api/config"))));
-      merged.agent = merged.agent || {};
-      merged.agent.yolo = on;
-      const r = await api("/api/config", { method: "PATCH", body: JSON.stringify(merged) });
-      if (r && r.error) { toast(`yolo: ${r.error}`, "bad"); break; }
-      toast(on ? "⚡ YOLO armed — the NEXT prompt skips approvals; catastrophic commands stay blocked" : "yolo off — approvals restored");
-      refreshStatus();
-      break;
-    }
-  }
+  } catch (e) { toast(e.message, "err"); keep(); }
 }
 
-async function newChat() {
-  const s = await post("/api/chats", {});
-  state.session = s.id;
-  clearStream(); emptyState();
-  $("#g-title").textContent = s.title;
-  refreshStatus();
-}
-$("#btn-new").onclick = newChat;
-
-/* ------------------------------------------------------------ mode chip */
-async function setModeUi(preset) {
-  const m = document.createElement("div");
-  m.className = "modal"; m.id = "mode-modal";
-  const modes = ["strict", "safe", "sandboxed", "dangerous", "full_access"];
-  m.innerHTML = `<header><h3>permission mode</h3><span class="risk-badge ${state.status?.mode === "full_access" ? "exec" : "read"}">${esc(state.status?.mode || "")}</span></header>
-  <div class="ap-body">${modes.map((x) => `<div class="opt" data-m="${x}" role="button" tabindex="0"><div><b>${x}</b><div class="d small muted">${MODE_DESC[x]}</div></div></div>`).join("")}
-  ${preset && modes.includes(preset) ? "" : ""}</div>
-  <footer><span class="muted small">The model can never change this; only you can. full_access requires a typed confirmation.</span><span class="spacer"></span><button class="btn" id="mode-close">Close</button></footer>`;
-  document.body.appendChild(m);
-  $("#scrim").hidden = false; m.hidden = false;
-  m.querySelectorAll(".opt").forEach((o) => {
-    o.onclick = async () => {
-      const mode = o.dataset.m;
-      if (mode === "full_access") {
-        const ph = await promptModal("full access", 'Type the exact phrase shown in the sidebar ("I ACCEPT FULL ACCESS") to enable full access:');
-        try { await post("/api/mode", { mode, phrase: ph || "" }); toast("full access enabled"); }
-        catch (e) { toast(e.message, "err"); return; }
-      } else {
-        await post("/api/mode", { mode }); toast(`mode → ${mode}`);
-      }
-      m.remove(); $("#scrim").hidden = true; refreshStatus();
-    };
-    if (preset && o.dataset.m === preset) o.click();
+/* ----------------------------------------------------------- tabs & state */
+function renderTabs() {
+  const tabs = $("#tabs"); tabs.innerHTML = "";
+  state.chats.slice(0, 12).forEach((c) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "tab" + (c.id === state.session ? " active" : "");
+    const st = state.tabStates[c.id] || "idle";
+    const glyph = document.createElement("span"); glyph.className = "glyph"; glyph.style.background = glyphColor(c.id);
+    glyph.textContent = (c.title || "?").trim().charAt(0).toUpperCase() || "?";
+    const t = document.createElement("span"); t.className = "t"; t.textContent = c.title || "New chat";
+    const dot = document.createElement("span"); dot.className = "dot " + st; dot.setAttribute("aria-label", st);
+    b.append(glyph, t, dot);
+    b.title = c.title || "New chat";
+    b.onclick = () => openChat(c.id);
+    tabs.appendChild(b);
   });
-  document.getElementById("mode-close").onclick = () => { m.remove(); $("#scrim").hidden = true; };
 }
-$("#chip-mode").onclick = () => setModeUi();
-const MODE_DESC = {
-  strict: "Reads auto. Every write or command needs approval.",
-  safe: "Reads auto; risky ops ask. Network gated. (recommended)",
-  sandboxed: "Exec limited to an allowlist; writes stay in the workspace.",
-  dangerous: "Approvals mostly skipped; catastrophic still blocked.",
-  full_access: "No approvals at all. You own everything that happens.",
-};
+let polling = false;
+async function pollState() {
+  if (polling) return; polling = true;
+  try {
+    let s = null;
+    try { s = await get("/api/state"); } catch (e) { if (e.status !== 404) throw e; }
+    if (s && s.state) {
+      const sid = s.session_id;
+      if (sid) {
+        if (s.state === "working") state.tabStates[sid] = "working";
+        else if (s.state === "blocked") state.tabStates[sid] = "blocked";
+        else if (s.state === "error") state.tabStates[sid] = "error";
+        else if (s.state === "done") {
+          state._lastDoneSeq = state._lastDoneSeq || {};
+          if ((state._lastDoneSeq[sid] || 0) < (s.seq || 0)) {
+            state._lastDoneSeq[sid] = s.seq || 0;
+            if (sid !== state.session) state.tabStates[sid] = "done"; // unread only
+          }
+        } else if (s.state === "idle" && state.tabStates[sid] !== "done") delete state.tabStates[sid];
+      }
+      if (!state.streaming) $("#run-state").textContent = s.state === "blocked" ? "Waiting for approval" : s.state === "working" ? "Working" : "Ready";
+    } else if (state.session) {
+      // fallback until /api/state lands: derive from status + approval queue
+      const busy = (state.status && state.status.busy) || state.streaming;
+      if (state.approvalQueue.length) state.tabStates[state.session] = "blocked";
+      else if (busy) state.tabStates[state.session] = "working";
+      else if (state.tabStates[state.session] !== "done") delete state.tabStates[state.session];
+    }
+    renderTabs();
+  } catch (e) { /* offline — keep last known dots */ }
+  finally { polling = false; }
+}
+async function openChat(id) {
+  if (state.view !== "chat") await switchView("chat");
+  const ok = await loadSessionIntoView(id);
+  if (ok) closeSidebarNarrow();
+}
 
-/* --------------------------------------------------------------- status */
+/* --------------------------------------------------------------- sidebar */
+async function renderSidebar() {
+  const q = $("#sb-search").value.trim();
+  let rows = [];
+  try {
+    if (q) {
+      try {
+        const r = await get(`/api/search?q=${encodeURIComponent(q)}&limit=30`);
+        rows = (r.results || []).map((x) => ({ id: x.session_id, title: x.title, updated: x.updated_iso, preview: x.snippet, pinned: false }));
+      } catch (e) {
+        if (e.status === 404) { const r = await get(`/api/chats?q=${encodeURIComponent(q)}`); rows = r.chats || []; }
+        else throw e;
+      }
+    } else { const r = await get("/api/chats"); rows = r.chats || []; }
+  } catch (e) { rows = q ? [] : state.chats; }
+  if (!q) state.chats = rows;
+  renderTabs();
+  const list = $("#sb-list"), hero = $("#sb-hero");
+  list.innerHTML = "";
+  if (!rows.length) {
+    if (!q) {
+      hero.hidden = false;
+      hero.innerHTML = `<span class="hero-glyph"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="16" cy="16" r="4.5" fill="currentColor"/></svg></span>
+        <h2>No chats yet.</h2><p>Everything stays on this machine. Try a real command:</p>${teachHtml()}`;
+    } else { hero.hidden = false; hero.innerHTML = `<p class="muted">No chats match “${esc(q)}”.</p>`; }
+    return;
+  }
+  hero.hidden = true;
+  rows.forEach((c) => {
+    const row = document.createElement("div");
+    row.className = "sb-row" + (c.id === state.session ? " active" : "");
+    row.tabIndex = 0;
+    row.innerHTML = `<div class="sb-main">
+      <div class="top"><span class="title">${esc(c.title || "New chat")}</span>${c.pinned ? '<span class="pin" aria-label="Pinned">●</span>' : ""}</div>
+      <div class="meta"><p class="prev">${esc(c.preview || "")}</p><time>${esc(relTime(c.updated))}</time></div>
+    </div>
+    <span class="sb-acts" role="group" aria-label="Chat actions">
+      <button type="button" data-act="pin" class="${c.pinned ? "pinned" : ""}" aria-label="Pin chat" title="${c.pinned ? "Unpin" : "Pin"}"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2h4l-1 4 3 3v1H4V9l3-3-1-4zM8 10v4"/></svg></button>
+      <button type="button" data-act="export" aria-label="Export chat" title="Export"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8M5 7l3 3 3-3M3 12h10"/></svg></button>
+      <button type="button" data-act="rename" aria-label="Rename chat" title="Rename"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M11.5 2.5l2 2L6 12H4v-2l7.5-7.5zM10 4l2 2"/></svg></button>
+      <button type="button" data-act="del" class="del" aria-label="Delete chat" title="Delete"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6 4V3h4v1M5 4l1 9h4l1-9M7 6v5M9 6v5"/></svg></button>
+    </span>`;
+    row.addEventListener("click", (e) => { if (!e.target.closest(".sb-acts")) openChat(c.id); });
+    row.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.target.closest(".sb-acts")) openChat(c.id); });
+    row.querySelector(".sb-acts").addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-act]"); if (!b) return;
+      e.stopPropagation();
+      const act = b.dataset.act;
+      try {
+        if (act === "pin") { await patch(`/api/chats/${c.id}`, { pinned: !c.pinned }); renderSidebar(); }
+        else if (act === "export") { const r = await post(`/api/chats/${c.id}/export`, {}); toast(`exported → ${r.path}`); }
+        else if (act === "rename") { const t = await promptModal("Rename chat", "New title", false, c.title || ""); if (t) { await patch(`/api/chats/${c.id}`, { title: t }); renderSidebar(); } }
+        else if (act === "del") {
+          if (await confirmModal("Delete chat?", "It is moved to trash and exported first.", "Delete")) {
+            await del(`/api/chats/${c.id}`);
+            if (state.session === c.id) { state.session = null; emptyState(); }
+            renderSidebar();
+          }
+        }
+      } catch (err) { toast(err.message, "err"); }
+    });
+    list.appendChild(row);
+  });
+}
+$("#sb-search").addEventListener("input", debounce(() => renderSidebar(), 250));
+
+/* ---------------------------------------------------------------- status */
+function syncBackendSelect(cur) {
+  const sel = $("#sel-backend");
+  if (!sel.options.length) ["ollama", "lmstudio", "mock", "cloud"].forEach((b) => { const o = document.createElement("option"); o.value = b; o.textContent = b; sel.appendChild(o); });
+  if (document.activeElement !== sel) sel.value = cur || "ollama";
+}
+async function loadModels(backend, selectModel, force) {
+  try {
+    let data = force ? null : state.modelsCache[backend];
+    if (!data) { data = await get(`/api/models?backend=${encodeURIComponent(backend)}`); state.modelsCache[backend] = data; }
+    const sel = $("#sel-model");
+    const cur = selectModel || sel.value;
+    sel.innerHTML = "";
+    (data.models || []).forEach((m) => { const o = document.createElement("option"); o.value = m.name; o.textContent = m.name; sel.appendChild(o); });
+    if (cur && Array.from(sel.options).some((o) => o.value === cur)) sel.value = cur;
+    else if (data.default) sel.value = data.default;
+    return data;
+  } catch (e) { return null; }
+}
 async function refreshStatus() {
   try {
     const s = await get("/api/status");
-    state.status = s;
-    const dot = $("#backend-dot");
-    dot.className = `pulse ${s.backend_ready ? "on" : "off"}`;
-    $("#brand-sub").textContent = `${s.backend} · ${s.workspace.split("/").pop() || s.workspace}`;
-    $("#version").textContent = `v${s.version} · soul: ${s.soul.split("/").pop()}`;
-    $("#chip-model").textContent = (s.model || "no model") + (s.ultrathink ? " 🌀" : (s.effort && s.effort !== "off" ? " ⚡" + s.effort : ""));
-    $("#chip-model").title = `model · ${s.backend}`;
-    const mode = $("#chip-mode");
-    mode.textContent = `⦿ ${s.mode}`;
-    mode.className = `chip mode-${s.mode}`;
-    const gpu = s.gpu?.[0];
-    $("#chip-gpu").textContent = gpu ? `${gpu.model.slice(0, 22)} · ${gpu.total}` : "cpu only";
-    $("#chip-toks").textContent = s.busy ? `${(s.tok_s || 0).toFixed(1)} tok/s` : "idle";
-    $("#save-flag").textContent = s.saved ? "saved" : "";
-    $("#g-vram").textContent = gpu ? `${gpu.free ?? "?"} free / ${gpu.total}` : "—";
-    $("#g-vram-note").textContent = s.gpu_total_bytes ? gib(s.gpu_total_bytes) + " total" : "";
-    const ctx = $("#ctx-fill");
-    const frac = Math.min(1, (s.ctx_used || 0) / Math.max(4096, s.ctx_window || 8192));
-    ctx.style.width = (frac * 100).toFixed(1) + "%";
-    ctx.classList.toggle("hot", frac > 0.85);
-    $("#ctx-label").textContent = `~${s.ctx_used || 0} tok / ctx ${s.ctx_window || "?"}`;
-    $("#audit-note").textContent = `every gated action is journaled in ~/.ohmyllm/logs/audit.jsonl`;
-    if (s.session && s.session !== state.session) state.session = s.session;
-    $("#g-title").textContent = s.session_title || "—";
-    if (!state.config) state.config = await get("/api/config");
+    state.status = s; state.connected = true; state.everConnected = true;
+    $("#boot-error").hidden = true;
+    $("#conn-dot").classList.remove("off");
+    const used = s.ctx_used || 0, win = s.ctx_window || s.num_ctx || 0;
+    $("#ctx-badge").textContent = `◍ ${fmtTok(used)}/${fmtTok(win)}`;
+    $("#ctx-badge").title = `context ${used} / ${win} tokens` + (s.tok_s ? ` · ${s.tok_s.toFixed(1)} tok/s` : "");
+    const chip = $("#chip-mode");
+    chip.textContent = `⦿ ${s.mode}`;
+    chip.className = `badge mode mode-${s.mode}`;
+    $("#version").textContent = "v" + (s.version || "");
+    if (document.activeElement !== $("#sel-opmode")) $("#sel-opmode").value = s.op_mode || "build";
+    syncBackendSelect(s.backend);
+    if (document.activeElement !== $("#sel-effort")) $("#sel-effort").value = s.effort || "off";
+    await loadModels(s.backend, s.model);
+    if (!state.streaming && !state.approvalQueue.length) $("#run-state").textContent = "Ready";
+    try { state.config = await get("/api/config"); } catch (e) { /* keep last config */ }
   } catch (e) {
-    $("#boot-error").hidden = false; $("#boot-error-msg").textContent = e.message;
+    state.connected = false;
+    $("#conn-dot").classList.add("off");
+    if (!state.everConnected) { $("#boot-error").hidden = false; $("#boot-error-msg").textContent = e.message || "Cannot reach the local bridge."; }
+    $("#run-state").textContent = "Disconnected";
   }
 }
 
-/* -------------------------------------------------------------- palette */
-const CMDS = [
-  ["Market", () => switchView("market"), ""], ["New chat", () => newChat(), "Ctrl N"], ["Open chats", () => switchView("chats"), "Ctrl O"],
-  ["Models", () => switchView("models"), "Ctrl M"], ["Backend", () => switchView("backend"), "Ctrl B"],
-  ["Memory (soul.md)", () => switchView("memory"), "Ctrl S"], ["Doctor", () => switchView("doctor"), "Ctrl D"],
-  ["Settings", () => switchView("settings"), "Ctrl G"], ["Help", () => switchView("help"), "Ctrl H"],
-  ["Permission mode…", () => setModeUi(), "Ctrl P"], ["Stop current turn", () => post("/api/cancel", {})],
-  ["Re-run backend probe", () => { renderBackends(); refreshStatus(); }],
-  ["Remember something…", () => { $("#input").value = "/remember "; $("#composer").requestSubmit?.() ?? switchView("chat"); $("#input").focus(); }],
-];
-let palSel = 0;
-function openPalette() {
-  $("#palette-input").value = ""; palSel = 0;
-  renderPalette("");
-  openModal("#palette-modal"); $("#palette-input").focus();
-}
-function renderPalette(q) {
-  const hits = CMDS.filter((c) => c[0].toLowerCase().includes(q.toLowerCase()));
-  $("#palette-list").innerHTML = hits.map((c, i) => `<li class="${i === palSel ? "sel" : ""}" data-i="${i}">${c[0]}<small>${c[2] || ""}</small></li>`).join("");
-  $$("#palette-list li").forEach((li) => (li.onclick = () => { hits[+li.dataset.i][1](); closeModal("#palette-modal"); $("#scrim").hidden = true; }));
-  return hits;
-}
-$("#open-palette").onclick = openPalette;
-$("#palette-input").oninput = () => { palSel = 0; renderPalette($("#palette-input").value); };
-$("#palette-input").onkeydown = (e) => {
-  const hits = renderPalette($("#palette-input").value);
-  if (e.key === "ArrowDown") { palSel = Math.min(palSel + 1, hits.length - 1); renderPalette($("#palette-input").value); }
-  if (e.key === "ArrowUp") { palSel = Math.max(palSel - 1, 0); renderPalette($("#palette-input").value); }
-  if (e.key === "Enter" && hits[palSel]) { hits[palSel][1](); closeModal("#palette-modal"); $("#scrim").hidden = true; }
-  if (e.key === "Escape") { closeModal("#palette-modal"); $("#scrim").hidden = true; }
+/* ------------------------------------------------------- permission mode */
+const MODE_DESC = {
+  strict: "No modifying tools. No shell, no network, no file writes. Memory writes only when you explicitly ask.",
+  safe: "Read-only access inside the workspace. No shell, no network, no writes. soul.md memory tools are allowed.",
+  sandboxed: "Default agentic mode. Reads/writes limited to the workspace; writes ask for confirmation (per-session option); only a small allowlist of safe commands; no network by default.",
+  dangerous: "Broader filesystem and shell access. Destructive operations still ask. Network needs explicit approval. High risk.",
+  full_access: "No routine prompts. Enabled only by typing the confirmation phrase. Catastrophic commands remain blocked unless you override. Everything is logged.",
 };
+function ensureModeModal() {
+  let m = $("#mode-modal");
+  if (m) return m;
+  m = document.createElement("div");
+  m.id = "mode-modal"; m.className = "modal"; m.hidden = true;
+  m.setAttribute("role", "dialog"); m.setAttribute("aria-modal", "true"); m.setAttribute("aria-label", "Permission mode");
+  m.innerHTML = `<header><h3>Permission mode</h3></header><div class="ap-body"></div><footer><button class="btn modal-cancel" type="button">Cancel</button></footer>`;
+  m.querySelector(".modal-cancel").onclick = () => closeModal(m);
+  document.body.appendChild(m);
+  return m;
+}
+function setModeUi(preset) {
+  if (preset && MODE_DESC[preset]) { chooseMode(preset); return; }
+  const m = ensureModeModal();
+  const body = m.querySelector(".ap-body");
+  body.innerHTML = "";
+  Object.keys(MODE_DESC).forEach((mode) => {
+    const opt = document.createElement("div");
+    opt.className = "opt" + (state.status && state.status.mode === mode ? " sel" : "");
+    opt.tabIndex = 0;
+    opt.innerHTML = `<div><b>${esc(mode)}</b><div class="d">${esc(MODE_DESC[mode])}</div></div>`;
+    opt.onclick = () => chooseMode(mode);
+    opt.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); chooseMode(mode); } };
+    body.appendChild(opt);
+  });
+  openModal(m, ".opt");
+}
+async function chooseMode(mode) {
+  try {
+    let phrase;
+    if (mode === "full_access") {
+      phrase = await promptModal("Confirm FULL ACCESS", "Type the exact phrase: I ACCEPT FULL ACCESS", false, "");
+      if (phrase !== "I ACCEPT FULL ACCESS") { toast("phrase mismatch — mode unchanged", "warn"); return; }
+    }
+    await post("/api/mode", { mode, phrase });
+    closeModal("#mode-modal");
+    toast(`permission mode: ${mode}`);
+    refreshStatus();
+  } catch (e) { toast(e.message, "err"); }
+}
 
-/* ------------------------------------------------------------- wizard */
-const WZ = [
-  { t: "Welcome to OhMyLLM", b: `<p>Your own agent runtime on your own machine. Models stay local, tools are permission-gated, and memory lives in a plain <code>soul.md</code> you own.</p><p class="muted small">This setup runs once; you can redo everything later from the sidebar.</p>` },
-  { t: "Your hardware", b: `<div id="wz-hw" class="muted">detecting…</div>` },
-  { t: "Pick a backend", b: `<div id="wz-be"></div>` },
-  { t: "Pick a model", b: `<div id="wz-md">choose a backend first</div>` },
-  { t: "Permission mode", b: `<div id="wz-mode"></div>` },
-  { t: "Who are you?", b: `<p>The agent's memory starts empty. Tell it a little — these go into <b>soul.md</b>.</p>
-    <input type="text" id="wz-name" placeholder="Your name" style="width:100%;margin-bottom:8px;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:9px 12px;color:var(--fg)">
-    <input type="text" id="wz-ctx" placeholder="What you're working on" style="width:100%;background:var(--surface-2);border:1px solid var(--line);border-radius:6px;padding:9px 12px;color:var(--fg)">` },
-  { t: "Ready", b: `<p>Seeded. A few things to try:</p>
-    <div class="opt"><div><b>“list files in . and summarize”</b><div class="d">a gated tool run with an approval card</div></div></div>
-    <div class="opt"><div><b>“remember: my rabbit is called Bnuy”</b><div class="d">persistent memory — check the Memory screen after</div></div></div>
-    <div class="opt"><div><b>press <kbd>Ctrl K</kbd></b><div class="d">everything is one keystroke away</div></div></div>` },
-];
-let wzIdx = 0;
-function wzShow() {
-  $("#wz-steps").innerHTML = WZ.map((_, i) => `<i class="${i < wzIdx ? "done" : i === wzIdx ? "cur" : ""}"></i>`).join("");
-  $("#wz-body").innerHTML = `<h2>${WZ[wzIdx].t}</h2>` + WZ[wzIdx].b;
-  $("#wz-back").disabled = wzIdx === 0;
-  $("#wz-next").textContent = wzIdx === WZ.length - 1 ? "Start chatting" : "Next";
-  if (wzIdx === 1) wzHw();
-  if (wzIdx === 2) wzBe();
-  if (wzIdx === 3) wzModels();
-  if (wzIdx === 4) wzMode();
+/* ----------------------------------------------------------- view routing */
+async function switchView(view) {
+  closeMenus();
+  if (view === state.view) return;
+  if ((state.view === "settings" && state.settingsDirty) || (state.view === "memory" && state.soulDirty)) {
+    const ok = await confirmModal("Unsaved edits", "You have unsaved edits. They are kept until you save or discard them.", "Leave");
+    if (!ok) return;
+  }
+  state.view = view;
+  $$(".view").forEach((v) => { v.hidden = true; });
+  const el = $("#view-" + view);
+  if (el) el.hidden = false;
+  if (view === "models") renderModels();
+  else if (view === "providers") renderProviders();
+  else if (view === "market") renderMarket();
+  else if (view === "backend") renderBackends();
+  else if (view === "memory") renderSoul();
+  else if (view === "doctor") renderDoctor();
+  else if (view === "settings") renderSettings();
+  else if (view === "help") renderHelp();
+  else if (view === "chat") input.focus();
 }
-async function wzHw() {
-  const el = $("#wz-hw");
-  const s = state.status || (await (await fetch(`${BASE}/api/status`, { headers: { "X-OMLLM-Token": BOOT.token } })).json());
-  const gpus = s.gpu || [];
-  el.innerHTML = gpus.length
-    ? gpus.map((g) => `<div class="be-row"><span class="tagpill">${esc(g.model)}</span> ${g.total}${g.free ? ` · ${g.free} free` : ""}</div>`).join("")
-    : `<div class="be-row">No GPU detected — CPU inference works, small quantized models recommended.</div>`;
-  el.insertAdjacentHTML("beforeend", `<p class="muted small" style="margin-top:10px">backend: ${esc(s.backend)} · mode: ${esc(s.mode)}</p>`);
+async function newChat() {
+  if (state.streaming) { toast("Stop the current turn before starting a new chat", "warn"); return; }
+  if (state.changingChat) return;
+  state.changingChat = true;
+  try {
+    const sess = await post("/api/chats", { first_message: "" });
+    state.drafts.set(state.session, input.value);
+    state.session = sess.id;
+    input.value = state.drafts.get(sess.id) || ""; autoGrow();
+    emptyState();
+    await renderSidebar();
+    if (state.view !== "chat") await switchView("chat");
+    input.focus();
+  } catch (e) { toast(e.message, "err"); }
+  finally { state.changingChat = false; }
 }
-async function wzBe() {
-  const el = $("#wz-be"); if (!el) return;
-  const rows = await get("/api/backends");
-  el.innerHTML = "";
-  [["ollama", "Ollama — tool-calling llama.cpp server"], ["lmstudio", "LM Studio — desktop app API"], ["cloud", "☁ Cloud — hosted providers via API key"]]
-    .forEach(([k, t]) => {
-      const o = document.createElement("div");
-      o.className = "opt" + (state.config?.default_backend === k ? " sel" : "");
-      const st = rows[k]?.running ? '<span class="fit-ok">● running</span>' : rows[k]?.installed ? '<span class="fit-tight">○ installed</span>' : '<span class="muted">– not found</span>';
-      o.innerHTML = `<div><span class="t">${t.split(" — ")[0]}</span> ${st}<div class="d">${t.split(" — ")[1]}</div></div>`;
-      o.onclick = async () => { el.querySelectorAll(".opt").forEach((x) => x.classList.remove("sel")); o.classList.add("sel"); await post("/api/backend", { name: k }); state.config = await get("/api/config"); el.dataset.pick = k; refreshStatus(); };
-      el.appendChild(o);
+$("#cancel").onclick = async () => {
+  if (state.stopping) return;
+  state.stopping = true;
+  $("#run-state").textContent = "Stopping…";
+  $("#cancel").disabled = true;
+  try { await post("/api/cancel", {}); } catch (e) { toast(e.message, "err"); }
+  setTimeout(() => { state.stopping = false; $("#cancel").disabled = false; }, 1500);
+};/* ---------------------------------------------------------- models panel */
+let modelsData = null, modelsBackend = "";
+function humanBytes(n) {
+  if (n == null) return "—";
+  if (n >= 2 ** 30) return (n / 2 ** 30).toFixed(1) + " GB";
+  if (n >= 2 ** 20) return Math.round(n / 2 ** 20) + " MB";
+  return Math.round(n / 2 ** 10) + " KB";
+}
+const familyOf = (name) => String(name).split(/[:\-]/)[0];
+async function renderModels(force) {
+  const selB = $("#model-backend");
+  if (!selB.options.length) {
+    [["", "active backend"], ["ollama", "ollama"], ["lmstudio", "lmstudio"], ["mock", "mock"], ["cloud", "cloud"]]
+      .forEach(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; selB.appendChild(o); });
+  }
+  modelsBackend = selB.value || (state.status ? state.status.backend : "ollama");
+  $("#model-detail").textContent = "loading models…";
+  let data = force ? null : state.modelsCache[modelsBackend];
+  if (!data) {
+    try { data = await get(`/api/models?backend=${encodeURIComponent(modelsBackend)}`); state.modelsCache[modelsBackend] = data; }
+    catch (e) { data = null; }
+  }
+  modelsData = data;
+  if (!data) { $("#models-table tbody").innerHTML = ""; $("#model-detail").textContent = "could not list models — is the backend running?"; return; }
+  paintModels();
+}
+function paintModels() {
+  const data = modelsData; if (!data) return;
+  const q = $("#model-search").value.trim().toLowerCase();
+  const sort = $("#model-sort").value;
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  const cmp = {
+    name: byName,
+    size: (a, b) => (b.size_bytes || 0) - (a.size_bytes || 0) || byName(a, b),
+    params: (a, b) => (b.params_b || 0) - (a.params_b || 0) || byName(a, b),
+    quant: (a, b) => String(a.quant || "").localeCompare(String(b.quant || "")) || byName(a, b),
+    family: (a, b) => familyOf(a.name).localeCompare(familyOf(b.name)) || byName(a, b),
+    thinking: (a, b) => (b.thinking ? 1 : 0) - (a.thinking ? 1 : 0) || byName(a, b),
+    vision: (a, b) => (b.vision === true ? 1 : 0) - (a.vision === true ? 1 : 0) || byName(a, b),
+  }[sort] || byName;
+  const rows = (data.models || []).filter((m) => !q || m.name.toLowerCase().includes(q)).sort(cmp);
+  const tb = $("#models-table tbody"); tb.innerHTML = "";
+  const fitCls = { fits: "fit-ok", tight: "fit-tight", no: "fit-over" };
+  rows.forEach((m) => {
+    const tr = document.createElement("tr");
+    if (m.name === data.default) tr.className = "active";
+    tr.innerHTML = `
+      <td class="mono">${esc(m.name)}${m.loaded ? ' <span class="muted small">loaded</span>' : ""}</td>
+      <td>${esc(m.size || humanBytes(m.size_bytes))} · ${esc(m.quant || "?")}</td>
+      <td>${m.params_b ? esc(m.params_b) + "B" : "?"}</td>
+      <td>${m.ctx_len || "?"}</td>
+      <td>${humanBytes(m.vram_min)}</td>
+      <td class="${fitCls[m.fit] || "muted"}">${esc(m.fit || "?")}</td>
+      <td>${m.tool_capable === true ? "✓" : m.tool_capable === false ? "weak" : "?"}</td>
+      <td>${m.vision === true ? "✓" : m.vision === false ? "✗" : "?"}</td>
+      <td>${m.thinking ? "✓" : "—"}</td>
+      <td class="acts"></td>`;
+    const acts = tr.querySelector(".acts");
+    const use = document.createElement("button");
+    use.type = "button"; use.className = "btn small"; use.textContent = m.name === data.default ? "active" : "use";
+    use.disabled = m.name === data.default;
+    use.setAttribute("aria-label", `Use model ${m.name}`);
+    use.onclick = async (e) => {
+      e.stopPropagation();
+      try { await post("/api/model", { backend: modelsBackend, model: m.name }); toast(`model: ${m.name}`); refreshStatus(); renderModels(true); }
+      catch (err) { toast(err.message, "err"); }
+    };
+    const probe = document.createElement("button");
+    probe.type = "button"; probe.className = "btn small"; probe.textContent = "probe";
+    probe.title = "Probe vision support"; probe.setAttribute("aria-label", `Probe vision support of ${m.name}`);
+    probe.onclick = async (e) => {
+      e.stopPropagation(); probe.disabled = true;
+      try { const r = await post("/api/vision/probe", { backend: modelsBackend, model: m.name }); m.vision = r.vision; paintModels(); toast(`vision: ${r.vision}`); }
+      catch (err) { toast(err.message, "err"); }
+      finally { probe.disabled = false; }
+    };
+    acts.append(use, probe);
+    tr.onclick = () => {
+      const bits = [];
+      if (m.why_weak) bits.push("tool support: " + m.why_weak);
+      (m.warnings || []).forEach((w) => bits.push("⚠ " + w));
+      (m.notes || []).forEach((n) => bits.push("· " + n));
+      if (m.vram_comfortable) bits.push(`comfortable VRAM ≈ ${humanBytes(m.vram_comfortable)}`);
+      $("#model-detail").textContent = m.name + " — " + (bits.length ? bits.join("  ") : "no warnings");
+    };
+    tb.appendChild(tr);
+  });
+  $("#model-detail").textContent = rows.length
+    ? `${rows.length} model(s) · backend ${data.backend}${data.running ? "" : " (not running)"} — click a row for fit details`
+    : (q ? `no models match “${q}”` : "no models found — pull one or start the backend");
+}
+async function pullModel(name) {
+  const bar = $("#pull-bar"); bar.hidden = false; bar.value = 0;
+  $("#model-detail").textContent = `pulling ${name}…`;
+  try {
+    const res = await fetch(`${BASE}/api/pull`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-OMLLM-Token": BOOT.token },
+      body: JSON.stringify({ backend: modelsBackend || "ollama", name }),
     });
+    if (!res.ok) { const d = await res.json().catch(() => ({})); throw new Error(d.error || `HTTP ${res.status}`); }
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+        const ev = (frame.match(/^event: (.*)$/m) || [])[1] || "message";
+        const d = JSON.parse((frame.match(/^data: (.*)$/m) || [])[1] || "{}");
+        if (ev === "progress") {
+          const pct = Math.round((d.pct || 0) * 100);
+          bar.value = pct;
+          $("#model-detail").textContent = `pulling ${name} — ${d.status || ""} ${pct}%`;
+        } else if (ev === "done") {
+          if (d.ok) { toast(`pulled ${d.name || name}`); delete state.modelsCache[modelsBackend]; renderModels(true); }
+          else { toast(d.error || "pull failed", "err"); $("#model-detail").textContent = d.error || "pull failed"; }
+          return;
+        }
+      }
+    }
+  } catch (e) { toast(e.message, "err"); $("#model-detail").textContent = e.message; }
+  finally { bar.hidden = true; }
 }
-async function wzModels() {
-  const el = $("#wz-md"); if (!el) return;
-  el.innerHTML = `<p class="muted small">loading…</p>`;
-  const be = state.config?.default_backend || "mock";
-  const d = await get(`/api/models?backend=${be}`);
-  if (d.error) { el.innerHTML = `<p class="fit-tight">backend not reachable: ${esc(d.error)}</p><p class="muted small">Pick <b>Backend → start</b> later, or use the mock backend — it works offline.</p>`; return; }
-  el.innerHTML = "";
-  (d.models || []).forEach((m) => {
-    const o = document.createElement("div");
-    o.className = "opt" + (m.name === d.default ? " sel" : "");
-    o.innerHTML = `<div><span class="t">${esc(m.name)}</span><div class="d">${m.size} · ${m.fit} fit${m.tool_capable ? " · tools ok" : " · tools weak"}</div></div>`;
-    o.onclick = async () => { el.querySelectorAll(".opt").forEach((x) => x.classList.remove("sel")); o.classList.add("sel"); await post("/api/model", { backend: be, model: m.name }); refreshStatus(); };
-    el.appendChild(o);
-  });
-  if (!d.models?.length) el.innerHTML = `<p class="muted">No models pulled yet — that's fine, continue and pull one later from <b>Models → Pull</b>.</p>`;
-}
-function wzMode() {
-  const el = $("#wz-mode"); if (!el) return;
-  el.innerHTML = "";
-  [["safe", "Safe — recommended default"], ["strict", "Strict — approve everything that changes things"], ["sandboxed", "Sandboxed — allowlisted commands, workspace-scoped writes"]].forEach(([m, t]) => {
-    const o = document.createElement("div");
-    o.className = "opt" + (state.status?.mode === m ? " sel" : "");
-    o.innerHTML = `<div><span class="t">${t.split(" — ")[0]}</span><div class="d">${t.split(" — ")[1]}</div></div>`;
-    o.onclick = async () => { el.querySelectorAll(".opt").forEach((x) => x.classList.remove("sel")); o.classList.add("sel"); await post("/api/mode", { mode: m }); refreshStatus(); };
-    el.appendChild(o);
-  });
-  el.insertAdjacentHTML("beforeend", `<p class="muted small">dangerous & full_access exist but must be chosen later, deliberately.</p>`);
-}
-async function wzSeed() {
-  const name = $("#wz-name")?.value.trim(), ctx = $("#wz-ctx")?.value.trim();
-  if (name) await post("/api/soul", { action: "upsert", section: "Identity", text: `user's name is ${name}` });
-  if (ctx) await post("/api/soul", { action: "upsert", section: "Current Work", text: ctx });
-}
-$("#wz-next").onclick = async () => {
-  if (wzIdx === 5) await wzSeed();
-  wzIdx++;
-  if (wzIdx >= WZ.length) { $("#wizard").hidden = true; localStorage.setItem("omllm_setup_done", "1"); await patch("/api/config", { first_run_completed: true }); toast("welcome aboard"); refreshStatus(); return; }
-  wzShow();
+$("#model-search").addEventListener("input", debounce(() => paintModels(), 200));
+$("#model-sort").addEventListener("change", () => paintModels());
+$("#model-backend").addEventListener("change", () => renderModels());
+$("#models-refresh").onclick = () => renderModels(true);
+$("#models-pull").onclick = async () => {
+  const name = await promptModal("Pull a model", "Ollama model name, e.g. qwen2.5:7b", false, "");
+  if (name) pullModel(name);
 };
-$("#wz-back").onclick = () => { if (wzIdx) { wzIdx--; wzShow(); } };
 
-/* --------------------------------------------------------------- global keys */
-const KEYMAP = { m: "models", b: "backend", p: () => setModeUi(), s: "memory", d: "doctor", g: "settings", o: "chats", h: "help", n: () => newChat(), k: openPalette };
-
-/* ------------------------------------------------- hold-to-talk (Ctrl+E)
- * The audio is captured SERVER-side (pw-record/arecord, the same recorder
- * the TUI uses) — the Tauri webview has no getUserMedia permission handler
- * and browsers deny it on a whim, but the bridge always sits next to the
- * real microphone. Ctrl+E down → start; up → stop + transcribe. */
-let _mic = false, _micAuto = null, _micBusy = false;
-const _inputPlaceholder = $("#input").placeholder;
-function talkUi(on) {
-  const inp = $("#input");
-  inp.classList.toggle("mic-live", on);
-  inp.placeholder = on ? "🎙 listening… release Ctrl+E when done" : _inputPlaceholder;
+/* ------------------------------------------------------- providers panel */
+let provData = null;
+async function renderProviders() {
+  $("#prov-list").innerHTML = '<p class="muted">loading providers…</p>';
+  try { provData = await get("/api/providers"); } catch (e) { $("#prov-list").innerHTML = ""; toast(e.message, "err"); return; }
+  paintProviders();
 }
+function provGlyph(p) {
+  const icon = PROV_ICONS[p.pid];
+  if (icon) return `<span class="prov-glyph"><svg viewBox="0 0 24 24" fill="${_logoColor(icon[0])}" aria-hidden="true"><path d="${icon[1]}"/></svg></span>`;
+  return `<span class="prov-glyph">${esc((p.name || "?").charAt(0).toUpperCase())}</span>`;
+}
+function paintProviders() {
+  if (!provData) return;
+  const q = $("#prov-search").value.trim().toLowerCase();
+  const list = $("#prov-list"); list.innerHTML = "";
+  const rows = (provData.providers || []).filter((p) => !q || (p.name + " " + p.pid + " " + (p.blurb || "")).toLowerCase().includes(q));
+  const groups = [
+    ["recommended", rows.filter((p) => p.recommended)],
+    ["popular", rows.filter((p) => p.popular && !p.recommended)],
+    ["all providers", rows.filter((p) => !p.popular && !p.recommended && !p.pid.startsWith("custom-"))],
+    ["custom endpoints", rows.filter((p) => p.pid.startsWith("custom-"))],
+  ];
+  groups.forEach(([label, ps]) => {
+    if (!ps.length) return;
+    const h = document.createElement("div"); h.className = "prov-group"; h.textContent = label; list.appendChild(h);
+    ps.forEach((p) => {
+      const row = document.createElement("div"); row.className = "prov-row";
+      row.innerHTML = `${provGlyph(p)}<span class="prov-name">${esc(p.name)}</span><span class="prov-blurb">${esc(p.blurb || "")}</span>
+        ${p.active ? '<span class="pb active">active</span>' : ""}${p.has_key ? `<span class="pb ok">${esc(p.masked || "key set")}</span>` : ""}${p.recommended ? '<span class="pb rec">rec</span>' : ""}
+        <span class="prov-acts"></span>`;
+      const acts = row.querySelector(".prov-acts");
+      const mk = (label2, fn, cls = "btn small") => {
+        const b = document.createElement("button"); b.type = "button"; b.className = cls; b.textContent = label2;
+        b.setAttribute("aria-label", `${label2} ${p.name}`);
+        b.onclick = (e) => { e.stopPropagation(); fn(); };
+        acts.appendChild(b);
+      };
+      if (!p.has_key) mk("connect", () => provConnect(p));
+      else {
+        if (!p.active) mk("use", () => provUse(p));
+        mk("re-key", () => provConnect(p));
+        mk("forget", () => provForget(p), "btn small danger");
+      }
+      list.appendChild(row);
+    });
+  });
+  const foot = document.createElement("div"); foot.className = "prov-foot";
+  const add = document.createElement("button"); add.type = "button"; add.className = "btn small";
+  add.textContent = "+ custom OpenAI-compatible endpoint"; add.onclick = provAddCustom;
+  foot.appendChild(add); list.appendChild(foot);
+}
+async function provConnect(p) {
+  const hint = p.signup_url ? `Get a key: ${p.signup_url}` : "Paste the API key — stored locally in owner-only config.toml.";
+  const key = await promptModal(`Connect ${p.name}`, hint, true, "");
+  if (!key) return;
+  try {
+    let r = await post("/api/providers/key", { pid: p.pid, key, probe: true });
+    if (r.models_ok === false) {
+      // gateway without a /models listing — ask for ids, re-sending the key
+      // (an empty key would DELETE it)
+      const models = await promptModal(`${p.name}: model ids`, "No /models listing on this gateway — enter comma-separated model ids.", false, "");
+      if (models) r = await post("/api/providers/key", { pid: p.pid, key, models });
+    }
+    provData = r; paintProviders();
+    toast(`${p.name} key saved`);
+  } catch (e) { toast(e.message, "err"); }
+}
+async function provUse(p) {
+  try { provData = await post("/api/providers/use", { pid: p.pid }); paintProviders(); toast(`using ${p.name} (cloud backend)`); refreshStatus(); }
+  catch (e) { toast(e.message, "err"); }
+}
+async function provForget(p) {
+  if (!await confirmModal(`Forget ${p.name}?`, "The stored API key is removed from config.toml.", "Forget")) return;
+  try { provData = await post("/api/providers/forget", { pid: p.pid }); paintProviders(); toast(`${p.name} key removed`); refreshStatus(); }
+  catch (e) { toast(e.message, "err"); }
+}
+async function provAddCustom() {
+  const name = await promptModal("Custom provider", "Display name", false, "");
+  if (!name) return;
+  const base = await promptModal("Base URL", "OpenAI-compatible base, e.g. https://host/v1", false, "");
+  if (!base) return;
+  const models = await promptModal("Model ids", "Comma-separated model ids (optional)", false, "");
+  try { provData = await post("/api/providers/custom", { name, base_url: base, models: models || "" }); paintProviders(); toast(`added ${name}`); }
+  catch (e) { toast(e.message, "err"); }
+}
+$("#prov-search").addEventListener("input", debounce(() => paintProviders(), 200));
+
+/* ---------------------------------------------------------- market panel */
+let marketData = null, marketSection = "", marketTimer = null;
+async function renderMarket() {
+  $("#market-grid").innerHTML = '<p class="muted">loading catalog…</p>';
+  try { marketData = await get("/api/market"); } catch (e) { $("#market-grid").innerHTML = ""; toast(e.message, "err"); return; }
+  paintMarket();
+  pollMarket(); // surface any in-flight download
+}
+function paintMarket() {
+  if (!marketData) return;
+  const entries = marketData.entries || [];
+  const sections = [...new Set(entries.map((e) => e.section))];
+  if (marketSection && !sections.includes(marketSection)) marketSection = "";
+  const head = $("#market-head");
+  head.innerHTML = `<span>GPU: ${esc(marketData.gpu || "unknown")}</span><span>VRAM: ${humanBytes(marketData.vram_bytes)}</span><span class="market-seg"></span>`;
+  const seg = head.querySelector(".market-seg");
+  [["all", ""], ...sections.map((s) => [s, s])].forEach(([label, val]) => {
+    const n = val ? entries.filter((e) => e.section === val).length : entries.length;
+    const b = document.createElement("button"); b.type = "button";
+    b.className = "chip" + (marketSection === val ? " active" : "");
+    b.innerHTML = `${esc(label)}<span class="cnt">${n}</span>`;
+    b.onclick = () => { marketSection = val; paintMarket(); };
+    seg.appendChild(b);
+  });
+  const grid = $("#market-grid"); grid.innerHTML = "";
+  const fitCls = { fits: "ok", tight: "warn", no: "bad", unknown: "dim" };
+  entries.filter((e) => !marketSection || e.section === marketSection).forEach((e) => {
+    const card = document.createElement("div"); card.className = "market-card"; card.tabIndex = 0;
+    const pct = marketData.vram_bytes ? Math.min(100, Math.round(((e.size_gb * 2 ** 30) / marketData.vram_bytes) * 100)) : 0;
+    card.innerHTML = `
+      <div class="mc-top"><span class="mc-title">${esc(e.title)}</span><span class="mc-size">${esc(e.size_gb)} GB</span></div>
+      <div class="mc-fit ${fitCls[e.fit] || "dim"}">${esc(e.fit_label || e.fit || "?")}</div>
+      <div class="mc-blurb">${esc(e.blurb || e.short || "")}</div>
+      <div class="mc-bar"><i class="${fitCls[e.fit] || "dim"}" style="width:${pct}%"></i></div>
+      <div class="mc-foot"><span>${esc(e.repo || "")}</span><span class="mc-dl">download →</span></div>`;
+    const go = () => marketDownload(e);
+    card.onclick = go;
+    card.onkeydown = (ev) => { if (ev.key === "Enter" && !ev.isComposing) go(); };
+    grid.appendChild(card);
+  });
+}
+async function marketDownload(e) {
+  const warn = e.fit === "no" ? " It does NOT fit your VRAM — expect CPU offload or failure." : "";
+  if (!await confirmModal(`Download ${e.title}?`, `${e.size_gb} GB from ${e.repo || "the catalog"}.${warn} ${e.fit_label || ""}`, "Download")) return;
+  try {
+    await post("/api/market/download", { mid: e.mid });
+    $("#market-dl").hidden = false;
+    $("#market-dl-label").textContent = `downloading ${e.title}…`;
+    $("#market-bar-fill").style.width = "0%";
+    pollMarket();
+  } catch (err) { toast(err.message, "err"); }
+}
+async function pollMarket() {
+  clearTimeout(marketTimer);
+  let p;
+  try { p = await get("/api/market/progress"); } catch (e) { return; }
+  if (p.active) {
+    $("#market-dl").hidden = false;
+    const pct = p.total ? Math.min(100, (p.received / p.total) * 100) : 0;
+    $("#market-bar-fill").style.width = pct.toFixed(1) + "%";
+    $("#market-dl-label").textContent = `${p.title} — ${humanBytes(p.received)} / ${humanBytes(p.total)} · ${p.mbps} MB/s · eta ${p.eta_s}s`;
+    marketTimer = setTimeout(pollMarket, 1000);
+  } else if (p.done) {
+    $("#market-bar-fill").style.width = "100%";
+    $("#market-dl-label").textContent = `${p.title} — done`;
+    toast(`downloaded ${p.title}`);
+    setTimeout(() => { $("#market-dl").hidden = true; }, 4000);
+    renderModels(true);
+  } else if (p.error) {
+    $("#market-dl-label").textContent = `${p.title || "download"} — ${p.error}`;
+    toast(p.error, "err");
+  } else { $("#market-dl").hidden = true; }
+}
+$("#market-dl-cancel").onclick = async () => {
+  try { await post("/api/market/cancel", {}); toast("download cancelling…"); } catch (e) { toast(e.message, "err"); }
+};
+
+/* --------------------------------------------------------- backend panel */
+const BACKEND_INFO = {
+  ollama: "Local Ollama server — GGUF models with GPU offload.",
+  lmstudio: "LM Studio desktop app — local OpenAI-compatible server.",
+  mock: "Built-in scripted backend for demos and tests. No GPU, no network.",
+  cloud: "Cloud providers (OpenRouter, OpenAI, Anthropic, …) — connect a key in Providers.",
+};
+async function renderBackends() {
+  const wrap = $("#backend-cards"); wrap.innerHTML = '<p class="muted">probing backends…</p>';
+  let data = {};
+  try { data = await get("/api/backends"); } catch (e) { toast(e.message, "err"); }
+  wrap.innerHTML = "";
+  const cur = state.status ? state.status.backend : "";
+  ["ollama", "lmstudio", "mock", "cloud"].forEach((name) => {
+    const b = data[name] || {};
+    const card = document.createElement("div"); card.className = "be-card-ui" + (name === cur ? " sel" : "");
+    card.innerHTML = `<h3><span class="pulse ${b.running ? "on" : "off"}"></span>${esc(name)}${name === cur ? ' <span class="pb active">default</span>' : ""}</h3>
+      <div class="be-row">${esc(BACKEND_INFO[name])}</div>
+      <div class="be-row mono small">${b.installed ? "installed" : "not installed"} · ${b.running ? "running" : "stopped"}${b.health ? " · " + esc(b.health) : ""}</div>
+      <div class="be-acts"></div>`;
+    const acts = card.querySelector(".be-acts");
+    const set = document.createElement("button"); set.type = "button"; set.className = "btn small";
+    set.textContent = "Set default"; set.disabled = name === cur;
+    set.onclick = async () => {
+      try { await post("/api/backend", { name }); toast(`backend: ${name}`); await refreshStatus(); renderBackends(); }
+      catch (e) { toast(e.message, "err"); }
+    };
+    const start = document.createElement("button"); start.type = "button"; start.className = "btn small";
+    start.textContent = b.running ? "Check" : "Start";
+    start.onclick = async () => {
+      start.disabled = true;
+      try {
+        const r = await post("/api/backend", { name, start: true });
+        const ins = $("#backend-instructions");
+        if (r.instructions) { ins.hidden = false; ins.textContent = r.instructions; } else ins.hidden = true;
+        toast(r.message || (r.ok ? `${name} ready` : `${name} not ready`), r.ok ? "" : "warn");
+        renderBackends();
+      } catch (e) { toast(e.message, "err"); }
+      finally { start.disabled = false; }
+    };
+    acts.append(set, start);
+    wrap.appendChild(card);
+  });
+}
+
+/* ------------------------------------------------------------ soul panel */
+let soulSaved = "";
+async function renderSoul() {
+  if (!state.config) { try { state.config = await get("/api/config"); } catch (e) { /* keep null */ } }
+  let s;
+  try { s = await get("/api/soul"); } catch (e) { toast(e.message, "err"); return; }
+  $("#soul-path").textContent = s.path || "";
+  $("#mem-writes").checked = !!(state.config && state.config.memory && state.config.memory.agent_writes);
+  if (!state.soulDirty) { $("#soul-editor").value = s.text || ""; soulSaved = s.text || ""; }
+  const rec = $("#soul-recent"); rec.innerHTML = "";
+  (s.recent || []).slice(0, 8).forEach((r) => {
+    const div = document.createElement("div");
+    const op = r.op || r.action || r.kind || "change";
+    const txt = r.text || r.note || r.summary || (r.section ? "section: " + r.section : JSON.stringify(r));
+    const b = document.createElement("b"); b.textContent = op;
+    div.append(b, document.createTextNode(" " + String(txt).slice(0, 160)));
+    rec.appendChild(div);
+  });
+  if (!(s.recent || []).length) rec.innerHTML = '<span class="muted">no memory changes yet</span>';
+}
+$("#soul-editor").addEventListener("input", () => { state.soulDirty = $("#soul-editor").value !== soulSaved; });
+$("#soul-save").onclick = async () => {
+  const text = $("#soul-editor").value;
+  try {
+    await post("/api/soul", { action: "write", text });
+    soulSaved = text; state.soulDirty = false;
+    toast("soul.md saved"); renderSoul();
+  } catch (e) { toast(`save failed — edits kept: ${e.message}`, "err"); }
+};
+$("#soul-revert").onclick = async () => {
+  if (!await confirmModal("Revert soul.md?", "Restores the latest backup. Current unsaved edits are discarded.", "Revert")) return;
+  try {
+    const r = await post("/api/soul", { action: "revert" });
+    $("#soul-editor").value = r.text || ""; soulSaved = r.text || ""; state.soulDirty = false;
+    toast("reverted to backup"); renderSoul();
+  } catch (e) { toast(e.message, "err"); }
+};
+$("#soul-clear").onclick = async () => {
+  if (!await confirmModal("Clear soul.md?", "All durable memories are removed (a backup is kept).", "Clear")) return;
+  try {
+    const r = await post("/api/soul", { action: "clear" });
+    $("#soul-editor").value = r.text || ""; soulSaved = r.text || ""; state.soulDirty = false;
+    toast("soul.md cleared"); renderSoul();
+  } catch (e) { toast(e.message, "err"); }
+};
+$("#mem-writes").onchange = async () => {
+  const want = $("#mem-writes").checked;
+  try {
+    await post("/api/config/memory", { agent_writes: want });
+    state.config = await get("/api/config");
+    toast(`agent memory writes: ${want ? "on" : "off"}`);
+  } catch (e) { $("#mem-writes").checked = !want; toast(e.message, "err"); }
+};
+
+/* ---------------------------------------------------------- doctor panel */
+async function renderDoctor() {
+  const list = $("#doctor-list"); list.innerHTML = '<li class="muted">running checks…</li>';
+  let d;
+  try { d = await get("/api/doctor"); } catch (e) { list.innerHTML = ""; toast(e.message, "err"); return; }
+  list.innerHTML = "";
+  (d.checks || []).forEach((c) => {
+    const li = document.createElement("li");
+    const st = c.status === "info" ? "skip" : c.status;
+    li.innerHTML = `<span class="st ${esc(st)}">${esc(c.status)}</span><span class="lbl"></span>${c.fix ? '<span class="hint"></span>' : ""}`;
+    li.querySelector(".lbl").textContent = c.label + (c.detail ? " — " + c.detail : "");
+    if (c.fix) li.querySelector(".hint").textContent = c.fix;
+    list.appendChild(li);
+  });
+  const sum = Object.entries(d.summary || {}).map(([k, v]) => `${k}: ${v}`).join(" · ");
+  if (sum) {
+    const li = document.createElement("li");
+    li.innerHTML = '<span class="st skip">sum</span><span class="lbl"></span>';
+    li.querySelector(".lbl").textContent = sum;
+    list.appendChild(li);
+  }
+}
+$("#doctor-run").onclick = () => renderDoctor();
+
+/* -------------------------------------------------------- settings panel */
+/* Editable: generation / agent / voice / ui only — the bridge 403s any
+   attempt to PATCH protected security sections, and the UI never tries. */
+const SET_FIELDS = {
+  generation: [
+    ["temperature", "num", "0–2 · higher = more random"],
+    ["top_p", "num", "nucleus sampling cutoff (0–1)"],
+    ["top_k", "int", "top-k sampling"],
+    ["repeat_penalty", "num", "repetition penalty (0–2)"],
+    ["num_ctx", "int", "context window (tokens)"],
+    ["num_gpu", "int", "GPU layers (−1 = all)"],
+    ["num_batch", "int", "batch size"],
+    ["max_tokens", "int", "max reply tokens"],
+    ["seed", "int", "RNG seed (0 = random)"],
+    ["threads", "int", "CPU threads (0 = auto)"],
+    ["timeout", "num", "request timeout (seconds)"],
+    ["streaming", "bool", "stream tokens as they arrive"],
+    ["effort", "enum:off,low,medium,high,xhigh,max", "reasoning effort ladder"],
+    ["ultrathink", "bool", "deep multi-pass reasoning"],
+    ["thinking_budget", "int", "reasoning token cap (0 = server default)"],
+    ["kv_cache", "enum:f16,bf16,q8_0,q4_0,q4_1,iq4_nl,fp8,fp8_e4m3,auto", "K/V cache quantization"],
+  ],
+  agent: [
+    ["max_steps", "int", "tool steps per turn (1–64)"],
+    ["max_parse_retries", "int", "retries on malformed tool JSON (0–5)"],
+    ["tool_timeout", "num", "per-tool timeout (seconds)"],
+    ["native_tools", "enum:auto,force,off", "native tool-calling API"],
+    ["react_fallback", "bool", "ReAct fallback for weak models"],
+    ["compact", "bool", "auto-compact long chats"],
+    ["compact_ratio", "num", "compact above this ctx ratio (0.2–0.95)"],
+    ["thinking_visible", "bool", "show reasoning text in chat"],
+    ["agent_loop", "bool", "relentless completion audit"],
+    ["tone", "text", "default · ruthless · chill · friendly · professional · terse"],
+    ["op_mode", "enum:chat,plan,build", "chat/plan block writes & shell · build = full agent"],
+  ],
+  voice: [
+    ["language", "text", "STT language hint (auto = detect)"],
+    ["engine", "enum:auto,sensevoice,parakeet,whisper,whisperx", "STT engine override"],
+  ],
+  ui: [
+    ["theme", "text", "stored preference — this console ships dark only"],
+    ["timestamps", "bool", "show message timestamps"],
+    ["show_tool_panels", "bool", "expand tool panels by default"],
+    ["confirm_quit", "bool", "confirm before shutting down"],
+  ],
+};
+const RO_ROWS = [
+  ["permission_mode", "Permission mode", "read-only · change via the mode badge (Ctrl+P), phrase-gated"],
+  ["workspace", "Workspace", "read-only · set at launch"],
+  ["generation.thinking", "Thinking (derived)", "read-only · mirrors effort ≠ off"],
+  ["memory.enabled", "Memory enabled", "read-only · dedicated memory control"],
+  ["memory.agent_writes", "Agent memory writes", "read-only · toggle in the Memory view"],
+  ["memory.require_explicit_save", "Explicit-save only", "read-only · dedicated memory control"],
+  ["safety.deny", "Deny globs (hard floor)", "read-only · edit config.toml — wins in every mode"],
+  ["safety.command_denylist", "Command blocklist", "read-only · edit config.toml"],
+  ["safety.catastrophic_override", "Catastrophic override", "read-only · edit config.toml"],
+  ["guard.enabled", "Guard (System-1 flagger)", "read-only · edit config.toml"],
+  ["ollama.host", "Ollama host", "read-only · edit config.toml"],
+  ["lmstudio.base_url", "LM Studio URL", "read-only · edit config.toml"],
+  ["mail.address", "Mail address", "read-only · oml mail setup"],
+  ["mail.password", "Mail password (masked)", "read-only · oml mail setup"],
+];
+let settingsSnapshot = null;
+function cfgGet(obj, path) { return path.split(".").reduce((o, k) => (o == null ? o : o[k]), obj); }
+function settingsValues() {
+  const out = {};
+  $$("#settings-form [data-key]").forEach((el) => { out[el.dataset.key] = el.type === "checkbox" ? el.checked : el.value; });
+  return out;
+}
+function settingsDirtyNow() {
+  if (!settingsSnapshot) return false;
+  const v = settingsValues();
+  return Object.keys(settingsSnapshot).some((k) => String(v[k]) !== String(settingsSnapshot[k]));
+}
+function renderSettings() {
+  // dirty edits survive navigation — never rebuild over them
+  if (state.settingsDirty && $("#settings-form").children.length) return;
+  const cfg = state.config;
+  const form = $("#settings-form"); form.innerHTML = "";
+  if (!cfg) { form.innerHTML = '<p class="muted">config unavailable — is the bridge connected?</p>'; return; }
+  const snap = {};
+  Object.entries(SET_FIELDS).forEach(([section, fields]) => {
+    const sec = document.createElement("div"); sec.className = "set-row section";
+    sec.innerHTML = `<label>${esc(section)}</label><span></span>`;
+    form.appendChild(sec);
+    fields.forEach(([key, type, hint]) => {
+      const path = `${section}.${key}`;
+      const val = cfgGet(cfg, path);
+      const row = document.createElement("div"); row.className = "set-row";
+      const id = `set-${section}-${key}`;
+      row.innerHTML = `<label for="${id}">${esc(key)}<small class="muted">${esc(hint)}</small></label>`;
+      let el;
+      if (type === "bool") { el = document.createElement("input"); el.type = "checkbox"; el.checked = !!val; }
+      else if (type.startsWith("enum:")) {
+        el = document.createElement("select");
+        type.slice(5).split(",").forEach((o) => { const op = document.createElement("option"); op.value = o; op.textContent = o; el.appendChild(op); });
+        el.value = String(val == null ? "" : val);
+      } else {
+        el = document.createElement("input");
+        el.type = type === "text" ? "text" : "number";
+        if (type === "num") el.step = "any";
+        el.value = val == null ? "" : String(val);
+      }
+      el.id = id; el.dataset.key = path; el.dataset.type = type;
+      el.addEventListener("input", () => { state.settingsDirty = settingsDirtyNow(); });
+      el.addEventListener("change", () => { state.settingsDirty = settingsDirtyNow(); });
+      row.appendChild(el);
+      form.appendChild(row);
+      snap[path] = el.type === "checkbox" ? el.checked : el.value;
+    });
+  });
+  const sec = document.createElement("div"); sec.className = "set-row section";
+  sec.innerHTML = "<label>read-only · dedicated controls</label><span></span>";
+  form.appendChild(sec);
+  RO_ROWS.forEach(([path, label, hint]) => {
+    let val = cfgGet(cfg, path);
+    if (Array.isArray(val)) val = val.join(", ") || "(none)";
+    else if (val && typeof val === "object") val = JSON.stringify(val);
+    const row = document.createElement("div"); row.className = "set-row";
+    const id = `ro-${path.replace(/\./g, "-")}`;
+    row.innerHTML = `<label for="${id}">${esc(label)}<small class="muted">${esc(hint)}</small></label>`;
+    const el = document.createElement("input"); el.type = "text"; el.id = id; el.disabled = true;
+    el.value = val == null ? "" : String(val);
+    el.setAttribute("aria-label", `${label} (read-only)`);
+    row.appendChild(el); form.appendChild(row);
+  });
+  settingsSnapshot = snap;
+  state.settingsDirty = false;
+}
+$("#settings-save").onclick = async () => {
+  const values = settingsValues();
+  const body = {};
+  for (const [path, raw] of Object.entries(values)) {
+    const [section, key] = path.split(".");
+    const el = $(`#settings-form [data-key="${path}"]`);
+    const type = el ? el.dataset.type : "text";
+    let v = raw;
+    if (type === "bool") v = !!el.checked;
+    else if (type === "int") { v = parseInt(raw, 10); if (!Number.isFinite(v)) { toast(`${key}: enter an integer`, "err"); return; } }
+    else if (type === "num") { v = parseFloat(raw); if (!Number.isFinite(v)) { toast(`${key}: enter a number`, "err"); return; } }
+    (body[section] = body[section] || {})[key] = v;
+  }
+  const btn = $("#settings-save"); btn.disabled = true;
+  try {
+    const r = await patch("/api/config", body);
+    state.config = r.config || state.config;
+    settingsSnapshot = { ...values };
+    // edits typed DURING the save are still dirty — never clobber them
+    state.settingsDirty = settingsDirtyNow();
+    toast("settings saved");
+    if (!state.settingsDirty) renderSettings();
+    refreshStatus();
+  } catch (e) { toast(`save failed — edits kept: ${e.message}`, "err"); }
+  finally { btn.disabled = false; }
+};
+
+/* ------------------------------------------------------------ help panel */
+function renderHelp() {
+  const keys = [
+    ["Enter", "send · Shift+Enter = newline"],
+    ["Esc", "close hints / modal · stop the running turn"],
+    ["Ctrl+K", "command palette"],
+    ["Ctrl+N", "new chat"],
+    ["Ctrl+P", "permission mode"],
+    ["Ctrl+M", "models"],
+    ["Ctrl+B", "backend"],
+    ["Ctrl+S", "memory · soul.md"],
+    ["Ctrl+D", "doctor"],
+    ["Ctrl+G", "settings"],
+    ["Ctrl+H", "this help"],
+    ["Ctrl+O", "focus chat search"],
+    ["Ctrl+E (hold)", "voice input — release to transcribe"],
+    ["Ctrl+Enter", "save soul.md (Memory view)"],
+    ["Tab / ↑ ↓", "complete slash & @ hints"],
+  ];
+  const refs = [
+    ["@file:path", "attach a file's contents as context"],
+    ["@folder:path", "attach a folder listing"],
+    ["@diff", "working-tree changes"],
+    ["@staged", "staged changes"],
+    ["@git:ref", "git ref / log context"],
+  ];
+  $("#help-body").innerHTML = `
+    <h3>Keyboard</h3>
+    <table>${keys.map(([k, d]) => `<tr><td><kbd>${esc(k)}</kbd></td><td>${esc(d)}</td></tr>`).join("")}</table>
+    <h3>Context references</h3>
+    <table>${refs.map(([k, d]) => `<tr><td><code>${esc(k)}</code></td><td>${esc(d)}</td></tr>`).join("")}</table>
+    <h3>Slash commands</h3>
+    <table>${SLASHES.map((s) => `<tr><td><code>${esc(s.cmd)}</code></td><td>${esc(s.desc)}</td></tr>`).join("")}</table>
+    <h3>Operation modes</h3>
+    <p>The composer's <b>chat / plan / build</b> selector is separate from the permission mode: chat and plan block write and shell tools entirely; build is the full agent.</p>
+    <h3>Steering a running turn</h3>
+    <p>While a turn is busy, sending a message queues it as guidance (<code>/api/steer</code>) — a chip shows the queue position. <code>/steer note</code> does the same. If no turn is active, the message is sent normally and you get a notice. Steering never changes mode, tools, or approvals.</p>
+    <h3>Permission modes</h3>
+    <table>${Object.entries(MODE_DESC).map(([m, d]) => `<tr><td><b>${esc(m)}</b></td><td>${esc(d)}</td></tr>`).join("")}</table>
+    <h3>Shell consent</h3>
+    <p><code>run_command</code> approvals offer <b>Allow once</b> or <b>Deny</b> only — never session-wide, never permanent. In sandboxed and dangerous modes every shell command asks fresh. In full_access, routine commands are auto-approved by policy (the mode itself requires typing the exact confirmation phrase); catastrophic commands stay blocked unless <code>safety.catastrophic_override</code> is set. <code>safety.deny</code> globs are a hard floor in every mode — a matched rule is named on the approval card. Expired approvals render as <b>expired — denied</b> (fail-closed).</p>
+    <h3>Where your data lives</h3>
+    <p>The bridge binds 127.0.0.1 only. The GUI capability token arrives in the URL fragment, is erased immediately, and never leaves this machine. Chats, soul.md, the audit log, and config live under your local OMLLM home with owner-only permissions. Cloud providers are contacted only when you connect a key and select one; keys are stored locally in config.toml and shown masked. This console loads no CDNs, no external fonts, and no telemetry — everything is offline.</p>`;
+}/* ------------------------------------------------------- command palette */
+const PALETTE = [
+  ...SLASHES.map((s) => ({ label: s.cmd, hint: s.desc, cmd: s.cmd, arg: !!s.arg })),
+  { label: "view: chat", hint: "back to the conversation", view: "chat" },
+  { label: "view: models", hint: "browse & pull models", view: "models" },
+  { label: "view: providers", hint: "connect cloud providers", view: "providers" },
+  { label: "view: market", hint: "model market", view: "market" },
+  { label: "view: backend", hint: "backend status", view: "backend" },
+  { label: "view: memory", hint: "soul.md editor", view: "memory" },
+  { label: "view: doctor", hint: "health checks", view: "doctor" },
+  { label: "view: settings", hint: "generation / agent / voice / ui", view: "settings" },
+  { label: "view: help", hint: "keyboard & security notes", view: "help" },
+];
+let palSel = 0, palMatches = [];
+function openPalette() {
+  $("#palette-input").value = "";
+  paintPalette("");
+  openModal("#palette-modal", "#palette-input");
+}
+function paintPalette(q) {
+  const needle = q.trim().toLowerCase();
+  palMatches = PALETTE.filter((c) => !needle || c.label.toLowerCase().includes(needle) || (c.hint || "").toLowerCase().includes(needle));
+  palSel = 0;
+  const ul = $("#palette-list"); ul.innerHTML = "";
+  palMatches.forEach((c, i) => {
+    const li = document.createElement("li");
+    li.className = i === palSel ? "sel" : "";
+    li.innerHTML = `<span>${esc(c.label)}</span><small>${esc(c.hint || "")}</small>`;
+    li.onclick = () => runPalette(c);
+    ul.appendChild(li);
+  });
+  if (!palMatches.length) ul.innerHTML = '<li class="muted">no matching command</li>';
+}
+function repaintPaletteSel() {
+  $$("#palette-list li").forEach((li, i) => li.classList.toggle("sel", i === palSel));
+  const sel = $("#palette-list li.sel");
+  if (sel) sel.scrollIntoView({ block: "nearest" });
+}
+function runPalette(c) {
+  closeModal("#palette-modal");
+  if (c.view) { switchView(c.view); return; }
+  input.value = c.cmd + (c.arg ? " " : "");
+  autoGrow();
+  if (c.arg) { input.focus(); computeHints(); }
+  else submit();
+}
+$("#palette-input").addEventListener("input", () => paintPalette($("#palette-input").value));
+$("#palette-input").addEventListener("keydown", (e) => {
+  if (e.isComposing || e.keyCode === 229) return; // IME guard
+  if (e.key === "ArrowDown") { e.preventDefault(); palSel = Math.min(palSel + 1, Math.max(0, palMatches.length - 1)); repaintPaletteSel(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); palSel = Math.max(palSel - 1, 0); repaintPaletteSel(); }
+  else if (e.key === "Enter") { e.preventDefault(); if (palMatches[palSel]) runPalette(palMatches[palSel]); }
+});
+
+/* ----------------------------------------------------------------- voice */
+let talking = false, talkTimer = null;
 async function talkStart() {
-  if (_mic || _micBusy || state.streaming) return;
-  _mic = true;
-  talkUi(true);
-  let r;
-  try { r = await post("/api/voice/record", { action: "start" }); }
-  catch (err) { r = { error: String(err.message || err) }; }
-  if (r && r.error) {
-    _mic = false;
-    talkUi(false);
-    toast(r.error, "bad");
+  if (talking) return;
+  talking = true;
+  input.classList.add("mic-live");
+  $("#run-state").textContent = "Listening… release Ctrl+E";
+  try { await post("/api/voice/record", { action: "start" }); }
+  catch (e) {
+    talking = false; input.classList.remove("mic-live");
+    toast(e.message, "err");
+    $("#run-state").textContent = state.streaming ? "Working" : "Ready";
     return;
   }
-  _micAuto = setTimeout(talkStop, 30000);  // never leave the mic hot
+  talkTimer = setTimeout(() => { if (talking) talkStop(); }, 30000);
 }
 async function talkStop() {
-  if (!_mic) return;
-  _mic = false;
-  clearTimeout(_micAuto);
-  talkUi(false);
-  if (_micBusy) return;
-  _micBusy = true;
-  toast("🎧 transcribing…");
-  let r;
-  try { r = await post("/api/voice/record", { action: "stop" }); }
-  catch (err) { r = { error: String(err.message || err) }; }
-  _micBusy = false;
-  if (r && r.error) { toast(r.error, "bad"); return; }
-  if (r && r.text) {
-    const inp = $("#input");
-    inp.value = (inp.value + " " + r.text).trim();
-    inp.focus();
-    toast(`🎙 ${r.text.slice(0, 60)}${r.text.length > 60 ? "…" : ""}`);
-  }
+  if (!talking) return;
+  talking = false; clearTimeout(talkTimer);
+  input.classList.remove("mic-live");
+  $("#run-state").textContent = "Transcribing…";
+  try {
+    const r = await post("/api/voice/record", { action: "stop" });
+    if (r.text) {
+      input.value += (input.value && !input.value.endsWith(" ") ? " " : "") + r.text;
+      autoGrow(); computeHints(); input.focus();
+      state.drafts.set(state.session, input.value);
+    } else if (r.note) toast(r.note, "warn");
+  } catch (e) { toast(e.message, "err"); }
+  $("#run-state").textContent = state.streaming ? "Working" : "Ready";
 }
-document.addEventListener("keydown", async (e) => {
-  if ((e.ctrlKey || e.metaKey) && !e.altKey) {
-    const k = e.key.toLowerCase();
-    if (k === "q") { e.preventDefault(); if (await confirmModal("quit", "Quit the OhMyLLM window?", "Quit")) window.close(); return; }
-    if (k === "e" && e.ctrlKey && !e.metaKey && !e.repeat) { e.preventDefault(); talkStart(); return; }
-    const fn = KEYMAP[k];
-    if (fn) { e.preventDefault(); typeof fn === "function" ? fn() : switchView(fn); }
-    if (k === "enter" && $("#view-memory")?.hidden === false) { e.preventDefault(); $("#soul-save").click(); }
+
+/* ------------------------------------------------------------ global keys */
+document.addEventListener("keydown", (e) => {
+  if (e.isComposing || e.keyCode === 229) return; // IME guard on every hotkey path
+  if (modalStack.length) return; // the modal capture handler owns keys while stacked
+  if (e.defaultPrevented) return;
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && e.key.toLowerCase() === "e") { e.preventDefault(); if (!e.repeat) talkStart(); return; }
+  if (!mod) {
+    if (e.key === "Escape") {
+      if (!$("#view-menu").hidden || !$("#plus-menu").hidden) { closeMenus(); return; }
+      if (!slashHint.hidden || !atHint.hidden) { hideHints(); return; }
+      if (state.streaming && !state.stopping) { e.preventDefault(); $("#cancel").click(); }
+    }
+    return;
   }
-  if (e.key === "Escape" && !$("#approval-modal").hidden && state.approvalQueue.length) answerApproval("deny");
-  if (!$("#approval-modal").hidden) {
-    const k = e.key.toLowerCase();
-    if (k === "y") answerApproval("approve");
-    if (k === "n") answerApproval("deny");
-    if (k === "a") answerApproval("session");
-    if (k === "p") answerApproval("always");
-  }
-  if (e.key.toLowerCase() === "e" && !e.ctrlKey && !e.metaKey && !e.altKey && _mic) talkStop();
+  const k = e.key.toLowerCase();
+  const views = { m: "models", b: "backend", s: "memory", d: "doctor", g: "settings", h: "help" };
+  if (views[k]) { e.preventDefault(); switchView(views[k]); }
+  else if (k === "p") { e.preventDefault(); setModeUi(null); }
+  else if (k === "n") { e.preventDefault(); newChat(); }
+  else if (k === "k") { e.preventDefault(); openPalette(); }
+  else if (k === "q") { e.preventDefault(); handleSlash("/quit"); }
+  else if (k === "o") { e.preventDefault(); openSidebarNarrow(); $("#sb-search").focus(); }
+  else if (k === "enter" && state.view === "memory") { e.preventDefault(); $("#soul-save").click(); }
 });
-document.addEventListener("keyup", (e) => { if (e.code === "KeyE") talkStop(); });
-window.addEventListener("blur", () => talkStop());
+document.addEventListener("keyup", (e) => {
+  if (talking && (e.key === "Control" || e.key === "Meta" || e.key.toLowerCase() === "e")) talkStop();
+});
+window.addEventListener("blur", () => { if (talking) talkStop(); });
+
+/* leaving with unsaved work warns — drafts, dirty editors, running turn */
+window.addEventListener("beforeunload", (e) => {
+  const hasDraft = input.value.trim() || Array.from(state.drafts.values()).some((v) => v && v.trim());
+  if (state.soulDirty || state.settingsDirty || state.streaming || hasDraft) { e.preventDefault(); e.returnValue = ""; }
+});
+
+/* ----------------------------------------------------------------- menus */
+function closeMenus() {
+  $("#view-menu").hidden = true;
+  $("#plus-menu").hidden = true;
+  $("#btn-menu").setAttribute("aria-expanded", "false");
+  $("#btn-plus").setAttribute("aria-expanded", "false");
+}
+function toggleMenu(btnSel, menuSel) {
+  const m = $(menuSel), wasHidden = m.hidden;
+  closeMenus();
+  m.hidden = !wasHidden;
+  $(btnSel).setAttribute("aria-expanded", String(wasHidden));
+}
+$("#btn-menu").onclick = (e) => { e.stopPropagation(); toggleMenu("#btn-menu", "#view-menu"); };
+$("#btn-plus").onclick = (e) => { e.stopPropagation(); toggleMenu("#btn-plus", "#plus-menu"); };
+document.addEventListener("click", (e) => { if (!e.target.closest(".menu-wrap")) closeMenus(); });
+$("#view-menu").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-view]");
+  if (b) { closeMenus(); switchView(b.dataset.view); }
+});
+$("#menu-palette").onclick = () => { closeMenus(); openPalette(); };
+$("#plus-menu").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-ins]");
+  if (b) {
+    closeMenus();
+    input.value += b.dataset.ins;
+    input.focus(); autoGrow(); computeHints();
+    state.drafts.set(state.session, input.value);
+  }
+});
+$("#plus-skills").onclick = async () => {
+  closeMenus();
+  try {
+    const r = await get("/api/skills");
+    const names = (r.skills || []).map((s) => s.name);
+    if (!names.length) { toast("no skills saved yet", "warn"); return; }
+    const name = await promptModal("Cast a skill", names.join(", "), false, names[0]);
+    if (name) { input.value = `/skill:${name}`; autoGrow(); submit(); }
+  } catch (e) { toast(e.message, "err"); }
+};
+
+/* -------------------------------------------------------- sidebar toggle */
+const narrowMQ = window.matchMedia("(max-width: 900px)");
+function sidebarIsOpen() {
+  const sb = $("#sidebar");
+  return narrowMQ.matches ? sb.classList.contains("open") : !sb.classList.contains("closed");
+}
+function setSidebar(open) {
+  const sb = $("#sidebar");
+  if (narrowMQ.matches) { sb.classList.toggle("open", open); sb.classList.remove("closed"); }
+  else { sb.classList.toggle("closed", !open); sb.classList.remove("open"); }
+  $("#btn-sidebar").setAttribute("aria-pressed", String(open));
+}
+function closeSidebarNarrow() { if (narrowMQ.matches) setSidebar(false); }
+function openSidebarNarrow() { if (narrowMQ.matches) setSidebar(true); }
+$("#btn-sidebar").onclick = () => setSidebar(!sidebarIsOpen());
+narrowMQ.addEventListener("change", () => setSidebar(!narrowMQ.matches));
+
+/* ------------------------------------------------------ composer selectors */
+$("#sel-backend").onchange = async () => {
+  const name = $("#sel-backend").value;
+  try { await post("/api/backend", { name }); toast(`backend: ${name}`); await refreshStatus(); loadModels(name, null, true); }
+  catch (e) { toast(e.message, "err"); refreshStatus(); }
+};
+$("#sel-model").onchange = async () => {
+  const model = $("#sel-model").value; if (!model) return;
+  const backend = $("#sel-backend").value || (state.status && state.status.backend);
+  try { await post("/api/model", { backend, model }); toast(`model: ${model}`); refreshStatus(); }
+  catch (e) { toast(e.message, "err"); }
+};
+$("#sel-effort").onchange = async () => {
+  const effort = $("#sel-effort").value;
+  try { await patch("/api/config", { generation: { effort } }); toast(`effort: ${effort}`); }
+  catch (e) { toast(e.message, "err"); refreshStatus(); }
+};
+$("#sel-opmode").onchange = () => setOpMode($("#sel-opmode").value);
+$("#chip-mode").onclick = () => setModeUi(null);
+$("#ctx-badge").onclick = () => switchView("settings");
+$("#btn-new").onclick = () => newChat();
+$("#boot-retry").onclick = async () => {
+  $("#boot-error").hidden = true;
+  $("#run-state").textContent = "Connecting…";
+  await refreshStatus();
+  if (state.connected) renderSidebar();
+};
 
 /* ------------------------------------------------------------------ boot */
 async function boot() {
+  // prompt/confirm cancel buttons participate in Escape/scrim dismissal
+  $("#pm-cancel").classList.add("modal-cancel");
+  $("#cf-cancel").classList.add("modal-cancel");
+  setSidebar(!narrowMQ.matches);
   await refreshStatus();
-  if (!localStorage.getItem("omllm_setup_done") && BOOT.first_run === false) { $("#wizard").hidden = false; wzShow(); }
-  setInterval(refreshStatus, 5000);
-  if (state.status?.session) loadSessionIntoView(state.status.session);
+  await renderSidebar();
+  const active = state.status && state.status.session;
+  if (active && state.chats.some((c) => c.id === active)) await loadSessionIntoView(active);
   else emptyState();
-  $("#input").focus();
+  setInterval(refreshStatus, 5000);
+  setInterval(pollState, 2000);
+  pollState();
+  input.focus();
 }
 boot();

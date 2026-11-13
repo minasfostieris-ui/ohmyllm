@@ -27,25 +27,25 @@ def test_basename_handles_windows_and_posix(tok, expect):
 
 # ---------------------------------------------------------------- lms CLI
 def test_lms_cli_windows_name(tmp_path, monkeypatch):
+    import ohmyllm.backends.lmstudio as lms
+
     monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    bindir = tmp_path / ".lmstudio" / "bin"
-    bindir.mkdir(parents=True)
-    (bindir / "lms.exe").write_text("")
-    monkeypatch.setattr("shutil.which", lambda n: None)
+    expected = tmp_path / ".lmstudio" / "bin" / "lms.exe"
+    monkeypatch.setattr(lms, "trusted_executable", lambda value: str(expected) if value == str(expected) else None)
     be = LMStudioBackend(Config())
-    assert be.lms_cli() == str(bindir / "lms.exe")
+    assert be.lms_cli() == str(expected)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX layout only")
 def test_lms_cli_posix_name(tmp_path, monkeypatch):
+    import ohmyllm.backends.lmstudio as lms
+
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    monkeypatch.setattr("shutil.which", lambda n: None)
-    bindir = tmp_path / ".lmstudio" / "bin"
-    bindir.mkdir(parents=True)
-    (bindir / "lms").write_text("")
+    expected = tmp_path / ".lmstudio" / "bin" / "lms"
+    monkeypatch.setattr(lms, "trusted_executable", lambda value: str(expected) if value == str(expected) else None)
     be = LMStudioBackend(Config())
-    assert be.lms_cli() == str(bindir / "lms")
+    assert be.lms_cli() == str(expected)
 
 
 # ---------------------------------------------------------- app discovery
@@ -144,6 +144,22 @@ def test_paths_use_home_and_work_on_any_os(tmp_path, monkeypatch):
     from ohmyllm.config import ConfigStore
     cfg = ConfigStore(cfgp).load()
     assert cfg.first_run_completed is True
+
+
+def test_gui_environment_preserves_only_validated_override(tmp_path, monkeypatch):
+    from ohmyllm.cli import _bridge_environment
+
+    gui = tmp_path / "ohmyllm-gui"
+    gui.write_text("#!/bin/sh\nexit 0\n")
+    gui.chmod(0o700)
+    monkeypatch.setenv("OMLLM_GUI_BIN", str(gui))
+    monkeypatch.setenv("OMLLM_GUI_TOKEN", "must-not-leak")
+    env = _bridge_environment()
+    assert env["OMLLM_GUI_BIN"] == str(gui.resolve())
+    assert "OMLLM_GUI_TOKEN" not in env
+
+    monkeypatch.setenv("OMLLM_GUI_BIN", str(tmp_path / "missing"))
+    assert "OMLLM_GUI_BIN" not in _bridge_environment()
 
 
 # ------------------------------------------------------ campaign script portability

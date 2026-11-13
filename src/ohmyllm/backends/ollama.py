@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
 import subprocess
 import time
 from collections.abc import AsyncIterator
@@ -16,6 +15,14 @@ import httpx
 
 from .. import paths
 from ..config.models import BackendName, GenerationSettings
+from ..secureio import (
+    private_mkdir,
+    read_tail,
+    rotate_private_log,
+    sanitized_environment,
+    trusted_executable,
+    url_is_loopback,
+)
 from .base import BackendError, BaseBackend, ChatChunk, ModelInfo, StartResult
 
 INSTALL_INSTRUCTIONS = [
@@ -64,7 +71,7 @@ class OllamaBackend(BaseBackend):
 
     # ----------------------------------------------------------- presence
     def binary(self) -> str | None:
-        return shutil.which(self.config.ollama.binary)
+        return trusted_executable(self.config.ollama.binary)
 
     def is_installed(self) -> bool:
         return self.binary() is not None
@@ -100,21 +107,31 @@ class OllamaBackend(BaseBackend):
                 message="Auto-start is disabled in settings; run 'ollama serve' manually.",
                 instructions=["Run:  ollama serve", "Keep the terminal open, then retry."],
             )
+        host = self.config.ollama.host
+        if not url_is_loopback(host):
+            return StartResult(
+                ok=False,
+                message="Automatic Ollama startup is restricted to a loopback endpoint.",
+                instructions=["Start the remote server explicitly and enable remote backends in settings."],
+            )
         logf = paths.logs_dir() / "ollama-serve.log"
-        logf.parent.mkdir(parents=True, exist_ok=True)
+        private_mkdir(logf.parent)
         try:
-            fh = open(logf, "ab")
-            popen_kw: dict[str, Any] = {"stdout": fh, "stderr": fh, "stdin": subprocess.DEVNULL}
-            if os.name == "posix":
-                popen_kw["start_new_session"] = True
-            else:
-                popen_kw["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0)
-            env = dict(os.environ)
-            host = self.config.ollama.host
-            m = httpx.URL(host)
-            env.setdefault("OLLAMA_HOST", f"{m.host}:{m.port or 11434}")
-            proc = subprocess.Popen([exe, "serve"], env=env, **popen_kw)  # noqa: S603
-        except OSError as exc:
+            rotate_private_log(logf)
+            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            fd = os.open(logf, flags, 0o600)
+            with os.fdopen(fd, "ab") as fh:
+                popen_kw: dict[str, Any] = {"stdout": fh, "stderr": fh, "stdin": subprocess.DEVNULL}
+                if os.name == "posix":
+                    popen_kw["start_new_session"] = True
+                else:
+                    popen_kw["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0)
+                m = httpx.URL(host)
+                env = sanitized_environment({"OLLAMA_HOST": f"{m.host}:{m.port or 11434}"})
+                proc = subprocess.Popen([exe, "serve"], env=env, **popen_kw)  # noqa: S603
+        except (OSError, ValueError) as exc:
             return StartResult(ok=False, message=f"Failed to launch 'ollama serve': {exc}", instructions=INSTALL_INSTRUCTIONS)
         deadline = time.monotonic() + self.config.ollama.startup_timeout
         while time.monotonic() < deadline:
@@ -128,8 +145,8 @@ class OllamaBackend(BaseBackend):
                 break
             await asyncio.sleep(0.4)
         tail: list[str] = []
-        with contextlib.suppress(OSError):
-            tail = logf.read_text(errors="replace").splitlines()[-3:]
+        with contextlib.suppress(OSError, ValueError):
+            tail = read_tail(logf).splitlines()[-3:]
         return StartResult(
             ok=False,
             started_process=True,

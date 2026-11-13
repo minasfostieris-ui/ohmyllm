@@ -46,6 +46,11 @@ def test_read_file_audio_without_engine_is_honest(oml_env, svc, monkeypatch):
 
 def test_read_file_video_without_ffmpeg_is_honest(oml_env, svc, monkeypatch):
     monkeypatch.setattr(media, "_ffmpeg", lambda: None)
+    # read_file probes the duration BEFORE the ffmpeg early-return; on hosts
+    # with ffprobe installed that would spawn a child the audit hook kills.
+    # Force the missing-ffprobe path so the honest no-ffmpeg error is exercised
+    # without any subprocess.
+    monkeypatch.setattr(media, "_ffprobe", lambda: None)
     ws = oml_env["ws"]
     (ws / "clip.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42fake")
     res = asyncio.run(read_file(_ctx(svc, ws), {"path": "clip.mp4"}))

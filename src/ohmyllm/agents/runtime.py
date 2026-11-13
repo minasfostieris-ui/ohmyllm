@@ -9,21 +9,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import secrets
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .. import guard as guard_mod
+from .. import paths
 from ..backends.base import BackendError, BaseBackend
 from ..config.models import Config, PermissionMode
 from ..memory import SoulManager
 from ..safety.approvals import ApprovalManager, ApprovalOutcome, PromptFn
 from ..safety.audit import AuditLogger
 from ..safety.policy import Decision, PolicyEngine
+from ..secureio import atomic_write, canonical_json, private_mkdir
 from ..sessions import Session
 from ..tools.registry import ToolRegistry
 from ..tools.spec import ToolContext, ToolResult
+from .context_refs import expand_context_refs
 from .parser import ParsedCall, ToolCallParser
 from .prompts import AGENTLOOP_AUDIT as AGENTLOOP_AUDIT_MSG
 from .prompts import AGENTLOOP_GATE as AGENTLOOP_GATE_MSG
@@ -36,6 +41,12 @@ CORRECTION_MSG = (
 )
 
 OnEvent = Callable[[dict[str, Any]], None] | None
+
+
+def _idle_state() -> dict[str, Any]:
+    """D4 machine-state snapshot shape (enums/ids only — never content)."""
+    return {"state": "idle", "session_id": None, "turn": 0, "backend": "", "model": "",
+            "pending_approval_id": None, "seq": 0, "ts": 0.0}
 
 
 def _clip_headtail(text: str, keep: int) -> str:
@@ -80,6 +91,9 @@ class AgentRuntime:
         soul: SoulManager | None,
         skills: Any = None,
         config_saver: Any = None,
+        clock: Callable[[], float] | None = None,
+        state_path: Path | None = None,
+        git_runner: Any = None,
     ) -> None:
         self.backend = backend
         self.registry = registry
@@ -95,6 +109,77 @@ class AgentRuntime:
         self.prompt_builder = PromptBuilder(config, registry, soul, skills=skills,
                                             workspace=policy.workspace)
         self.last_usage: dict[str, Any] = {}
+        self._retired = False
+        # D4: machine state (injectable clock + path for offline tests)
+        self._clock: Callable[[], float] = clock or time.time
+        self._state_path = Path(state_path) if state_path is not None else paths.global_home() / "state.json"
+        self._state_seq = 0
+        self._turn_counter = 0
+        self._machine_state: dict[str, Any] = _idle_state()
+        # D1: injectable read-only git seam (tests pass a fake runner)
+        self._git_runner = git_runner
+        # D6: bounded mid-turn steer queue
+        self._steer_queue: list[str] = []
+        self._turn_active = False
+
+    def retire(self) -> None:
+        """Prevent a runtime bound to stale security objects from doing more work."""
+        self._retired = True
+
+    # ------------------------------------------------------ machine state (D4)
+    STEER_MAX = 8
+    STEER_MAX_CHARS = 65_536
+
+    @property
+    def turn_active(self) -> bool:
+        return self._turn_active
+
+    def machine_state(self) -> dict[str, Any]:
+        """Live snapshot for the bridge /api/state route."""
+        return dict(self._machine_state)
+
+    def _publish_state(self, state: str, *, session_id: str | None = None, backend: str = "",
+                       model: str = "", pending_approval_id: str | None = None) -> None:
+        """Publish a transition to OMLLM_HOME/state.json (0600, atomic).
+        Enums and ids only — never tool args, message text, or secrets."""
+        self._state_seq += 1
+        snap: dict[str, Any] = {
+            "state": state, "session_id": session_id, "turn": self._turn_counter,
+            "backend": backend, "model": model, "pending_approval_id": pending_approval_id,
+            "seq": self._state_seq, "ts": float(self._clock()),
+        }
+        self._machine_state = snap
+        try:
+            private_mkdir(self._state_path.parent)
+            atomic_write(self._state_path, canonical_json(snap) + "\n", mode=0o600)
+        except (OSError, ValueError):
+            pass  # state is informational; it must never break a turn
+
+    # ------------------------------------------------------------- steer (D6)
+    def steer(self, text: str) -> int:
+        """Queue mid-turn guidance; drained at the next tool_result boundary.
+        Returns the 1-based queue position. Steer text is inert literal user
+        content: it can never change mode, unlock tools, or dismiss approvals."""
+        if self._retired:
+            raise RuntimeError("runtime retired after a security boundary change")
+        if not self._turn_active:
+            raise RuntimeError("no active turn")
+        payload = str(text)
+        if not payload.strip():
+            raise ValueError("steer text is empty")
+        if len(payload) > self.STEER_MAX_CHARS:
+            raise ValueError(f"steer text exceeds the {self.STEER_MAX_CHARS}-character cap")
+        if len(self._steer_queue) >= self.STEER_MAX:
+            raise ValueError(f"steer queue full (max {self.STEER_MAX})")
+        self._steer_queue.append(payload)
+        return len(self._steer_queue)
+
+    def _drain_steer(self, session: Session, emit: Callable[[dict[str, Any]], None]) -> None:
+        while self._steer_queue:
+            text = self._steer_queue.pop(0)
+            # recorded as a plain user message — slash-looking text stays inert
+            session.add_message("user", text)
+            emit({"type": "steer", "text": text})
 
     # ---------------------------------------------------------------- turn
     async def run_turn(
@@ -110,6 +195,43 @@ class AgentRuntime:
         user_requested_memory: bool = False,
         interjections: list[str] | None = None,
     ) -> TurnResult:
+        """Turn wrapper owning D4 lifecycle state and the D6 steer queue."""
+        self._turn_active = True
+        self._steer_queue.clear()
+        try:
+            result = await self._run_turn(
+                session, user_text, user_content, model=model, prompt_fn=prompt_fn,
+                on_event=on_event, cancel=cancel, user_requested_memory=user_requested_memory,
+                interjections=interjections,
+            )
+        except AgentCancelled:
+            self._publish_state("idle", session_id=session.id, backend=self.backend.name.value, model=session.model)
+            raise
+        except BaseException:
+            self._publish_state("error", session_id=session.id, backend=self.backend.name.value, model=session.model)
+            raise
+        else:
+            self._publish_state("error" if result.error else "done", session_id=session.id,
+                                backend=self.backend.name.value, model=session.model)
+            return result
+        finally:
+            self._turn_active = False
+            self._steer_queue.clear()
+
+    async def _run_turn(
+        self,
+        session: Session,
+        user_text: str,
+        user_content: Any = None,
+        *,
+        model: str | None = None,
+        prompt_fn: PromptFn | None = None,
+        on_event: OnEvent = None,
+        cancel: asyncio.Event | None = None,
+        user_requested_memory: bool = False,
+        interjections: list[str] | None = None,
+    ) -> TurnResult:
+        self._check_active()
         model = model or self._default_model()
         if not model:
             model = await self._auto_model()
@@ -118,6 +240,10 @@ class AgentRuntime:
         session.backend = self.backend.name.value
         session.model = model
         session.permission_mode = mode.value
+        # D1: expand workspace-bounded @-references before the prompt is built
+        if user_content is None and isinstance(user_text, str) and "@" in user_text:
+            user_text = expand_context_refs(user_text, workspace=self.policy.workspace,
+                                            git_runner=self._git_runner)
         session.add_message("user", user_content if user_content is not None else user_text)
         emit = on_event or (lambda _e: None)
         result = TurnResult()
@@ -143,6 +269,8 @@ class AgentRuntime:
                 info = None
             native = bool(info is not None and info.tool_capable)
         emit({"type": "turn_start", "model": model, "backend": self.backend.name.value, "mode": mode.value, "protocol": "native" if native else "text"})
+        self._turn_counter += 1
+        self._publish_state("working", session_id=session.id, backend=self.backend.name.value, model=model)
 
         retries = 0
         total_tokens = 0
@@ -153,7 +281,6 @@ class AgentRuntime:
         eval_ns = 0
         reasoning_chars = 0
         reasoning_text: list[str] = []
-        self._turn_cache: dict[str, str] = {}
         final_text = ""
         step = 0
         agent_loop = self.config.agent.agent_loop
@@ -166,6 +293,7 @@ class AgentRuntime:
         prev_text = ""
         echo_runs = 0
         while step < budget:
+            self._check_active()
             self._check_cancel(cancel)
             step += 1
             result.steps = step
@@ -363,6 +491,7 @@ class AgentRuntime:
             session.add_message("assistant", assistant_text.strip(), **extra)
 
             for call in parsed:
+                self._check_active()
                 self._check_cancel(cancel)
                 await self._handle_call(call, session, ctx, mode, prompt_fn, emit, result, model,
                                       truncated=finish_reason == "length")
@@ -508,19 +637,9 @@ class AgentRuntime:
             emit({"type": "retry", "reason": note, "attempt": 0})
             return
 
-        name, args = vres.name, vres.args
-        cache_key = f"{name}:{json.dumps(args, sort_keys=True, default=str)[:200]}"
-        cache = getattr(self, "_turn_cache", None)
-        if cache is not None and cache_key in cache:
-            note = (cache[cache_key][:2500]
-                    + "\n(duplicate of an earlier identical call — result cached; "
-                      "stop repeating tool calls and answer the user now)")
-            session.add_message("tool", note, name=name, tool_call_id=call.id)
-            result.calls.append({"name": name, "status": "cached", "approval": "n/a",
-                                 "args": args, "risk": 0})
-            emit({"type": "tool_result", "name": name, "ok": True, "cached": True,
-                  "output": "(cached — identical call already ran this turn)", "call_id": call.id})
-            return
+        name = vres.name
+        # Bind policy, previews, approvals, and execution to the same resolved identity.
+        args = self.policy.prepare_args(name, vres.args)
         decision = self.policy.evaluate(name, args, user_requested_memory=ctx.user_requested_memory)
         gcfg = self.config.guard
         if (gcfg.enabled and decision.allowed and not decision.requires_approval
@@ -533,7 +652,7 @@ class AgentRuntime:
             elif verdict.error:
                 decision = Decision(decision.allowed, decision.requires_approval,
                                     decision.risk, (*decision.reasons, verdict.reason(name)))
-        preview = self.registry.preview(name, args) if (decision.requires_approval or decision.allowed) else ""
+        preview = self.registry.preview(name, args, ctx) if (decision.requires_approval or decision.allowed) else ""
         plan = {
             "type": "tool_plan", "name": name, "args": args, "risk": decision.risk,
             "level": decision.level, "mode": mode.value, "approval": decision.requires_approval,
@@ -543,22 +662,58 @@ class AgentRuntime:
         if not decision.allowed:
             reason = "; ".join(decision.reasons)
             body = f"BLOCKED BY PERMISSION ENGINE: {reason}"
-            self._audit(name, args, "blocked", False, started, mode, model, error=reason)
+            # Hard blocks are policy denials: journal them as "denied" so every
+            # refused call is audited (fail-closed auditing; matches the schema
+            # the runtime tests and docs use for denied decisions).
+            self._audit(name, args, "denied", False, started, mode, model, error=reason)
             result.calls.append({"name": name, "status": "blocked", "approval": "blocked", "args": args, "risk": decision.risk})
             session.add_message("assistant", f"[attempted {name}]")
             session.add_message("tool", body, name=name, tool_call_id=call.id)
             emit({"type": "tool_result", "name": name, "ok": False, "blocked": True, "output": body, "call_id": call.id})
+            self._drain_steer(session, emit)
             return
 
         outcome = ApprovalOutcome.APPROVED
         if decision.requires_approval:
-            outcome = await self.approvals.decide(name, args, decision, prompt_fn, preview=preview)
+            approval_generation = self.config.policy_generation
+            approval_id = secrets.token_hex(12)
+            emit({"type": "approval_request", "id": approval_id, "name": name, "tool": name,
+                  "call_id": call.id, "risk": decision.risk})
+            self._publish_state("blocked", session_id=session.id, backend=self.backend.name.value,
+                                model=model, pending_approval_id=approval_id)
+            outcome = await self.approvals.decide(
+                name,
+                args,
+                decision,
+                prompt_fn,
+                preview=preview,
+                workspace=str(self.policy.workspace),
+                session_id=session.id,
+                policy_generation=approval_generation,
+            )
+            self._publish_state("working", session_id=session.id, backend=self.backend.name.value, model=model)
+            self._check_active()
+            current_args = self.policy.prepare_args(name, vres.args)
+            current_decision = self.policy.evaluate(
+                name, current_args, user_requested_memory=ctx.user_requested_memory
+            )
+            stale = (
+                approval_generation != self.config.policy_generation
+                or self.policy.mode is not mode
+                or current_args != args
+                or not current_decision.allowed
+            )
+            if stale:
+                outcome = ApprovalOutcome.DENIED
+                decision = current_decision
+                args = current_args
         if not outcome.approved:
             self._audit(name, args, "denied", False, started, mode, model, error="user denied")
             result.calls.append({"name": name, "status": "denied", "approval": "denied", "args": args, "risk": decision.risk})
             session.add_message("assistant", f"[asked to run {name}]")
             session.add_message("tool", "The user DENIED this tool call. Do not retry it; adapt your answer.", name=name, tool_call_id=call.id)
             emit({"type": "tool_result", "name": name, "ok": False, "denied": True, "output": "denied", "call_id": call.id})
+            self._drain_steer(session, emit)
             return
 
         try:
@@ -573,8 +728,6 @@ class AgentRuntime:
         out_text = tool_result.as_message()
         if self.soul is not None and name.startswith("soul_"):
             emit({"type": "memory_activity", "tool": name, "ok": tool_result.ok})
-        if cache is not None:
-            cache[cache_key] = out_text[:2500]
         # media tool results: images ride the conversation as a follow-up
         # USER message (no backend carries images on tool messages). Attach
         # only when the active model can actually see; otherwise the model
@@ -615,6 +768,8 @@ class AgentRuntime:
         if tool_result.meta.get("images"):
             meta_public["images"] = len(tool_result.meta["images"])  # never ship base64 into UI events
         emit({"type": "tool_result", "name": name, "ok": tool_result.ok, "approval": outcome.value, "output": out_text[:4000], "duration_ms": duration, "call_id": call.id, "file": meta_public or None})
+        self._publish_state("working", session_id=session.id, backend=self.backend.name.value, model=model)
+        self._drain_steer(session, emit)
 
     # ------------------------------------------------------------- plumbing
 
@@ -740,6 +895,10 @@ class AgentRuntime:
         if section is not None:
             section.default_model = best.name  # cache for the rest of this process
         return best.name
+
+    def _check_active(self) -> None:
+        if self._retired:
+            raise AgentCancelled("runtime retired after a security boundary change")
 
     def _check_cancel(self, cancel: asyncio.Event | None) -> None:
         if cancel is not None and cancel.is_set():

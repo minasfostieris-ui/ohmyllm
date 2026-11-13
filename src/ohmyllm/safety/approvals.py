@@ -1,15 +1,22 @@
-"""Approval flows: per-session memory and permanent rules."""
+"""Collision-resistant, scoped approval flows."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import hashlib
 import json
-import re
-from collections.abc import Awaitable, Callable
+import threading
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
+from ..secureio import atomic_write, canonical_json, private_file_ok, private_mkdir
 from .policy import Decision
+
+_RULES_VERSION = 2
 
 
 class ApprovalOutcome(StrEnum):
@@ -20,7 +27,11 @@ class ApprovalOutcome(StrEnum):
 
     @property
     def approved(self) -> bool:
-        return self in (ApprovalOutcome.APPROVED, ApprovalOutcome.APPROVED_SESSION, ApprovalOutcome.APPROVED_ALWAYS)
+        return self in (
+            ApprovalOutcome.APPROVED,
+            ApprovalOutcome.APPROVED_SESSION,
+            ApprovalOutcome.APPROVED_ALWAYS,
+        )
 
 
 @dataclass
@@ -31,77 +42,159 @@ class ApprovalRequest:
     preview: str = ""
 
 
-PromptFn = Callable[[ApprovalRequest], Awaitable[ApprovalOutcome]]
+PromptFn = Callable[[ApprovalRequest], Coroutine[Any, Any, ApprovalOutcome]]
 
 
-def _key(tool: str, args: dict) -> str:
-    def norm(v: object) -> str:
-        if isinstance(v, str):
-            v = re.sub(r"\s+", " ", v.strip())
-            if len(v) > 120:
-                v = v[:120] + "…"
-        return json.dumps(v, sort_keys=True, default=str)
+def _scope(
+    *, workspace: str = "", session_id: str = "", policy_generation: int = 0,
+) -> dict[str, Any]:
+    return {
+        "workspace": str(workspace),
+        "session_id": str(session_id),
+        "policy_generation": int(policy_generation),
+    }
 
-    inner = ",".join(f"{k}={norm(args[k])}" for k in sorted(args))
-    return f"{tool}:{inner}"
+
+def _key(
+    tool: str,
+    args: dict,
+    *,
+    workspace: str = "",
+    session_id: str = "",
+    policy_generation: int = 0,
+) -> str:
+    """Hash the complete canonical request; never normalize or truncate values."""
+    identity = {
+        "version": _RULES_VERSION,
+        "tool": str(tool),
+        "arguments": args,
+        "scope": _scope(
+            workspace=workspace,
+            session_id=session_id,
+            policy_generation=policy_generation,
+        ),
+    }
+    digest = hashlib.sha256(canonical_json(identity).encode("utf-8")).hexdigest()
+    return f"v{_RULES_VERSION}:sha256:{digest}"
 
 
 @dataclass
 class ApprovalManager:
-    """Remembers approved calls for the session; optional permanent rules file."""
+    """Remembers exact scoped calls; shell authorization is always one-shot."""
 
     rules_path: Path | None = None
     _session: set[str] = field(default_factory=set)
     _permanent: set[str] = field(default_factory=set)
+    _invalidation_epoch: int = field(default=0, init=False, repr=False)
+    _pending: dict[asyncio.Task[Any], asyncio.AbstractEventLoop] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _pending_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.load_rules()
 
-    # ------------------------------------------------------------ rules
     def load_rules(self) -> None:
         self._permanent = set()
-        if self.rules_path and self.rules_path.is_file():
-            try:
-                data = json.loads(self.rules_path.read_text(encoding="utf-8"))
-                self._permanent = {r["key"] for r in data.get("rules", []) if r.get("decision") == "allow"}
-            except Exception:  # noqa: BLE001 - corrupt rules file shouldn't brick the app
-                self._permanent = set()
+        if not self.rules_path or not private_file_ok(self.rules_path):
+            return
+        try:
+            data = json.loads(self.rules_path.read_text(encoding="utf-8"))
+            if data.get("version") != _RULES_VERSION:
+                return  # all legacy, unscoped grant formats are intentionally invalidated
+            self._permanent = {
+                str(rule["key"])
+                for rule in data.get("rules", [])
+                if rule.get("decision") == "allow"
+                and str(rule.get("key", "")).startswith(f"v{_RULES_VERSION}:sha256:")
+            }
+        except (AttributeError, OSError, ValueError, TypeError, KeyError):
+            self._permanent = set()
 
     def save_rules(self) -> None:
         if not self.rules_path:
             return
-        self.rules_path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {"rules": [{"key": k, "decision": "allow"} for k in sorted(self._permanent)]}
-        tmp = self.rules_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        tmp.replace(self.rules_path)
+        payload = {
+            "version": _RULES_VERSION,
+            "rules": [{"key": key, "decision": "allow"} for key in sorted(self._permanent)],
+        }
+        private_mkdir(self.rules_path.parent)
+        atomic_write(self.rules_path, json.dumps(payload, indent=2) + "\n", mode=0o600)
 
-    # ------------------------------------------------------------ checks
-    def preapproved(self, tool: str, args: dict) -> bool:
-        if _key(tool, args) in (self._session | self._permanent):
-            return True
-        # "[a]lways this session" on e.g. write_file means the TOOL, not one
-        # exact payload: a loop writing three files must not re-prompt per
-        # file. Permanent rules keep exact-arg matching — they're user-written.
-        return tool in self._session
+    def preapproved(
+        self,
+        tool: str,
+        args: dict,
+        *,
+        workspace: str = "",
+        session_id: str = "",
+        policy_generation: int = 0,
+    ) -> bool:
+        key = _key(
+            tool,
+            args,
+            workspace=workspace,
+            session_id=session_id,
+            policy_generation=policy_generation,
+        )
+        return key in self._session or key in self._permanent
 
-    def remember_session(self, tool: str, args: dict) -> None:
-        self._session.add(_key(tool, args))
-        self._session.add(tool)
+    def remember_session(
+        self,
+        tool: str,
+        args: dict,
+        *,
+        workspace: str = "",
+        session_id: str = "",
+        policy_generation: int = 0,
+    ) -> None:
+        self._session.add(_key(
+            tool,
+            args,
+            workspace=workspace,
+            session_id=session_id,
+            policy_generation=policy_generation,
+        ))
 
-    def add_permanent(self, tool: str, args: dict) -> None:
-        self._session.add(_key(tool, args))
-        self._permanent.add(_key(tool, args))
+    def add_permanent(
+        self,
+        tool: str,
+        args: dict,
+        *,
+        workspace: str = "",
+        session_id: str = "",
+        policy_generation: int = 0,
+    ) -> None:
+        key = _key(
+            tool,
+            args,
+            workspace=workspace,
+            session_id=session_id,
+            policy_generation=policy_generation,
+        )
+        self._session.add(key)
+        self._permanent.add(key)
         self.save_rules()
 
     def clear_session(self) -> None:
         self._session.clear()
 
+    def invalidate_all(self) -> None:
+        """Invalidate grants and actively deny prompts crossing a policy transition."""
+        with self._pending_lock:
+            self._invalidation_epoch += 1
+            pending = tuple(self._pending.items())
+            self._session.clear()
+            self._permanent.clear()
+        for task, loop in pending:
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(task.cancel)
+        self.save_rules()
+
     @property
     def permanent_rules(self) -> tuple[str, ...]:
         return tuple(sorted(self._permanent))
 
-    # ------------------------------------------------------------ flow
     async def decide(
         self,
         tool: str,
@@ -109,18 +202,71 @@ class ApprovalManager:
         decision: Decision,
         prompt: PromptFn | None,
         preview: str = "",
+        *,
+        workspace: str = "",
+        session_id: str = "",
+        policy_generation: int = 0,
     ) -> ApprovalOutcome:
-        """Returns the final outcome; never executes anything itself."""
+        """Return the final outcome without executing; failures deny."""
         if not decision.requires_approval:
             return ApprovalOutcome.APPROVED
-        if self.preapproved(tool, args):
+        reusable = tool != "run_command"
+        if reusable and self.preapproved(
+            tool,
+            args,
+            workspace=workspace,
+            session_id=session_id,
+            policy_generation=policy_generation,
+        ):
             return ApprovalOutcome.APPROVED_SESSION
         if prompt is None:
-            return ApprovalOutcome.DENIED  # non-interactive context: fail closed
+            return ApprovalOutcome.DENIED
         req = ApprovalRequest(tool=tool, args=args, decision=decision, preview=preview)
-        outcome = await prompt(req)
+        loop = asyncio.get_running_loop()
+        with self._pending_lock:
+            epoch = self._invalidation_epoch
+        prompt_task: asyncio.Task[ApprovalOutcome] = loop.create_task(prompt(req))
+        with self._pending_lock:
+            if epoch != self._invalidation_epoch:
+                prompt_task.cancel()
+            self._pending[prompt_task] = loop
+        try:
+            outcome = await prompt_task
+        except asyncio.CancelledError:
+            with self._pending_lock:
+                invalidated = epoch != self._invalidation_epoch
+            if invalidated:
+                return ApprovalOutcome.DENIED
+            raise
+        except Exception:  # approval UI failure must fail closed
+            return ApprovalOutcome.DENIED
+        finally:
+            with self._pending_lock:
+                self._pending.pop(prompt_task, None)
+        with self._pending_lock:
+            if epoch != self._invalidation_epoch:
+                return ApprovalOutcome.DENIED
+        if not isinstance(outcome, ApprovalOutcome):
+            try:
+                outcome = ApprovalOutcome(str(outcome))
+            except ValueError:
+                return ApprovalOutcome.DENIED
+        if tool == "run_command" and outcome.approved:
+            return ApprovalOutcome.APPROVED  # prohibit reusable shell grants
         if outcome is ApprovalOutcome.APPROVED_SESSION:
-            self.remember_session(tool, args)
+            self.remember_session(
+                tool,
+                args,
+                workspace=workspace,
+                session_id=session_id,
+                policy_generation=policy_generation,
+            )
         elif outcome is ApprovalOutcome.APPROVED_ALWAYS:
-            self.add_permanent(tool, args)
+            self.add_permanent(
+                tool,
+                args,
+                workspace=workspace,
+                session_id=session_id,
+                policy_generation=policy_generation,
+            )
         return outcome
