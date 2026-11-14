@@ -11,6 +11,28 @@ from .spec import ToolContext, ToolResult
 MAX_BYTES = 200_000
 BODY_CAP = 12_000
 
+# Well-known NAT64 prefix (RFC 6052): 64:ff9b::/96 embeds an IPv4 address in
+# the low 32 bits. Python's is_global can report True for the IPv6 literal
+# even when the embedded IPv4 is loopback/link-local (R2 S7).
+_NAT64_PREFIX = bytes.fromhex("0064ff9b" + "00" * 8)
+
+
+def _embedded_ipv4(address: ipaddress.IPv4Address | ipaddress.IPv6Address):
+    """Yield every IPv4 address embedded in an IPv6 literal: ipv4_mapped,
+    sixtofour, teredo (server+client), and NAT64 64:ff9b::/96 extraction."""
+    if not isinstance(address, ipaddress.IPv6Address):
+        return
+    for attr in ("ipv4_mapped", "sixtofour"):
+        embedded = getattr(address, attr)
+        if embedded is not None:
+            yield embedded
+    teredo = address.teredo
+    if teredo is not None:
+        yield from teredo
+    packed = address.packed
+    if packed[:12] == _NAT64_PREFIX:
+        yield ipaddress.IPv4Address(packed[12:])
+
 
 def _host_allowed(host: str, allowlist: list[str]) -> bool:
     host = host.casefold().rstrip(".")
@@ -49,6 +71,13 @@ def _validate_url(url: str, allowlist: list[str]) -> tuple[str, str, int]:
         ) from exc
     if not address.is_global:
         raise ValueError(f"private, local, metadata, or reserved address is blocked: {address}")
+    # R2 S7: an IPv6 literal may embed a non-global IPv4 (NAT64, mapped,
+    # 6to4, teredo) even when the top-level address reports is_global.
+    for embedded in _embedded_ipv4(address):
+        if not embedded.is_global:
+            raise ValueError(
+                f"embedded non-global address is blocked: {address} -> {embedded}"
+            )
     effective_port = port or (443 if parsed.scheme == "https" else 80)
     return parsed.scheme, host, effective_port
 

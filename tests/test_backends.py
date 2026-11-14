@@ -382,7 +382,7 @@ def test_thinking_flags_reach_the_wire():
 
     be2 = OllamaBackend(cfg, transport=httpx.MockTransport(handler))
     asyncio.run(_run(be2, "qwen3"))
-    assert cap["b2"]["thinking"] == "medium"  # ollama accepts graded think levels
+    assert cap["b2"]["think"] == "medium"  # ollama accepts graded think levels
 
 
 def test_ultrathink_escalates_effort_and_budget():
@@ -411,7 +411,7 @@ def test_ultrathink_escalates_effort_and_budget():
 
     be2 = OllamaBackend(cfg, transport=httpx.MockTransport(handler))
     asyncio.run(_run(be2, "qwen3"))
-    assert cap["b2"]["thinking"] is True, "ultrathink implies the thinking channel"
+    assert cap["b2"]["think"] is True, "ultrathink implies the thinking channel"
     assert cap["b2"]["options"]["num_predict"] >= 16384
 
 

@@ -21,7 +21,7 @@ proof (there is no need for a Mac or Windows box).
 ## Push to GitHub
 
 ```bash
-cd /data/home-overflow/Downloads/Projects/ohmyllm
+cd ohmyllm   # your clone of the repository
 git remote add origin https://github.com/<YOUR-USER>/ohmyllm.git
 git branch -M main
 git push -u origin main
@@ -38,20 +38,25 @@ uvx --from build python -m build --outdir dist .   # or: python -m build
 uvx twine upload dist/*                            # needs PyPI token
 ```
 
-Tag the release first: `git tag v0.1.0 && git push origin v0.1.0`.
+Tag the release first: `git tag v0.1.1 && git push origin v0.1.1` (use the
+version you are releasing).
 A GitHub Release with the `dist/` artifacts attached is the friendlier
 channel; PyPI gives `pipx install ohmyllm` / `uv tool install ohmyllm`.
 
-## GUI binary (optional)
+## GUI binary
 
-The Tauri window is not in the wheel. To ship binaries:
+The Tauri shell ships inside the package (`ohmyllm/gui_bin/ohmyllm-gui`,
+wired through `pyproject.toml` package-data + `MANIFEST.in`). The binary is
+platform-specific — to build it for another OS:
 
 ```bash
 cd gui/src-tauri && cargo tauri build   # per OS — CI matrix runners can do this
 ```
 
-`oml gui` falls back to the browser console when no native binary exists,
-so the Python package is fully functional without it.
+When no usable native binary exists, `oml gui` starts a background loopback
+console and prints its URL (`--web` opens a browser; `--no-open` prints the
+full tokenized URL and launches nothing), so the Python package is fully
+functional without the shell.
 
 ## Before every release
 

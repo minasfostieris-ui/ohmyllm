@@ -428,6 +428,9 @@ class LMStudioBackend(BaseBackend):
             # keep the model resident between requests (LM Studio unloads by
             # default after each completion; unknown keys are ignored elsewhere)
             "unload_model": False,
+            # ask for the trailing usage-only chunk so token accounting
+            # survives streaming (OpenAI-compatible include_usage)
+            "stream_options": {"include_usage": True},
         }
         if params.seed:
             body["seed"] = params.seed
@@ -463,6 +466,7 @@ class LMStudioBackend(BaseBackend):
         reasoning_parts: list[str] = []
         content_seen = False
         prog_seen: set[int] = set()
+        usage_stash: dict[str, Any] | None = None  # usage-only trailer arrives before [DONE]
         # servers that validate reasoning params strictly (some LM Studio
         # builds reject xhigh for template-controlled models) get ONE graceful
         # retry with the effort keys stripped instead of a dead turn
@@ -508,11 +512,19 @@ class LMStudioBackend(BaseBackend):
                                         yield ChatChunk(content=text)
                                 if not content_seen and reasoning_parts and not pending_tools:
                                     yield ChatChunk(content="".join(reasoning_parts))
-                                yield ChatChunk(done=True, finish="stop", tool_calls=_finish_tools(pending_tools))
+                                yield ChatChunk(done=True, finish="stop",
+                                                tool_calls=_finish_tools(pending_tools),
+                                                usage=usage_stash)
                                 return
                             try:
                                 data = json.loads(payload)
                             except json.JSONDecodeError:
+                                continue
+                            if isinstance(data.get("usage"), dict) and data["usage"]:
+                                usage_stash = data["usage"]
+                            if not data.get("choices"):
+                                # usage-only trailer (include_usage): nothing to
+                                # emit — keep it for the terminal chunk
                                 continue
                             choice = (data.get("choices") or [{}])[0]
                             delta = choice.get("delta") or {}
@@ -555,7 +567,7 @@ class LMStudioBackend(BaseBackend):
                             chunk = ChatChunk(
                                 content=ctext,
                                 reasoning=str(delta.get("reasoning") or delta.get("reasoning_content") or "") + itext,
-                                done=bool(finish), finish=finish, usage=usage,
+                                done=bool(finish), finish=finish, usage=usage or usage_stash,
                             )
                             if finish:
                                 for kind, text in sp.flush():

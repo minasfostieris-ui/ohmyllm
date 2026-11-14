@@ -278,7 +278,7 @@ class OllamaBackend(BaseBackend):
         # ollama exposes) — the review pass in runtime carries the extra
         lvl = "xhigh" if params.ultrathink else params.effort
         if lvl != "off" and await self._supports_think(model):
-            body["thinking"] = lvl if lvl in ("low", "medium", "high") else True
+            body["think"] = lvl if lvl in ("low", "medium", "high") else True
         prev = getattr(self, "_last_model", None)
         if prev and prev != model:
             # eject the previously used model so it stops squatting on VRAM
@@ -301,10 +301,10 @@ class OllamaBackend(BaseBackend):
                     if resp.status_code != 200:
                         detail = (await resp.aread()).decode(errors="replace")[:300]
                         if (resp.status_code == 400 and "think" in detail.lower()
-                                and "thinking" in body and _attempt == 0):
+                                and "think" in body and _attempt == 0):
                             # server says this model has no thinking mode —
                             # drop the knob and retry clean, remember for later
-                            body.pop("thinking")
+                            body.pop("think")
                             getattr(self, "_think_ok", {})[model] = False
                             continue
                         raise BackendError(f"Ollama chat failed ({resp.status_code}): {detail}")

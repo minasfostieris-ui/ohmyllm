@@ -16,7 +16,15 @@ from .. import paths
 from ..config.models import Config, PermissionMode
 from ..secureio import UnsafePathError, file_identity, is_environment_file, is_within, resolve_path
 from .modes import SAFE_COMMANDS, SUBCOMMAND_ALLOWLIST
-from .normalize import command_variants, normalize_command
+from .normalize import (
+    _PRIV_REQ_LONG,
+    _PRIV_REQ_SHORT,
+    _PRIV_WRAPPERS,
+    _skip_wrapper_flags,
+    command_variants,
+    normalize_command,
+    unresolved_destructive_operands,
+)
 from .risk import RiskScorer, _basename, level_for
 
 
@@ -247,31 +255,65 @@ class PolicyEngine:
             return Decision(True, False, d.risk, (*d.reasons, "YOLO: one-prompt approval bypass"))
         return d
 
-    _CATASTROPHIC_RX = (
-        r"\brm\s+(-[a-z]*\s+)*-?[a-z]*r[a-z]*f?\s+(/|\$HOME|\*)(\s|$)",
-        r"--no-preserve-root",
-        r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;|fork\s*bomb",
-        r"\bmkfs(\.\w+)?\b",
-        r"\bdd\b[^|;]*\bof=/dev/",
-        r"\b(shutdown|reboot|halt|poweroff)\b",
-        r"\bchmod\s+-R\s+777\s+/(\s|$)",
-        r"\bchown\s+-R\s+[^ ]+\s+/(\s|$)",
-        r"\bfind\b[^|;]*\s-delete(\s|$)",
-        r"\bfind\b[^|;]*\s-exec\s+rm\b",
-        r"\bfind\b[^|;]*\s-execdir\s+rm\b",
+    # R2 C1/W5: (required executables, pattern). A rule only fires when the
+    # variant's command-position executable (after assignment stripping) is
+    # one of the required verbs — quoted argument literals such as
+    # ``echo "rm -rf /"`` are NOT catastrophic. The root operand consumes
+    # dot components: /, /., /./, /.. (but NOT /home).
+    _CATASTROPHIC_RULES: tuple[tuple[frozenset[str], str], ...] = (
+        (frozenset({"rm"}),
+         r"\brm\s+(-[a-z]*\s+)*-?[a-z]*[rf][a-z]*\s+"
+         r"(/(?:\.{1,2}/)*\.{0,2}(?=[\s'\"*]|$)|\$HOME/?(?=[\s'\"*]|$)|\*(?=[\s'\"*]|$))"),
+        (frozenset({"rm"}), r"--no-preserve-root"),
+        (frozenset({":"}), r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;"),
+        (frozenset({"mkfs"}), r"\bmkfs(\.\w+)?\b"),
+        (frozenset({"dd"}), r"\bdd\b[^|;]*\bof=/dev/"),
+        (frozenset({"shutdown", "reboot", "halt", "poweroff"}),
+         r"\b(shutdown|reboot|halt|poweroff)\b"),
+        (frozenset({"chmod"}), r"\bchmod\s+-R\s+777\s+/(\s|$)"),
+        (frozenset({"chown"}), r"\bchown\s+-R\s+[^ ]+\s+/(\s|$)"),
+        (frozenset({"find"}), r"\bfind\b[^|;]*\s-delete(\s|$)"),
+        (frozenset({"find"}), r"\bfind\b[^|;]*\s-exec\s+rm\b"),
+        (frozenset({"find"}), r"\bfind\b[^|;]*\s-execdir\s+rm\b"),
     )
 
     def _is_catastrophic(self, tool: str, args: dict) -> bool:
         if tool == "run_command":
             # Match over deobfuscated variants (semantic flags, ${VAR},
-            # ANSI-C quoting, chains, wrappers) — spelling must not dodge
-            # the catastrophic gate (C1/C2/H1).
+            # ANSI-C quoting, chains, wrappers, resolved dynamic targets) —
+            # spelling must not dodge the catastrophic gate (C1/C2/H1/C3).
             cmd = str(args.get("command") or "")
-            return any(
-                re.search(rx, variant.lower())
-                for variant in command_variants(cmd)
-                for rx in self._CATASTROPHIC_RX
-            )
+            # R2 C3 fail-closed: a destructive executable whose operands the
+            # normalizer cannot resolve is catastrophic, never silent-allow.
+            if unresolved_destructive_operands(cmd):
+                return True
+            for variant in command_variants(cmd):
+                low = variant.lower()
+                tokens = low.split()
+                # fork bomb is structural: its "executable" is `:(){`
+                if tokens and tokens[0].startswith(":(") and re.search(
+                        r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;", low):
+                    return True
+                while tokens and re.match(r"[a-z_][a-z0-9_]*=", tokens[0]):
+                    tokens = tokens[1:]
+                if not tokens:
+                    continue
+                exe = _basename(tokens[0])
+                # sudo/doas are transparent: position-match the real verb
+                if exe in _PRIV_WRAPPERS:
+                    payload = _skip_wrapper_flags(
+                        " ".join(tokens[1:]), req_short=_PRIV_REQ_SHORT,
+                        req_long=_PRIV_REQ_LONG,
+                    )
+                    tokens = payload.split()
+                    if not tokens:
+                        continue
+                    exe = _basename(tokens[0])
+                for verbs, rx in self._CATASTROPHIC_RULES:
+                    if (exe in verbs or any(exe.startswith(v + ".") for v in verbs)) \
+                            and re.search(rx, low, re.IGNORECASE):
+                        return True
+            return False
         if tool in ("write_file", "patch_file"):
             target = str(args.get("path") or "")
             return bool(re.match(r"^(/etc|/boot|/dev|/sys|/proc|/usr/lib/systemd)(/|$)", target))
@@ -432,6 +474,17 @@ class PolicyEngine:
                 # never silent, even in full_access.
                 return Decision(True, True, max(risk, 8),
                                 (*reasons, "git config hook/exec injection requires approval"))
+            # R2 C4: the sensitive-path invariant holds for SHELL too —
+            # operand paths and redirect targets go through the same
+            # predicate as read_file/write_file (docs/PERMISSIONS.md).
+            for tgt in self._shell_sensitive_targets(cmd):
+                try:
+                    sensitive = self.is_sensitive(tgt)
+                except (OSError, ValueError, UnsafePathError):
+                    continue
+                if sensitive:
+                    return Decision(False, False, max(risk, 8),
+                                    (*reasons, f"sensitive path {tgt!r} in shell command — denied in every mode"))
             return Decision(True, False, risk, tuple(reasons))
 
         if cls is ToolClass.NET:
@@ -529,6 +582,23 @@ class PolicyEngine:
         if base == "tee":
             return args
         return []
+
+    def _shell_sensitive_targets(self, cmd: str) -> list[str]:
+        """Operand paths + redirect targets of a shell command (R2 C4).
+        Reuses the redirect/inline-write extraction and scans ``~``/``$HOME``
+        /absolute operand tokens so the sensitive-path invariant can be
+        enforced on the shell branch exactly like the file tools."""
+        targets: list[str] = []
+        for m in re.finditer(r">>?\s*['\"]?([^\s'\"|&;]+)", cmd):
+            targets.append(m.group(1))
+        targets.extend(self._inline_write_targets(cmd))
+        norm = normalize_command(cmd)
+        for seg in re.split(r"[;&|]+", norm):
+            for tok in seg.split()[1:]:
+                if not tok.startswith("-") and tok.startswith(("~", "$HOME", "/")):
+                    targets.append(tok)
+        home = str(Path.home())
+        return [t.replace("${HOME}", home).replace("$HOME", home) for t in targets]
 
 
 def describe(tool: str, args: dict, decision: Decision) -> str:

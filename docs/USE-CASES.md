@@ -86,7 +86,7 @@ opens the folder.
 ## 7. Supervising long runs from herdr/tmux
 
 ```sh
-oml state --json    # busy/idle, current session, backend health
+oml state --json    # busy/idle, current session, turn, backend/model in use
 ```
 
 Structured state output lets a multiplexer pane, a status line, or a

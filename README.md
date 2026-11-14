@@ -92,7 +92,7 @@ ohmyllm run "list files here and summarise"   # one-shot agent task
 ohmyllm models          # list models with VRAM fit
 ohmyllm backend ollama --start
 ohmyllm doctor          # 25+ health checks with fixes
-ohmyllm gui             # native window (or browser console)
+ohmyllm gui             # native window (or a printed loopback URL)
 ohmyllm update          # pull the newest build from GitHub
 ```
 
@@ -177,9 +177,11 @@ text-only resend.
 
 ## GUI
 
-`ohmyllm gui` boots a **Tauri** window when the shell is built
-(`gui/src-tauri`, one `cargo build --release`) and otherwise serves the exact
-same console to your browser. Both talk to a loopback-only bridge
+`ohmyllm gui` boots the native **Tauri** window — the shell binary ships
+inside the package (`ohmyllm/gui_bin`, overridable via `OMLLM_GUI_BIN`).
+Without a usable native binary it starts the same console as a background
+loopback server and prints its URL; a browser opens only on the explicit
+`--web` opt-in. Both talk to a loopback-only bridge
 (`ohmyllm.bridge`) that binds `127.0.0.1`, picks an ephemeral port, and
 requires a per-process token — the GUI shares the TUI's policy engine,
 approvals (with diff previews), audit trail, and sessions store. Chat
@@ -199,10 +201,12 @@ edge fades are the only overflow affordance, and `Delete`/`Backspace`
 closes the focused tab.
 
 ```bash
-ohmyllm gui --browser            # force browser mode
-ohmyllm gui --no-open            # print the full tokenized URL — keep it private
-# build the native window (needs Rust + webkit2gtk-4.1 / Tauri prereqs):
-cd gui/src-tauri && cargo build --release
+ohmyllm gui --web                # open the console in your browser (explicit opt-in)
+ohmyllm gui --no-open            # print the full tokenized URL, launch nothing — keep it private
+ohmyllm gui --stop               # close the running console (native window + bridge, or web)
+# the native shell ships in the package; to build it yourself
+# (needs Rust + webkit2gtk-4.1 / Tauri prereqs):
+cd gui/src-tauri && cargo build --release   # then: export OMLLM_GUI_BIN=$PWD/target/release/ohmyllm-gui
 ```
 
 ## Configuration

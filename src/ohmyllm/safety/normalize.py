@@ -44,6 +44,12 @@ _ANSI_ESCAPES = {
 }
 _ASSIGN_RX = re.compile(r"(?:^|[\s;|&])([A-Za-z_][A-Za-z0-9_]*)=([^\s;|&]*)")
 _VAR_REF_RX = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+# R2 C3: dynamic-target resolution — default-value braces, positional params,
+# pure-literal command substitution, and xargs stdin synthesis.
+_DEFAULT_RX = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-?([^{}]*)\}")
+_POS_REF_RX = re.compile(r"\$\{([0-9]+|[@*])\}|\$([0-9]+|[@*])")
+_SUBST_RX = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+_ASSIGN_TOK_RX = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 # Quote splicing: '"' / "'" adjacency concatenates shell strings. The splice
 # quotes are pure syntax — dropping them exposes hidden $'...' payloads (H1).
 
@@ -116,17 +122,17 @@ def _strip_tricks(text: str) -> str:
     return _WS_RX.sub(" ", out).strip()
 
 
-def _expand_vars(text: str) -> str:
-    """Bounded, NON-executing expansion of literal ``VAR=value`` assignments
-    into ``$VAR``/``${VAR}`` references (C2). First assignment wins (shell
-    semantics for sequential assignment), at most 3 substitution passes so
-    chained indirection terminates. Unassigned references are left as-is.
-    """
+def _assignment_values(text: str) -> dict[str, str]:
+    """Literal ``VAR=value`` assignments, LAST wins (real shell semantics)."""
     values: dict[str, str] = {}
     for m in _ASSIGN_RX.finditer(text):
-        name, val = m.group(1), m.group(2)
-        if name not in values:
-            values[name] = val.strip("'\"")
+        values[m.group(1)] = m.group(2).strip("'\"")
+    return values
+
+
+def _sub_refs(text: str, values: dict[str, str]) -> str:
+    """Bounded substitution of ``$VAR``/``${VAR}`` from *values* (3 passes so
+    chained indirection terminates). Unassigned references are left as-is."""
     if not values:
         return text
 
@@ -141,6 +147,17 @@ def _expand_vars(text: str) -> str:
             break
         out = nxt
     return out
+
+
+def _expand_vars(text: str) -> str:
+    """Bounded, NON-executing expansion of literal ``VAR=value`` assignments
+    into ``$VAR``/``${VAR}`` references (C2). LAST assignment wins — real
+    shell semantics for sequential assignment (R2 C2: first-wins let
+    ``X=echo; X=rm; $X -rf /`` masquerade as echo). At most 3 substitution
+    passes so chained indirection terminates. Unassigned references are
+    left as-is.
+    """
+    return _sub_refs(text, _assignment_values(text))
 
 
 _RM_LONG_FLAGS = {
@@ -210,6 +227,14 @@ _XARGS_REQ_LONG = frozenset({
 })
 _ENV_REQ_SHORT = frozenset("uC")
 _ENV_REQ_LONG = frozenset({"--unset", "--chdir"})
+# sudo/doas are transparent prefixes: the real executable follows their own
+# flags (R2 W5 — `sudo rm -rf $HOME` must still position-match as rm).
+_PRIV_WRAPPERS = frozenset({"sudo", "doas"})
+_PRIV_REQ_SHORT = frozenset("ugChpRTU")
+_PRIV_REQ_LONG = frozenset({
+    "--user", "--group", "--host", "--prompt", "--close-from",
+    "--other-user", "--role", "--type",
+})
 
 
 def _drop_token(text: str) -> str:
@@ -260,6 +285,278 @@ def _skip_wrapper_flags(
     return payload
 
 
+# ---------------------------------------------------------------- R2 C3
+# Dynamic-target resolution. The deny floor and the catastrophic gate need
+# the EFFECTIVE operand, not the spelling: ${UNSET:-/}, $(echo /), backticks,
+# "$@"/"$N" positionals and xargs stdin payloads all denote real targets.
+
+def _raw_segments(text: str) -> list[tuple[str, str]]:
+    """Split *text* into (preceding_separator, segment) pairs on unquoted
+    ``&&``/``||``/``;``/``|``/``&``/newline. Quote-aware so payload boundaries
+    (``bash -c '...'``) survive for positional-argument extraction."""
+    out: list[tuple[str, str]] = []
+    buf: list[str] = []
+    quote: str | None = None
+    sep = ""
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == quote and (quote == "'" or text[i - 1:i] != "\\"):
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(text):
+            buf.append(text[i:i + 2])
+            i += 2
+            continue
+        if ch in ";|&\n":
+            j = i
+            while j < len(text) and text[j] in ";|&\n":
+                j += 1
+            seg = "".join(buf).strip()
+            if seg:
+                out.append((sep, seg))
+            sep = text[i:j]
+            buf = []
+            i = j
+            continue
+        buf.append(ch)
+        i += 1
+    seg = "".join(buf).strip()
+    if seg:
+        out.append((sep, seg))
+    return out
+
+
+def _tokens_raw(seg: str) -> list[str]:
+    """Quote-preserving tokenization (POSIX shell words, quotes kept) so a
+    ``bash -c`` payload stays ONE token with its trailing positional args
+    visible. Falls back to whitespace splitting on unbalanced quotes."""
+    import shlex
+    try:
+        return shlex.split(seg, posix=False)
+    except ValueError:
+        return seg.split()
+
+
+def _literal_output(seg: str) -> str | None:
+    """The literal stdout of a pure ``echo``/``printf`` segment, or None when
+    the output is not statically knowable (variables, substitutions, other
+    executables). Never executes anything."""
+    norm = _strip_tricks(seg)
+    tokens = norm.split()
+    if not tokens:
+        return None
+    exe = tokens[0].rsplit("/", 1)[-1]
+    if exe == "echo":
+        args = [t for t in tokens[1:] if t not in ("-n", "-e", "-E")]
+        if any("$" in t or "`" in t for t in args):
+            return None
+        return " ".join(args) or None
+    if exe == "printf" and len(tokens) >= 2:
+        fmt, args = tokens[1], tokens[2:]
+        if any("$" in t or "`" in t for t in [fmt, *args]):
+            return None
+        if "%" in fmt.replace("%s", ""):
+            return None  # only plain %s placeholders are statically foldable
+        out = fmt
+        for arg in args:
+            out = out.replace("%s", arg, 1)
+        out = out.replace("\\n", "\n").strip()
+        return out or None
+    return None
+
+
+def _expand_positionals(text: str, positionals: list[str]) -> str:
+    """Expand ``$@``/``$*``/``$N``/``${N}`` from tracked ``set --`` or
+    ``sh -c`` positional arguments. Out-of-range refs are left as-is."""
+    if not positionals:
+        return text
+
+    def _sub(m: re.Match[str]) -> str:
+        ref = m.group(1) or m.group(2)
+        if ref in ("@", "*"):
+            return " ".join(positionals)
+        idx = int(ref)
+        return positionals[idx - 1] if 1 <= idx <= len(positionals) else m.group(0)
+
+    return _POS_REF_RX.sub(_sub, text)
+
+
+def _fold_defaults(text: str) -> str:
+    """Fold ``${VAR:-default}``/``${VAR-default}``: the assigned value when
+    VAR has a literal assignment, else the default (R2 C3)."""
+    values: dict[str, str] = {}
+    for m in _ASSIGN_RX.finditer(text):
+        values[m.group(1)] = m.group(2).strip("'\"")
+
+    def _sub(m: re.Match[str]) -> str:
+        name, default = m.group(1), m.group(2)
+        return values.get(name) or default
+
+    return _DEFAULT_RX.sub(_sub, text)
+
+
+def _sub_literal_subshells(text: str) -> str:
+    """Substitute ``$()``/backtick interiors whose output is a pure literal
+    echo/printf into operand position (R2 C3). Non-literal interiors are
+    left untouched for the fail-closed scan."""
+
+    def _sub(m: re.Match[str]) -> str:
+        inner = m.group(1) if m.group(1) is not None else (m.group(2) or "")
+        lit = _literal_output(inner)
+        return lit if lit is not None else m.group(0)
+
+    return _SUBST_RX.sub(_sub, text)
+
+
+def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
+    """Resolve dynamic targets on already deobfuscated text, preserving
+    segment separators: ``set --`` positionals, ``$@``/``$N``, default-value
+    braces, literal command substitution, and xargs stdin synthesis (the
+    upstream pipe segment's literal output becomes payload operands)."""
+    segs = _raw_segments(text)
+    if not segs:
+        return text
+    pos = list(positionals or [])
+    for _sep, seg in segs:
+        toks = seg.split()
+        if toks and toks[0] == "set" and "--" in toks[1:]:
+            pos = toks[toks.index("--") + 1:]
+    out: list[str] = []
+    for idx, (sep, seg) in enumerate(segs):
+        s = _expand_positionals(seg, pos)
+        s = _fold_defaults(s)
+        s = _sub_literal_subshells(s)
+        toks = s.split()
+        if (toks and toks[0].rsplit("/", 1)[-1] == "xargs"
+                and "|" in sep and "||" not in sep and idx > 0):
+            lit = _literal_output(segs[idx - 1][1])
+            payload = _skip_wrapper_flags(
+                _raw_remainder(s), req_short=_XARGS_REQ_SHORT,
+                opt_short=_XARGS_OPT_SHORT, req_long=_XARGS_REQ_LONG,
+            )
+            if lit is not None and payload.strip():
+                s = s + " " + lit
+        out.append(sep + s)
+    return "".join(out)
+
+
+_DESTRUCTIVE_EXES = frozenset({"rm", "shred", "dd"})
+
+
+def _is_find_delete(args: list[str]) -> bool:
+    joined = " ".join(args)
+    return "-delete" in args or bool(re.search(r"-exec(dir)?\s+rm\b", joined))
+
+
+def unresolved_destructive_operands(command: str) -> bool:
+    """Fail-closed input for the catastrophic gate (R2 C3): True when a
+    destructive executable (rm/shred/dd/find -delete) carries an operand the
+    normalizer cannot resolve — an unexpanded ``$…``/backtick after full
+    resolution, or an xargs payload fed by non-literal piped stdin. Such
+    commands must never be silent-allowed in full_access."""
+    return _scan_unresolved(str(command), [], 0)
+
+
+def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
+    if depth > 3:
+        return False
+    segs = _raw_segments(text)
+    pos = list(positionals)
+    for _sep, seg in segs:
+        stripped = [_strip_tricks(t) for t in _tokens_raw(seg)]
+        if stripped and stripped[0] == "set" and "--" in stripped[1:]:
+            pos = stripped[stripped.index("--") + 1:]
+    # assignments may live in an EARLIER segment than the reference
+    # (``X=/tmp/f; rm -rf $X``) — collect them across the whole text.
+    values = _assignment_values(" ".join(_strip_tricks(seg) for _sep, seg in segs))
+    for idx, (sep, seg) in enumerate(segs):
+        rtoks = _tokens_raw(seg)
+        if not rtoks:
+            continue
+        base = _strip_tricks(rtoks[0]).rsplit("/", 1)[-1]
+        if base in _SHELL_WRAPPERS and "-c" in rtoks[1:3]:
+            ci = rtoks.index("-c")
+            if ci + 1 < len(rtoks):
+                pargs = [_strip_tricks(t) for t in rtoks[ci + 2:]]
+                if _scan_unresolved(rtoks[ci + 1], pargs[1:], depth + 1):
+                    return True
+            continue
+        norm = _strip_tricks(seg)
+        if base == "eval":
+            if _scan_unresolved(_raw_remainder(norm), pos, depth + 1):
+                return True
+            continue
+        if base == "env":
+            payload = _skip_wrapper_flags(
+                _raw_remainder(norm), req_short=_ENV_REQ_SHORT,
+                req_long=_ENV_REQ_LONG, assignments=True,
+            )
+            if _scan_unresolved(payload, pos, depth + 1):
+                return True
+            continue
+        norm = _expand_vars(norm)
+        norm = _sub_refs(norm, values)
+        norm = _expand_positionals(norm, pos)
+        norm = _fold_defaults(norm)
+        norm = _sub_literal_subshells(norm)
+        # $HOME is always assigned in a real shell — it is resolvable, not
+        # an unknown operand (R2 W6 balance: `rm $HOME/notes.txt` is benign).
+        norm = norm.replace("$HOME", "~")
+        toks = norm.split()
+        i = 0
+        while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
+            i += 1
+        if i >= len(toks):
+            continue
+        base = toks[i].rsplit("/", 1)[-1]
+        args = toks[i + 1:]
+        if base in _PRIV_WRAPPERS:
+            # sudo/doas are transparent: scan the real executable's operands
+            payload = _skip_wrapper_flags(
+                " ".join(args), req_short=_PRIV_REQ_SHORT,
+                req_long=_PRIV_REQ_LONG,
+            )
+            toks = payload.split()
+            if not toks:
+                continue
+            base = toks[0].rsplit("/", 1)[-1]
+            args = toks[1:]
+        if base == "xargs":
+            payload = _skip_wrapper_flags(
+                " ".join(args), req_short=_XARGS_REQ_SHORT,
+                opt_short=_XARGS_OPT_SHORT, req_long=_XARGS_REQ_LONG,
+            )
+            ptoks = payload.split()
+            if not ptoks:
+                continue
+            pbase = ptoks[0].rsplit("/", 1)[-1]
+            destructive = pbase in _DESTRUCTIVE_EXES or (
+                pbase == "find" and _is_find_delete(ptoks[1:]))
+            if not destructive:
+                continue
+            if "|" in sep and "||" not in sep:
+                upstream = segs[idx - 1][1] if idx > 0 else ""
+                if _literal_output(upstream) is None:
+                    return True
+            if any("$" in t or "`" in t for t in ptoks[1:] if not t.startswith("-")):
+                return True
+            continue
+        if base in _DESTRUCTIVE_EXES or (base == "find" and _is_find_delete(args)):
+            operands = [t for t in args if not t.startswith("-")]
+            if any("$" in t or "`" in t for t in operands):
+                return True
+    return False
+
+
 def command_variants(command: str) -> list[str]:
     """Return normalized variants of *command* for deny-glob matching.
 
@@ -267,7 +564,11 @@ def command_variants(command: str) -> list[str]:
     segment (including single-``&`` background chains), each segment's
     executable (full token and basename), one level of ``$()``/backtick/
     ``(...)`` interiors, and one level of ``sh -c``/``bash -c``/``eval``/
-    ``env``/``xargs`` payloads. Order is stable and duplicates are removed.
+    ``env``/``xargs`` payloads. Dynamic targets are resolved (R2 C3):
+    ``${VAR:-default}``, literal ``$()``/backtick output, ``set --``/``sh -c``
+    positionals (``$@``/``$N``), and xargs stdin payloads synthesized from
+    the upstream pipe segment's literal output. Order is stable and
+    duplicates are removed.
     """
     seen: list[str] = []
 
@@ -276,7 +577,7 @@ def command_variants(command: str) -> list[str]:
         if value and value not in seen:
             seen.append(value)
 
-    def walk(text: str, depth: int) -> None:
+    def walk(text: str, depth: int, positionals: list[str] | None = None) -> None:
         norm = _strip_tricks(text)
         if not norm:
             return
@@ -289,7 +590,13 @@ def command_variants(command: str) -> list[str]:
             if depth < 1:
                 # re-walk the expanded form (fixpoint: re-expansion is a
                 # no-op, so this terminates after one extra level)
-                walk(expanded, depth + 1)
+                walk(expanded, depth + 1, positionals)
+        resolved = _resolve_dynamic(expanded, positionals)
+        if resolved != expanded:
+            add(resolved)
+            add(_compact(resolved))
+            if depth < 1:
+                walk(resolved, depth + 1, positionals)
         if depth < 1:
             for match in _SUBSHELL_RX.finditer(norm):
                 inner = match.group(1) or match.group(2) or match.group(3) or ""
@@ -342,7 +649,33 @@ def command_variants(command: str) -> list[str]:
                     req_long=_XARGS_REQ_LONG,
                 )
                 if payload.strip():
-                    walk(payload, depth + 1)
+                    walk(payload, depth + 1, positionals)
+        if depth < 2:
+            # Quote-aware pass (R2 C3): precise `sh -c` payload boundaries
+            # expose trailing positional arguments ($0, $1, …), and xargs
+            # payloads gain the upstream pipe segment's literal output as
+            # operands — the normalized whole-text pass above cannot see
+            # either because quote removal erases the payload boundary.
+            raw_segs = _raw_segments(text)
+            for idx, (sep, rseg) in enumerate(raw_segs):
+                rtoks = _tokens_raw(rseg)
+                if not rtoks:
+                    continue
+                rbase = _strip_tricks(rtoks[0]).rsplit("/", 1)[-1]
+                if rbase in _SHELL_WRAPPERS and "-c" in rtoks[1:3]:
+                    ci = rtoks.index("-c")
+                    if ci + 1 < len(rtoks):
+                        pargs = [_strip_tricks(t) for t in rtoks[ci + 2:]]
+                        walk(rtoks[ci + 1], depth + 1, pargs[1:])
+                elif rbase == "xargs" and "|" in sep and "||" not in sep and idx > 0:
+                    lit = _literal_output(raw_segs[idx - 1][1])
+                    payload = _skip_wrapper_flags(
+                        _raw_remainder(_strip_tricks(rseg)),
+                        req_short=_XARGS_REQ_SHORT, opt_short=_XARGS_OPT_SHORT,
+                        req_long=_XARGS_REQ_LONG,
+                    )
+                    if lit is not None and payload.strip():
+                        walk(payload + " " + lit, depth + 1, positionals)
 
     walk(str(command), 0)
     return seen
@@ -350,7 +683,10 @@ def command_variants(command: str) -> list[str]:
 
 def normalize_command(command: str) -> str:
     """Single canonical normalized form for risk scoring: deobfuscate,
-    expand literal variable assignments, fold semantic flags. Unlike
-    :func:`command_variants` this returns ONE string (no bare-executable
-    variants) so scoring cannot be inflated by stray tokens."""
-    return _semantic_flags(_expand_vars(_strip_tricks(str(command))))
+    expand literal variable assignments (last-wins), resolve dynamic targets
+    (defaults, positionals, literal substitutions, xargs stdin), fold
+    semantic flags. Unlike :func:`command_variants` this returns ONE string
+    (no bare-executable variants) so scoring cannot be inflated by stray
+    tokens."""
+    text = _expand_vars(_strip_tricks(str(command)))
+    return _semantic_flags(_resolve_dynamic(text))

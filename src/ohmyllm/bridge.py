@@ -784,6 +784,14 @@ class Handler(BaseHTTPRequestHandler):
         if section is None or not name:
             return self._json(400, {"error": "bad request"})
         section.default_model = name
+        if backend != updated.default_backend.value:
+            # mirror TUI/plain semantics: choosing a model on another backend
+            # switches the default too, else the next turn silently runs on
+            # the old backend's model
+            try:
+                updated.default_backend = BackendName(backend)
+            except ValueError:
+                return self._json(400, {"error": f"unknown backend {backend!r}"})
         self.state.svc.apply_config(updated)
         self._json(200, {"ok": True, "backend": backend, "model": name})
 
@@ -1336,6 +1344,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(400, {"error": "message is too large"})
         with self.state.turn_lock:
             if self.state.busy:
+                target = body.get("session")
+                if target and target != self.state.session_id:
+                    # a message aimed at another chat must never be injected
+                    # into the running turn's session
+                    return self._json(409, {"error": "turn running in another chat"})
                 if len(self.state.interjections) >= _MAX_INTERJECTIONS:
                     return self._json(429, {"error": "interjection queue is full"})
                 self.state.interjections.append(text)

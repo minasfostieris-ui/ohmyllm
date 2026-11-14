@@ -66,8 +66,11 @@ class PlainApp:
             if not line:
                 continue
             if line.startswith("/"):
-                if await self._slash(line):
-                    return 0
+                try:
+                    if await self._slash(line):
+                        return 0
+                except Exception as exc:  # a broken command must not kill the REPL
+                    self.console.print(f"[red]command failed: {exc}[/red]")
                 continue
             await self._turn(line)
 
@@ -216,8 +219,16 @@ class PlainApp:
         elif cmd == "chats":
             self._chats(arg)
         elif cmd == "rename":
+            def _text_of(m: dict) -> str:
+                content = m.get("content", "")
+                if isinstance(content, str):
+                    return content
+                if isinstance(content, list):  # multimodal parts: keep the texts
+                    return " ".join(str(p.get("text", "")) for p in content
+                                    if isinstance(p, dict) and p.get("type") == "text")
+                return str(content or "")
             s = self.svc.sessions.rename(self.sess.id, arg or make_title(" ".join(
-                m.get("content", "") for m in self.sess.messages if m.get("role") == "user")[:80]))
+                _text_of(m) for m in self.sess.messages if m.get("role") == "user")[:80]))
             if s:
                 self.sess = s
                 c.print(f"renamed → {s.title}")

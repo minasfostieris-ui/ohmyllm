@@ -34,7 +34,7 @@ from pathlib import Path
 RT = Path(__file__).resolve().parents[1]
 VALIDATION = RT / ".validation"
 CHROMIUM = "/usr/bin/chromium"
-WIDTHS = {"narrow": 420, "laptop": 1280, "desktop": 1720, "wide": 2560}
+WIDTHS = {"narrow": 420, "tiny": 320, "laptop": 1280, "desktop": 1720, "wide": 2560}
 
 # --------------------------------------------------------------------------
 # Isolation MUST happen before any ohmyllm import (paths caches env at import).
@@ -757,6 +757,16 @@ def flows_laptop(page, client) -> None:
         ("export-skills", lambda: f_export_skills(page, client)),
         ("toggles", lambda: f_toggles(page, client)),
         ("tab-patch", lambda: f_tab_patch(page, client)),
+        # ---- R2 UX regression flows (task #56) ----
+        ("r2-palette-aria", lambda: f_r2_palette_aria(page, client)),
+        ("r2-slash-parity", lambda: f_r2_slash_parity(page, client)),
+        ("r2-approval-queue", lambda: f_r2_approval_queue(page, client)),
+        ("r2-models-keyboard", lambda: f_r2_models_keyboard(page, client)),
+        ("r2-drop-guard", lambda: f_r2_drop_guard(page, client)),
+        ("r2-toast-placement", lambda: f_r2_toast_placement(page, client)),
+        ("r2-bg3-contrast", lambda: f_r2_bg3_contrast(page, client)),
+        ("r2-misc-a11y", lambda: f_r2_misc(page, client)),
+        ("r2-div-buttons", lambda: f_r2_div_buttons(page, client)),
     ]:
         dismiss_stray_modals(page)
         flow(name, fn)
@@ -1318,6 +1328,394 @@ def f_tab_patch(page, client) -> None:
     page.evaluate("() => { document.getElementById('tabs').scrollLeft = 0; }")
 
 
+# --------------------------------------------------------------------------
+# R2 UX regression flows (task #56). Module-level, self-contained; they run
+# AFTER the R1 flows and prove the GUI-side fixes (U4-U17, U21-U24). Each
+# restores any state it mutates so the capture pass shows the resting UI.
+# --------------------------------------------------------------------------
+def f_r2_palette_aria(page, client) -> None:
+    """U7: the command palette is a real combobox/listbox — expanded state,
+    option roles and aria-activedescendant track the arrow keys."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    page.keyboard.press("Control+k")
+    page.wait_for_selector("#palette-modal:not([hidden])", timeout=5_000)
+    aria = page.evaluate("""() => {
+        const i = document.getElementById('palette-input');
+        const ul = document.getElementById('palette-list');
+        const opts = Array.from(ul.querySelectorAll('li[role="option"]'));
+        return {role: i.getAttribute('role'), controls: i.getAttribute('aria-controls'),
+                autocomplete: i.getAttribute('aria-autocomplete'), haspopup: i.getAttribute('aria-haspopup'),
+                expanded: i.getAttribute('aria-expanded'), active: i.getAttribute('aria-activedescendant'),
+                listRole: ul.getAttribute('role'), n: opts.length,
+                allOptions: opts.every(o => o.id && o.getAttribute('aria-selected') !== null),
+                firstSel: opts[0] ? opts[0].getAttribute('aria-selected') : null};
+    }""")
+    check("U7 palette combobox: role/controls/autocomplete/haspopup + listbox",
+          aria["role"] == "combobox" and aria["controls"] == "palette-list"
+          and aria["autocomplete"] == "list" and aria["haspopup"] == "listbox"
+          and aria["listRole"] == "listbox")
+    check("U7 palette options: role=option + ids + aria-selected + expanded/activedescendant",
+          aria["n"] > 0 and aria["allOptions"] and aria["firstSel"] == "true"
+          and aria["expanded"] == "true" and aria["active"] == "pal-opt-0")
+    page.keyboard.press("ArrowDown")
+    a1 = page.evaluate("""() => ({active: document.getElementById('palette-input').getAttribute('aria-activedescendant'),
+        sel: (document.querySelector('#palette-list li[aria-selected="true"]') || {}).id})""")
+    check("U7 ArrowDown moves aria-activedescendant + aria-selected",
+          a1["active"] == "pal-opt-1" and a1["sel"] == "pal-opt-1")
+    page.fill("#palette-input", "zzzznope")
+    page.wait_for_timeout(150)
+    empty = page.evaluate("""() => ({expanded: document.getElementById('palette-input').getAttribute('aria-expanded'),
+        active: document.getElementById('palette-input').hasAttribute('aria-activedescendant')})""")
+    check("U7 empty match list: aria-expanded=false, no activedescendant",
+          empty["expanded"] == "false" and not empty["active"])
+    page.keyboard.press("Escape")
+    page.wait_for_selector("#palette-modal", state="hidden", timeout=5_000)
+
+
+def f_r2_slash_parity(page, client) -> None:
+    """U5/U6/U12: /ultrathink + /agentloop honor explicit on|off, /tone
+    validates built-ins + custom tones, /think maps on->medium and cycles."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    cfg0 = client.get("/api/config")
+    g0, a0 = cfg0.get("generation", {}), cfg0.get("agent", {})
+
+    def cfg():
+        return client.get("/api/config")
+
+    def slash(cmd):
+        # await refreshStatus too, so state.config is current before the next
+        # command reads it (bare toggles / the effort ladder depend on it).
+        page.evaluate("async (c) => { await handleSlash(c); await refreshStatus(); }", cmd)
+        page.wait_for_timeout(120)
+
+    try:
+        slash("/ultrathink on")
+        slash("/ultrathink on")
+        check("U5 /ultrathink on is idempotent (stays true)", cfg()["generation"]["ultrathink"] is True)
+        slash("/ultrathink off")
+        check("U5 /ultrathink off turns it off", cfg()["generation"]["ultrathink"] is False)
+        slash("/ultrathink")
+        check("U5 bare /ultrathink toggles off->on", cfg()["generation"]["ultrathink"] is True)
+        slash("/agentloop on")
+        slash("/agentloop on")
+        check("U5 /agentloop on is idempotent (stays true)", cfg()["agent"]["agent_loop"] is True)
+        slash("/agentloop off")
+        check("U5 /agentloop off turns it off", cfg()["agent"]["agent_loop"] is False)
+        tone_before = cfg()["agent"].get("tone")
+        slash("/tone bogusname")
+        bad = page.evaluate("() => ({toast: document.getElementById('toasts').innerText,"
+                            " input: document.getElementById('input').value})")
+        check("U6 /tone rejects unknown tone with guidance + keeps input + leaves tone",
+              "unknown tone" in bad["toast"] and bad["input"] == "/tone bogusname"
+              and cfg()["agent"].get("tone") == tone_before)
+        slash("/tone chill")
+        check("U6 /tone chill (built-in) persists", cfg()["agent"].get("tone") == "chill")
+        page.evaluate("""() => {
+            state.config = state.config || {};
+            state.config.agent = state.config.agent || {};
+            state.config.agent.custom_tones = Object.assign({}, state.config.agent.custom_tones,
+                {probe_tone: 'a custom probe tone'});
+        }""")
+        slash("/tone probe_tone")
+        check("U6 /tone accepts an agent-created custom tone", cfg()["agent"].get("tone") == "probe_tone")
+        slash("/think on")
+        check("U12 /think on maps to medium", cfg()["generation"]["effort"] == "medium")
+        slash("/think")
+        check("U12 bare /think cycles the ladder (medium->high)", cfg()["generation"]["effort"] == "high")
+        slash("/think bogus")
+        bad2 = page.evaluate("() => document.getElementById('toasts').innerText")
+        check("U12 /think rejects unknown level with usage",
+              "usage: /think" in bad2 and cfg()["generation"]["effort"] == "high")
+    finally:
+        client.req("PATCH", "/api/config", {"generation": {
+            "effort": g0.get("effort"), "ultrathink": g0.get("ultrathink")}})
+        client.post("/api/config/agent", {"tone": a0.get("tone"), "agent_loop": a0.get("agent_loop"),
+                                          "custom_tones": a0.get("custom_tones") or {}, "confirm": True})
+        page.evaluate("async () => { await refreshStatus(); }")
+        page.fill("#input", "")
+        page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+
+
+def f_r2_approval_queue(page, client) -> None:
+    """U4: answering one approval must not clobber the next queued
+    approval's 'Waiting for approval' status (pollState skips run-state
+    while streaming, and never resets state.streaming)."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    page.route("**/api/approval/*", lambda route: route.fulfill(
+        status=200, content_type="application/json", body="{}"))
+    try:
+        page.evaluate("""() => {
+            state.streaming = true;
+            state.approvalQueue = [];
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            queueApproval({id: 'r2a', tool: 'write_file', level: 'medium', risk: 4, mode: 'sandboxed', args: {path: 'a'}, reasons: []});
+            queueApproval({id: 'r2b', tool: 'write_file', level: 'medium', risk: 4, mode: 'sandboxed', args: {path: 'b'}, reasons: []});
+        }""")
+        page.wait_for_selector("#approval-modal:not([hidden])", timeout=5_000)
+        st0 = page.evaluate("() => ({rs: document.getElementById('run-state').textContent, q: state.approvalQueue.length})")
+        check("U4 two queued approvals: modal up, status Waiting, queue=2",
+              st0["rs"] == "Waiting for approval" and st0["q"] == 2)
+        page.click("#ap-allow")
+        page.wait_for_function("() => state.approvalQueue.length === 1", timeout=5_000)
+        page.wait_for_timeout(150)
+        st1 = page.evaluate("""() => ({rs: document.getElementById('run-state').textContent,
+            q: state.approvalQueue.length, modal: !document.getElementById('approval-modal').hidden})""")
+        check("U4 after first decision: next approval keeps Waiting + modal + queue=1",
+              st1["rs"] == "Waiting for approval" and st1["q"] == 1 and st1["modal"])
+        page.click("#ap-deny")
+        page.wait_for_function("() => state.approvalQueue.length === 0", timeout=5_000)
+        page.wait_for_timeout(150)
+        st2 = page.evaluate("""() => ({rs: document.getElementById('run-state').textContent,
+            modal: document.getElementById('approval-modal').hidden})""")
+        check("U4 queue drained: status returns to Working (streaming), modal closed",
+              st2["rs"] == "Working" and st2["modal"])
+    finally:
+        page.unroute("**/api/approval/*")
+        page.evaluate("""() => {
+            state.approvalQueue = []; state.streaming = false;
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            document.getElementById('run-state').textContent = 'Ready';
+        }""")
+
+
+def f_r2_models_keyboard(page, client) -> None:
+    """U8: model rows are keyboard-reachable (tabIndex=0) and Enter/Space
+    fills the fit-detail panel without a mouse."""
+    page.click("#rail [data-view='models']")
+    page.wait_for_selector("#view-models:not([hidden])", timeout=10_000)
+    page.wait_for_function("() => document.querySelectorAll('#models-table tbody tr').length > 0", timeout=20_000)
+    probe = page.evaluate("""() => {
+        const tr = document.querySelector('#models-table tbody tr');
+        return {tab: tr.tabIndex, label: tr.getAttribute('aria-label'),
+                detail: document.getElementById('model-detail').textContent};
+    }""")
+    check("U8 model row: tabIndex=0 + fit-details aria-label",
+          probe["tab"] == 0 and (probe["label"] or "").startswith("Fit details for"))
+    page.evaluate("() => document.querySelector('#models-table tbody tr').focus()")
+    page.keyboard.press("Enter")
+    page.wait_for_timeout(150)
+    d1 = page.evaluate("() => document.getElementById('model-detail').textContent")
+    name = page.evaluate("() => document.querySelector('#models-table tbody tr').getAttribute('aria-label').replace('Fit details for ', '')")
+    check("U8 Enter on a model row fills fit details", d1.startswith(name))
+    page.evaluate("() => { const r = document.querySelectorAll('#models-table tbody tr'); (r[1] || r[0]).focus(); }")
+    page.keyboard.press("Space")
+    page.wait_for_timeout(150)
+    d2 = page.evaluate("() => document.getElementById('model-detail').textContent")
+    check("U8 Space on a model row fills fit details", "—" in d2 and d2 != probe["detail"])
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+
+
+def f_r2_drop_guard(page, client) -> None:
+    """U14: a file drop never navigates away — it is refused with honest
+    TUI-only guidance; plain-text drops into fields keep native behavior."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    probe = page.evaluate("""() => {
+        const dt = new DataTransfer();
+        dt.items.add(new File([new Uint8Array([1, 2, 3])], 'x.png', {type: 'image/png'}));
+        const over = new DragEvent('dragover', {dataTransfer: dt, bubbles: true, cancelable: true});
+        document.body.dispatchEvent(over);
+        const drop = new DragEvent('drop', {dataTransfer: dt, bubbles: true, cancelable: true});
+        document.body.dispatchEvent(drop);
+        return {overPrevented: over.defaultPrevented, dropPrevented: drop.defaultPrevented,
+                toast: document.getElementById('toasts').innerText};
+    }""")
+    check("U14 file dragover + drop prevented (no navigation)", probe["overPrevented"] and probe["dropPrevented"])
+    check("U14 file drop refused with TUI-only guidance",
+          "TUI-only" in probe["toast"] and "File drop" in probe["toast"])
+    txt = page.evaluate("""() => {
+        const dt = new DataTransfer();
+        dt.setData('text/plain', 'hello');
+        const drop = new DragEvent('drop', {dataTransfer: dt, bubbles: true, cancelable: true});
+        document.getElementById('input').dispatchEvent(drop);
+        return {prevented: drop.defaultPrevented, files: dt.files.length};
+    }""")
+    check("U14 plain-text drop into a field is NOT hijacked", not txt["prevented"] and txt["files"] == 0)
+    page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+
+
+def f_r2_toast_placement(page, client) -> None:
+    """U13: toasts anchor above the composer (tracking its live height),
+    never overlapping Send or the + controls."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    page.evaluate("() => { syncComposerHeight(); toast('placement probe'); }")
+    page.wait_for_selector("#toasts .toast", timeout=5_000)
+    geo = page.evaluate("""() => {
+        const t = document.querySelector('#toasts .toast').getBoundingClientRect();
+        const c = document.querySelector('.composer-wrap').getBoundingClientRect();
+        const cs = getComputedStyle(document.getElementById('toasts'));
+        return {tb: t.bottom, ct: c.top, bottom: cs.bottom,
+                composerH: getComputedStyle(document.documentElement).getPropertyValue('--composer-h').trim()};
+    }""")
+    check("U13 toast bottom sits above the composer top", geo["tb"] <= geo["ct"] + 1)
+    check("U13 toasts bottom tracks --composer-h + 24px",
+          abs(float(geo["bottom"].replace("px", "")) - (float(geo["composerH"].replace("px", "")) + 24)) <= 2)
+    page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+
+
+def f_r2_bg3_contrast(page, client) -> None:
+    """U9: secondary text on bg3 surfaces meets WCAG AA (>=4.5:1). The
+    --mute token fails on bg3; the fixed surfaces must render --dim."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    probe = page.evaluate("""() => {
+        const probeEl = document.createElement('div');
+        probeEl.style.display = 'none';
+        document.body.appendChild(probeEl);
+        const cssColor = (v) => { probeEl.style.color = v; return getComputedStyle(probeEl).color; };
+        const parse = (s) => s.replace(/[^0-9.,]/g, '').split(',').slice(0, 3).map(Number);
+        const bg3 = parse(cssColor('var(--bg3)'));
+        const dim = parse(cssColor('var(--dim)'));
+        const mute = parse(cssColor('var(--mute)'));
+        const lum = (c) => { const a = c.map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+            return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2]; };
+        const ratio = (c1, c2) => { const l1 = lum(c1), l2 = lum(c2); return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05); };
+        const host = document.createElement('div');
+        host.style.display = 'none';
+        host.innerHTML = '<div class="pop-list"><div class="sel"><span>pop</span></div></div>'
+            + '<div class="modal palette"><ul><li class="sel"><code>c</code><small>pal</small></li></ul></div>'
+            + '<div class="doctor"><span class="st skip">skip</span></div>';
+        document.body.appendChild(host);
+        const color = (sel) => parse(getComputedStyle(host.querySelector(sel)).color);
+        const popSel = color('.pop-list div.sel span');
+        const palSel = color('.modal.palette li.sel small');
+        const skipEl = host.querySelector('.doctor .st.skip');
+        const skipRatio = ratio(parse(getComputedStyle(skipEl).color), parse(getComputedStyle(skipEl).backgroundColor));
+        let hoverDim = 0, hoverMute = 0;
+        for (const sheet of document.styleSheets) {
+            let rules; try { rules = sheet.cssRules; } catch (e) { continue; }
+            for (const r of rules) {
+                const sel = r.selectorText || '';
+                const isHover = sel.endsWith(':hover span') || sel.endsWith(':hover small');
+                const inScope = sel.includes('.menu') || sel.includes('.pop-list') || sel.includes('.palette');
+                if (isHover && inScope) {
+                    const c = r.style.color || '';
+                    if (c.includes('--dim')) hoverDim++;
+                    if (c.includes('--mute')) hoverMute++;
+                }
+            }
+        }
+        host.remove(); probeEl.remove();
+        return {dimRatio: ratio(dim, bg3), muteRatio: ratio(mute, bg3),
+                popRatio: ratio(popSel, bg3), palRatio: ratio(palSel, bg3), skipRatio,
+                popIsDim: popSel.join() === dim.join(), palIsDim: palSel.join() === dim.join(),
+                hoverDim, hoverMute};
+    }""")
+    check("U9 --dim token meets 4.5:1 on bg3 (and --mute does not)",
+          probe["dimRatio"] >= 4.5 and probe["muteRatio"] < 4.5)
+    check("U9 pop-list selected text on bg3 >= 4.5:1 (uses --dim)",
+          probe["popRatio"] >= 4.5 and probe["popIsDim"])
+    check("U9 palette selected hint on bg3 >= 4.5:1 (uses --dim)",
+          probe["palRatio"] >= 4.5 and probe["palIsDim"])
+    check("U9 doctor skip badge on bg3 >= 4.5:1", probe["skipRatio"] >= 4.5)
+    check("U9 hover text rules use --dim, never --mute", probe["hoverDim"] >= 3 and probe["hoverMute"] == 0)
+
+
+def f_r2_misc(page, client) -> None:
+    """U16/U21/U22/U23/U24: link focus + honest provider hint, tab ARIA +
+    roving tabindex, settings label->combobox focus, dead helper removed,
+    pointercancel resets drag state."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    link = page.evaluate("""async () => {
+        const p = promptModal('Probe', 'Docs: https://example.com/docs', false, '');
+        const m = document.getElementById('prompt-modal');
+        const a = m.querySelector('#pm-hint a');
+        const foc = focusables(m);
+        const res = {hasAnchor: !!a, href: a ? a.href : null, anchorFocusable: a ? foc.includes(a) : false,
+                     target: a ? a.target : null, rel: a ? a.rel : null};
+        document.getElementById('pm-cancel').click();
+        await p;
+        return res;
+    }""")
+    check("U16 promptModal linkifies genuine URL + anchor is focusable",
+          link["hasAnchor"] and link["anchorFocusable"] and link["href"] == "https://example.com/docs"
+          and link["target"] == "_blank" and "noopener" in link["rel"])
+    nolink = page.evaluate("""async () => {
+        const p = promptModal('Base URL', 'OpenAI-compatible base URL — the endpoint root, usually ending in /v1', false, '');
+        const a = document.querySelector('#prompt-modal #pm-hint a');
+        const res = {hasAnchor: !!a};
+        document.getElementById('pm-cancel').click();
+        await p;
+        return res;
+    }""")
+    check("U16 provider base-URL hint has no dead 'open' link", not nolink["hasAnchor"])
+    tabs = page.evaluate("""() => {
+        const ts = Array.from(document.querySelectorAll('#tabs .tab'));
+        const panel = document.getElementById('view-chat');
+        return {n: ts.length, allControls: ts.every(t => t.getAttribute('aria-controls') === 'view-chat'),
+                panelRole: panel.getAttribute('role'), panelLabel: panel.getAttribute('aria-label')};
+    }""")
+    check("U21 chat tabs aria-controls=view-chat + panel is a labelled tabpanel",
+          tabs["n"] > 0 and tabs["allControls"] and tabs["panelRole"] == "tabpanel" and bool(tabs["panelLabel"]))
+    rov = page.evaluate("""() => {
+        const ts = Array.from(document.querySelectorAll('#tabs .tab'));
+        if (ts.length < 2) return null;
+        ts[0].focus();
+        ts[0].dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true}));
+        return {first: ts[0].tabIndex, second: ts[1].tabIndex, focused: document.activeElement === ts[1]};
+    }""")
+    check("U21 ArrowRight moves focus + roving tabindex to the next tab",
+          rov is not None and rov["first"] == -1 and rov["second"] == 0 and rov["focused"])
+    check("U23 unused openSidebarNarrow helper removed",
+          page.evaluate("() => typeof openSidebarNarrow === 'undefined'"))
+    pc = page.evaluate("""() => {
+        tabDrag = {x: 0, left: 0, id: 1}; tabDragged = true;
+        window.dispatchEvent(new PointerEvent('pointercancel'));
+        return {drag: tabDrag, dragged: tabDragged};
+    }""")
+    check("U24 pointercancel resets tabDrag + tabDragged", pc["drag"] is None and pc["dragged"] is False)
+    page.click("#rail [data-view='settings']")
+    page.wait_for_selector("#view-settings:not([hidden])", timeout=10_000)
+    page.wait_for_selector("#set-generation-temperature", timeout=10_000)
+    lab = page.evaluate("""() => {
+        const row = Array.from(document.querySelectorAll('#settings-form .set-row'))
+            .find(r => r.querySelector('om-listbox') && r.querySelector('label'));
+        if (!row) return null;
+        const btn = row.querySelector('om-listbox .dd-btn');
+        row.querySelector('label').click();
+        return {focused: document.activeElement === btn};
+    }""")
+    check("U22 settings label click focuses the combobox button", lab is not None and lab["focused"])
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+
+
+def f_r2_div_buttons(page, client) -> None:
+    """U17: sidebar rows and market cards expose button semantics and
+    respond to Enter/Space without a mouse."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    sb = page.evaluate("""() => {
+        const row = document.querySelector('#sb-list .sb-row');
+        return row ? {role: row.getAttribute('role'), tab: row.tabIndex} : null;
+    }""")
+    check("U17 sidebar row: role=button + tabIndex=0", sb is not None and sb["role"] == "button" and sb["tab"] == 0)
+    page.click("#rail [data-view='market']")
+    page.wait_for_selector("#view-market:not([hidden])", timeout=10_000)
+    page.wait_for_function("() => document.querySelectorAll('.market-card').length > 0", timeout=20_000)
+    mc = page.evaluate("""() => {
+        const c = document.querySelector('.market-card');
+        return {role: c.getAttribute('role'), tab: c.tabIndex};
+    }""")
+    check("U17 market card: role=button + tabIndex=0", mc["role"] == "button" and mc["tab"] == 0)
+    page.evaluate("() => document.querySelector('.market-card').focus()")
+    page.keyboard.press("Space")
+    page.wait_for_selector("#confirm-modal:not([hidden])", timeout=5_000)
+    check("U17 Space on a market card opens the download confirm", True)
+    page.keyboard.press("Escape")
+    page.wait_for_selector("#confirm-modal", state="hidden", timeout=5_000)
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+
+
 def flows_responsive(page, width: int) -> None:
     def f():
         wait_boot(page)
@@ -1358,8 +1756,22 @@ def flows_responsive(page, width: int) -> None:
             check(f"{width}px: reopened sidebar reachable (not inert, focus works)",
                   not opened["inert"] and opened["aria"] == "false"
                   and opened["vis"] == "visible" and opened["focusId"] == "sb-search")
+            # U15: an outside pointerdown dismisses the overlay sidebar (the
+            # main area is never part of #sidebar / #btn-sidebar).
+            page.evaluate("""() => {
+                const el = document.getElementById('main') || document.body;
+                el.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, cancelable: true}));
+            }""")
+            page.wait_for_timeout(300)
+            check(f"{width}px: outside pointerdown dismisses overlay sidebar (U15)",
+                  page.evaluate("() => !document.getElementById('sidebar').classList.contains('open')"))
             page.click("#btn-sidebar")
+            page.wait_for_selector("#sidebar.open", timeout=5000)
+            page.wait_for_timeout(200)
+            page.keyboard.press("Escape")
             page.wait_for_timeout(350)
+            check(f"{width}px: Escape dismisses overlay sidebar (U15)",
+                  page.evaluate("() => !document.getElementById('sidebar').classList.contains('open')"))
         else:
             check(f"{width}px: sidebar visible by default", page.is_visible("#sidebar"))
         # task #29: persistent left rail (icon-only collapse on narrow)
@@ -1390,6 +1802,45 @@ def flows_responsive(page, width: int) -> None:
         page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
         check(f"{width}px: no horizontal overflow",
               page.evaluate("() => document.documentElement.scrollWidth <= window.innerWidth + 1"))
+        if width <= 620:
+            # U11: key chips wrap inside the narrow key column, never bleed out
+            page.click("#rail [data-view='help']")
+            page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
+            page.wait_for_function("() => !!document.querySelector('#help-body table')", timeout=20_000)
+            kbd = page.evaluate("""() => {
+                const cells = Array.from(document.querySelectorAll('#help-body td:first-child'));
+                const bad = cells.filter(td => {
+                    const k = td.querySelector('kbd');
+                    return k && k.getBoundingClientRect().right > td.getBoundingClientRect().right + 1;
+                }).length;
+                return {cells: cells.length, bad};
+            }""")
+            check(f"{width}px: help kbd chips fit their cells (U11)", kbd["cells"] > 0 and kbd["bad"] == 0)
+            # U10: the market grid track stays inside a <280px container
+            page.click("#rail [data-view='market']")
+            page.wait_for_selector("#view-market:not([hidden])", timeout=10_000)
+            page.wait_for_function("() => document.querySelectorAll('.market-card').length > 0", timeout=20_000)
+            mg = page.evaluate("""() => {
+                const g = document.getElementById('market-grid');
+                const gr = g.getBoundingClientRect();
+                const cards = Array.from(g.querySelectorAll('.market-card'));
+                return {sw: g.scrollWidth, cw: g.clientWidth, n: cards.length,
+                        out: cards.filter(c => c.getBoundingClientRect().right > gr.right + 1).length};
+            }""")
+            check(f"{width}px: market grid fits without overflow (U10)",
+                  mg["n"] > 0 and mg["sw"] <= mg["cw"] + 1 and mg["out"] == 0)
+            page.click("#rail [data-view='chat']")
+            page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+            # U13: toasts anchor above the composer, never over Send
+            page.evaluate("() => { syncComposerHeight(); toast('placement probe'); }")
+            page.wait_for_selector("#toasts .toast", timeout=5_000)
+            tp = page.evaluate("""() => {
+                const t = document.querySelector('#toasts .toast').getBoundingClientRect();
+                const c = document.querySelector('.composer-wrap').getBoundingClientRect();
+                return {tb: t.bottom, ct: c.top};
+            }""")
+            check(f"{width}px: toast sits above the composer (U13)", tp["tb"] <= tp["ct"] + 1)
+            page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
     flow(f"responsive-{width}", f)
 
 
@@ -1414,7 +1865,7 @@ def main() -> int:
 
     VALIDATION.mkdir(parents=True, exist_ok=True)
     client, stop, th = boot_bridge()
-    shot = {"narrow": "gui-narrow.png", "laptop": "gui-laptop.png",
+    shot = {"narrow": "gui-narrow.png", "tiny": "gui-tiny.png", "laptop": "gui-laptop.png",
             "desktop": "gui-desktop.png", "wide": "gui-wide.png"}
     contexts = []
     try:

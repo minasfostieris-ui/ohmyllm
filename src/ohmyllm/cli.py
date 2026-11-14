@@ -207,7 +207,7 @@ def chat(
 
 @app.command()
 def models(
-    backend: str | None = typer.Option(None, "--backend", "-b", help="ollama | lmstudio | mock"),
+    backend: str | None = typer.Option(None, "--backend", "-b", help="ollama | lmstudio | cloud | mock"),
     as_json: bool = typer.Option(False, "--json"),
 ) -> None:
     """List models with size, quantization and VRAM estimates."""
@@ -243,7 +243,7 @@ def models(
 
 @app.command()
 def backend(
-    set_to: str | None = typer.Argument(None, help="ollama | lmstudio | mock"),
+    set_to: str | None = typer.Argument(None, help="ollama | lmstudio | cloud | mock"),
     start: bool = typer.Option(False, "--start", help="Try to start the server."),
 ) -> None:
     """Show backend status, switch default backend, or start its server."""
@@ -756,7 +756,7 @@ def skills_cmd(
 def gui(
     web: bool = typer.Option(False, "--web", help="Open the loopback console in a web browser (explicit opt-in)."),
     browser: bool = typer.Option(False, "--browser", "-b", help="Deprecated alias for --web."),
-    stop: bool = typer.Option(False, "--stop", help="Close the background web console."),
+    stop: bool = typer.Option(False, "--stop", help="Close the running console (native window or background web)."),
     no_open: bool = typer.Option(False, "--no-open", help="Print the console URL but do not launch anything."),
     port: int = typer.Option(0, "--port", help="Pin the loopback bridge port (0 = random)."),
     workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace root for this session."),
@@ -766,6 +766,7 @@ def gui(
     The native Tauri window owns its loopback bridge. Without a native
     binary the bridge still starts in the background and its loopback URL
     is printed; a browser opens only on the explicit `--web` opt-in.
+    `--no-open` launches nothing at all and prints the full tokenized URL.
     Both modes run the exact same engine — the loopback bridge reuses
     Services, the policy engine and the approval flow, bound to 127.0.0.1
     with a per-process token.
@@ -775,7 +776,10 @@ def gui(
     import webbrowser
 
     if stop:
-        stopf = paths.global_home() / "gui-web.pid"
+        home = paths.global_home()
+        stopf = home / "gui-web.pid"
+        nativef = home / "gui-native.pid"
+        found = stopf.is_file() or nativef.is_file()
         if stopf.is_file():
             try:
                 os.kill(int(stopf.read_text().strip()), 15)
@@ -783,16 +787,38 @@ def gui(
             except (ValueError, OSError):
                 console.print("[dim]web console was not running[/dim]")
             stopf.unlink(missing_ok=True)
-            (paths.global_home() / "gui-web.discovery").unlink(missing_ok=True)
-        else:
-            console.print("[dim]no web console running[/dim]")
+            (home / "gui-web.discovery").unlink(missing_ok=True)
+        if nativef.is_file():
+            try:
+                pid = int(nativef.read_text().strip())
+                # The native shell leads its own session (start_new_session)
+                # and its owned bridge child stays in that process group, so
+                # one group signal closes the window AND the loopback server.
+                try:
+                    os.killpg(pid, 15)
+                except (ProcessLookupError, PermissionError):
+                    os.kill(pid, 15)
+                console.print("[green]native console closed[/green]")
+            except (ValueError, OSError):
+                console.print("[dim]native console was not running[/dim]")
+            nativef.unlink(missing_ok=True)
+        if not found:
+            console.print("[dim]no console running[/dim]")
         return
 
     env = _bridge_environment(workspace)
     want_web = web or browser
 
-    native = None if want_web else _resolve_native_binary(env)
+    # U1: --no-open must launch NOTHING — not even the native shell — and
+    # hand over a working tokenized URL, so it always takes the bridge path.
+    native = None if (want_web or no_open) else _resolve_native_binary(env)
     if native is not None:
+        if port:
+            # U18: the native shell picks its own loopback port; silently
+            # dropping --port would break firewall/scripting expectations.
+            console.print("[red]--port only applies to the web console — the native shell picks its own loopback port.[/red]")
+            console.print("[dim]use `oml gui --web --port N` or `oml gui --no-open --port N` instead.[/dim]")
+            raise typer.Exit(1)
         # App first: the native shell starts (or attaches to) its own bridge.
         # No second bridge here and never an unsolicited browser window.
         stopf = paths.global_home() / "gui-web.pid"
@@ -804,20 +830,27 @@ def gui(
                 os.kill(int(stopf.read_text().strip()), 0)
                 read_bridge_discovery(Path(discf.read_text().strip()))
                 env["OMLLM_BRIDGE_DISCOVERY"] = discf.read_text().strip()
-        subprocess.Popen([str(native)], env=env, start_new_session=True)
+        proc = subprocess.Popen([str(native)], env=env, start_new_session=True)
+        # U3: track the shell so `oml gui --stop` can close what we launched
+        # (the shell's owned bridge child dies with its process group).
+        atomic_write(paths.global_home() / "gui-native.pid", str(proc.pid))
         console.print(f"[green]native console launching in the background[/green] [dim]({native})[/dim]")
-        console.print("[dim]prefer a browser? `oml gui --web` · `oml gui --stop` closes a background web console[/dim]")
+        console.print("[dim]prefer a browser? `oml gui --web` · `oml gui --stop` closes it (window + its bridge)[/dim]")
         return
 
     stopf = paths.global_home() / "gui-web.pid"
     discf = paths.global_home() / "gui-web.discovery"
-    if want_web and not no_open and stopf.is_file() and discf.is_file():
+    if (want_web or no_open) and stopf.is_file() and discf.is_file():
         # Reuse the running background console instead of stacking bridges.
         try:
             os.kill(int(stopf.read_text().strip()), 0)
             actual, token = read_bridge_discovery(Path(discf.read_text().strip()))
-            webbrowser.open(f"http://127.0.0.1:{actual}/#token={token}")
-            console.print(f"[bold]web console[/bold] opened at http://127.0.0.1:{actual}/ [dim](already running)[/dim]")
+            if no_open:
+                console.print(f"[bold]web console[/bold] → http://127.0.0.1:{actual}/#token={token} "
+                              f"[dim](already running · this URL carries the capability token — keep it private · `oml gui --stop` closes it)[/dim]")
+            else:
+                webbrowser.open(f"http://127.0.0.1:{actual}/#token={token}")
+                console.print(f"[bold]web console[/bold] opened at http://127.0.0.1:{actual}/ [dim](already running)[/dim]")
             return
         except (ValueError, OSError):
             pass  # stale pid or discovery: start a fresh console below
@@ -854,10 +887,17 @@ def gui(
             atomic_write(stopf, str(child.pid))
             atomic_write(discf, str(port_file))
             kept = True
-            console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → {base_url}\n"
-                                f"[dim]native app not installed · loopback only · `oml gui --web` opens it in a browser · `oml gui --stop` closes it[/dim]",
-                                border_style="dim"))
-            console.print("[dim]to get the native app: build `gui/src-tauri` (cargo build --release) or set OMLLM_GUI_BIN.[/dim]")
+            if no_open:
+                # U1: nothing was launched; the printed URL must WORK, so it
+                # carries the capability token (a bare URL lands on a 401).
+                console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → {url}\n"
+                                    f"[dim]loopback only · this URL carries the capability token — keep it private · nothing was launched · `oml gui --stop` closes it[/dim]",
+                                    border_style="dim"))
+            else:
+                console.print(Panel(f"[bold green]OhMyLLM console[/bold green] → {base_url}\n"
+                                    f"[dim]native app not available here · loopback only · `oml gui --web` opens it in a browser · `oml gui --stop` closes it[/dim]",
+                                    border_style="dim"))
+            console.print("[dim]the native app ships inside the package (`ohmyllm/gui_bin`); set OMLLM_GUI_BIN to point at another build.[/dim]")
             return
         if no_open:
             # K36: --no-open must hand over the FULL tokenized URL — a bare

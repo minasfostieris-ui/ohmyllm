@@ -407,7 +407,7 @@ document.addEventListener("click", (e) => {
 /* ------------------------------------------------- modals (stacked, LIFO) */
 const modalStack = [];
 function focusables(m) {
-  return Array.from(m.querySelectorAll('button, input, textarea, select, [tabindex="0"]'))
+  return Array.from(m.querySelectorAll('button, input, textarea, select, a[href], [tabindex="0"]'))
     .filter((x) => !x.disabled && !x.hidden && !x.closest("[hidden]") && x.getClientRects().length);
 }
 function openModal(sel, focusSel) {
@@ -467,6 +467,8 @@ function promptModal(title, hint, secret, def) {
       const span = document.createElement("span");
       span.textContent = hint + "  ";
       hintEl.appendChild(span);
+      // U16: only genuine doc/signup URLs may reach this link — placeholder
+      // examples must never be linkified into a dead "open" affordance.
       const link = hint.match(/https:\/\/[^\s)]+/);
       if (link) { const a = document.createElement("a"); a.href = link[0]; a.target = "_blank"; a.rel = "noopener"; a.textContent = "open"; hintEl.appendChild(a); }
     }
@@ -1025,7 +1027,9 @@ async function answerApproval(decision) {
   } finally {
     state.answeringApproval = false;
     $$("#approval-modal button").forEach((b) => (b.disabled = false));
-    $("#run-state").textContent = state.streaming ? "Working" : "Ready";
+    // U4: the next queued approval owns the status — never clobber its
+    // "Waiting for approval" (pollState skips run-state while streaming).
+    if (!state.approvalQueue.length) $("#run-state").textContent = state.streaming ? "Working" : "Ready";
   }
 }
 [["ap-allow", "approve"], ["ap-session", "session"], ["ap-always", "always"], ["ap-deny", "deny"]].forEach(([id, dec]) => {
@@ -1184,6 +1188,17 @@ input.addEventListener("paste", (e) => {
     toast("Image paste is TUI-only for now — the GUI bridge has no media upload path. Use the TUI (Ctrl+V) for vision paste.", "warn");
   }
 });
+/* U14: a drag-dropped file must never navigate away from the console —
+   the bridge has no upload path, so refuse honestly like the paste guard.
+   Plain-text drops into editable fields keep their native behavior. */
+document.addEventListener("dragover", (e) => { e.preventDefault(); });
+document.addEventListener("drop", (e) => {
+  const files = (e.dataTransfer && e.dataTransfer.files) || [];
+  const t = e.target;
+  if (!files.length && t && t.closest && t.closest("input, textarea")) return;
+  e.preventDefault();
+  if (files.length) toast("File drop is TUI-only for now — the GUI bridge has no media upload path. Use the TUI (Ctrl+V) for vision paste.", "warn");
+});
 composer.addEventListener("submit", (e) => { e.preventDefault(); if (composing) return; submit(); });
 
 /* ------------------------------------------------------------- submitting */
@@ -1299,22 +1314,38 @@ async function handleSlash(text) {
       case "/think": {
         clear();
         const levels = ["off", "low", "medium", "high", "xhigh", "max"];
-        if (!levels.includes(arg)) { toast("usage: /think off|low|medium|high|xhigh|max", "warn"); keep(); return; }
-        await patch("/api/config", { generation: { effort: arg } }); toast(`effort: ${arg}`); refreshStatus(); return;
+        // U12: TUI parity — `on` maps to medium, bare /think cycles the ladder.
+        const cur = (state.config && state.config.generation && state.config.generation.effort) || (state.status && state.status.effort) || "";
+        let want = arg.toLowerCase();
+        if (want === "on") want = "medium";
+        else if (!want) want = levels.includes(cur) ? levels[(levels.indexOf(cur) + 1) % levels.length] : "low";
+        if (!levels.includes(want)) { toast("usage: /think off|low|medium|high|xhigh|max (or on, or bare to cycle)", "warn"); keep(); return; }
+        await patch("/api/config", { generation: { effort: want } }); toast(`effort: ${want}`); refreshStatus(); return;
       }
       case "/ultrathink": {
         clear();
         const cur = state.config && state.config.generation ? state.config.generation.ultrathink : false;
-        await patch("/api/config", { generation: { ultrathink: !cur } }); toast(`ultrathink: ${!cur}`); refreshStatus(); return;
+        // U5: explicit on|off wins over the toggle — never invert intent.
+        const a = arg.toLowerCase();
+        const want = a === "on" || a === "off" ? a === "on" : !cur;
+        await patch("/api/config", { generation: { ultrathink: want } }); toast(`ultrathink: ${want}`); refreshStatus(); return;
       }
-      case "/tone":
+      case "/tone": {
         clear();
-        if (!arg) { toast("usage: /tone default|ruthless|chill|friendly|professional|terse", "warn"); keep(); return; }
+        // U6: validate like the TUI — built-ins + agent-created custom tones.
+        const opts = ["default", "ruthless", "chill", "friendly", "professional", "terse"]
+          .concat(Object.keys((state.config && state.config.agent && state.config.agent.custom_tones) || {}).sort());
+        if (!arg) { toast("usage: /tone " + opts.join("|"), "warn"); keep(); return; }
+        if (!opts.includes(arg)) { toast("unknown tone — " + opts.join("|"), "warn"); keep(); return; }
         await post("/api/config/agent", { tone: arg, confirm: true }); toast(`tone: ${arg}`); refreshStatus(); return;
+      }
       case "/agentloop": {
         clear();
         const cur = state.config && state.config.agent ? state.config.agent.agent_loop : false;
-        await post("/api/config/agent", { agent_loop: !cur, confirm: true }); toast(`agent loop: ${!cur}`); refreshStatus(); return;
+        // U5: explicit on|off wins over the toggle — never invert intent.
+        const a = arg.toLowerCase();
+        const want = a === "on" || a === "off" ? a === "on" : !cur;
+        await post("/api/config/agent", { agent_loop: want, confirm: true }); toast(`agent loop: ${want}`); refreshStatus(); return;
       }
       case "/chat": case "/plan": case "/build": clear(); setOpMode(cmd.slice(1)); return;
       case "/remember":
@@ -1450,6 +1481,7 @@ function renderTabs() {
       b.className = "tab";
       b.dataset.sid = id;
       b.setAttribute("role", "tab");
+      b.setAttribute("aria-controls", "view-chat"); // U21: every chat tab owns the chat panel
       b.setAttribute("aria-keyshortcuts", "Delete Backspace");
       const glyph = document.createElement("span"); glyph.className = "glyph";
       const t = document.createElement("span"); t.className = "t";
@@ -1467,7 +1499,9 @@ function renderTabs() {
         else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
           e.preventDefault();
           const sib = e.key === "ArrowLeft" ? b.previousElementSibling : b.nextElementSibling;
-          if (sib) sib.focus();
+          // U21: roving tabindex follows the arrow focus, so Shift+Tab
+          // re-entry lands on the tab the user actually moved to.
+          if (sib) { b.tabIndex = -1; sib.tabIndex = 0; sib.focus(); }
         }
       };
       // middle-click closes, matching editor tab conventions
@@ -1571,6 +1605,9 @@ window.addEventListener("pointermove", (e) => {
   t.style.scrollBehavior = "";
 });
 window.addEventListener("pointerup", () => { tabDrag = null; });
+// U24: a cancelled touch pointer must not leave tabDragged set — that
+// would swallow the next tap once.
+window.addEventListener("pointercancel", () => { tabDrag = null; tabDragged = false; });
 $("#tabs").addEventListener("click", (e) => {
   if (tabDragged) { e.preventDefault(); e.stopPropagation(); tabDragged = false; }
 }, true);
@@ -1649,6 +1686,7 @@ async function renderSidebar() {
     const row = document.createElement("div");
     row.className = "sb-row" + (c.id === state.session ? " active" : "");
     row.tabIndex = 0;
+    row.setAttribute("role", "button"); // U17: div-button semantics for AT
     row.innerHTML = `<div class="sb-main">
       <div class="top"><span class="title">${esc(c.title || "New chat")}</span>${c.pinned ? '<span class="pin" aria-label="Pinned">●</span>' : ""}</div>
       <div class="meta"><p class="prev">${esc(c.preview || "")}</p><time>${esc(relTime(c.updated))}</time></div>
@@ -1660,7 +1698,7 @@ async function renderSidebar() {
       <button type="button" data-act="del" class="del" aria-label="Delete chat" title="Delete"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6 4V3h4v1M5 4l1 9h4l1-9M7 6v5M9 6v5"/></svg></button>
     </span>`;
     row.addEventListener("click", (e) => { if (!e.target.closest(".sb-acts")) openChat(c.id); });
-    row.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.target.closest(".sb-acts")) openChat(c.id); });
+    row.addEventListener("keydown", (e) => { if ((e.key === "Enter" || e.key === " ") && !e.target.closest(".sb-acts")) { e.preventDefault(); openChat(c.id); } });
     row.querySelector(".sb-acts").addEventListener("click", async (e) => {
       const b = e.target.closest("[data-act]"); if (!b) return;
       e.stopPropagation();
@@ -1901,7 +1939,7 @@ function paintModels() {
       finally { probe.disabled = false; }
     };
     acts.append(use, probe);
-    tr.onclick = () => {
+    const fillDetail = () => {
       const bits = [];
       if (m.why_weak) bits.push("tool support: " + m.why_weak);
       (m.warnings || []).forEach((w) => bits.push("⚠ " + w));
@@ -1909,10 +1947,15 @@ function paintModels() {
       if (m.vram_comfortable) bits.push(`comfortable VRAM ≈ ${humanBytes(m.vram_comfortable)}`);
       $("#model-detail").textContent = m.name + " — " + (bits.length ? bits.join("  ") : "no warnings");
     };
+    tr.onclick = fillDetail;
+    // U8: the fit details must be reachable without a mouse.
+    tr.tabIndex = 0;
+    tr.setAttribute("aria-label", `Fit details for ${m.name}`);
+    tr.onkeydown = (e) => { if ((e.key === "Enter" || e.key === " ") && !e.isComposing && e.target === tr) { e.preventDefault(); fillDetail(); } };
     tb.appendChild(tr);
   });
   $("#model-detail").textContent = rows.length
-    ? `${rows.length} model(s) · backend ${data.backend}${data.running ? "" : " (not running)"} — click a row for fit details`
+    ? `${rows.length} model(s) · backend ${data.backend}${data.running ? "" : " (not running)"} — click or press Enter on a row for fit details`
     : (q ? `no models match “${q}”` : "no models found — pull one or start the backend");
 }
 async function pullModel(name) {
@@ -2037,7 +2080,7 @@ async function provForget(p) {
 async function provAddCustom() {
   const name = await promptModal("Custom provider", "Display name", false, "");
   if (!name) return;
-  const base = await promptModal("Base URL", "OpenAI-compatible base, e.g. https://host/v1", false, "");
+  const base = await promptModal("Base URL", "OpenAI-compatible base URL — the endpoint root, usually ending in /v1", false, "");
   if (!base) return;
   const models = await promptModal("Model ids", "Comma-separated model ids (optional)", false, "");
   try { provData = await post("/api/providers/custom", { name, base_url: base, models: models || "" }); paintProviders(); toast(`added ${name}`); }
@@ -2073,6 +2116,7 @@ function paintMarket() {
   const fitCls = { fits: "ok", tight: "warn", no: "bad", unknown: "dim" };
   entries.filter((e) => !marketSection || e.section === marketSection).forEach((e) => {
     const card = document.createElement("div"); card.className = "market-card"; card.tabIndex = 0;
+    card.setAttribute("role", "button"); // U17: div-button semantics for AT
     const pct = marketData.vram_bytes ? Math.min(100, Math.round(((e.size_gb * 2 ** 30) / marketData.vram_bytes) * 100)) : 0;
     card.innerHTML = `
       <div class="mc-top"><span class="mc-title" title="${esc(e.title)}">${esc(e.title)}</span><span class="mc-size">${esc(e.size_gb)} GB</span></div>
@@ -2082,7 +2126,7 @@ function paintMarket() {
       <div class="mc-foot"><span class="mc-repo" title="${esc(e.repo || "")}">${esc(e.repo || "")}</span><span class="mc-dl">download →</span></div>`;
     const go = () => marketDownload(e);
     card.onclick = go;
-    card.onkeydown = (ev) => { if (ev.key === "Enter" && !ev.isComposing) go(); };
+    card.onkeydown = (ev) => { if ((ev.key === "Enter" || ev.key === " ") && !ev.isComposing) { ev.preventDefault(); go(); } };
     grid.appendChild(card);
     // K9: CSP style-src 'self' blocks inline style attributes in markup —
     // set the fit-bar width through CSSOM after insertion instead.
@@ -2387,6 +2431,9 @@ function renderSettings() {
         el.setOptions(type.slice(5).split(",").map((o) => [o, o]));
         el.value = String(val == null ? "" : val);
         el.setAttribute("aria-label", key);
+        // U22: custom elements aren't labelable — forward label clicks to
+        // the inner combobox button so `for=` stops being a dead affordance.
+        row.querySelector("label").addEventListener("click", () => { const b = el.querySelector(".dd-btn"); if (b) b.focus(); });
       } else {
         el = document.createElement("input");
         el.type = type === "text" ? "text" : "number";
@@ -2561,16 +2608,33 @@ function paintPalette(q) {
   palMatches.forEach((c, i) => {
     const li = document.createElement("li");
     li.className = i === palSel ? "sel" : "";
+    // U7: same combobox/listbox semantics as the composer's slash hints.
+    li.id = `pal-opt-${i}`;
+    li.setAttribute("role", "option");
+    li.setAttribute("aria-selected", String(i === palSel));
     li.innerHTML = `<code class="pal-cmd">${esc(c.label)}</code><small>${esc(c.hint || "")}</small>`;
     li.onclick = () => runPalette(c);
     ul.appendChild(li);
   });
   if (!palMatches.length) ul.innerHTML = '<li class="pal-empty">no matching command</li>';
+  syncPaletteAria();
+}
+/* U7: screen readers need the expanded state and the active option, not
+   just the visual .sel highlight (mirrors syncHintAria). */
+function syncPaletteAria() {
+  const inp = $("#palette-input");
+  inp.setAttribute("aria-expanded", String(palMatches.length > 0));
+  if (palMatches.length) inp.setAttribute("aria-activedescendant", `pal-opt-${palSel}`);
+  else inp.removeAttribute("aria-activedescendant");
 }
 function repaintPaletteSel() {
-  $$("#palette-list li").forEach((li, i) => li.classList.toggle("sel", i === palSel));
+  $$("#palette-list li").forEach((li, i) => {
+    li.classList.toggle("sel", i === palSel);
+    if (li.id) li.setAttribute("aria-selected", String(i === palSel));
+  });
   const sel = $("#palette-list li.sel");
   if (sel) sel.scrollIntoView({ block: "nearest" });
+  syncPaletteAria();
 }
 function runPalette(c) {
   closeModal("#palette-modal");
@@ -2652,6 +2716,8 @@ document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (!$("#plus-menu").hidden) { closeMenus(); return; }
       if (!slashHint.hidden || !atHint.hidden) { hideHints(); return; }
+      // U15: dismiss the narrow overlay sidebar before cancelling a turn.
+      if (narrowMQ.matches && sidebarIsOpen()) { e.preventDefault(); setSidebar(false); return; }
       if (state.streaming && !state.stopping) { e.preventDefault(); $("#cancel").click(); }
     }
     else if (e.key === "F2") { e.preventDefault(); setSidebar(!sidebarIsOpen()); }
@@ -2742,9 +2808,16 @@ function setSidebar(open) {
   $("#btn-sidebar").setAttribute("aria-pressed", String(open));
 }
 function closeSidebarNarrow() { if (narrowMQ.matches) setSidebar(false); }
-function openSidebarNarrow() { if (narrowMQ.matches) setSidebar(true); }
 $("#btn-sidebar").onclick = () => setSidebar(!sidebarIsOpen());
 narrowMQ.addEventListener("change", () => setSidebar(!narrowMQ.matches));
+/* U15: at touch widths the sidebar is an overlay — an outside pointerdown
+   dismisses it (the toggle button and the sidebar itself are excluded). */
+document.addEventListener("pointerdown", (e) => {
+  if (!narrowMQ.matches || !sidebarIsOpen()) return;
+  const t = e.target;
+  if (t && t.closest && (t.closest("#sidebar") || t.closest("#btn-sidebar"))) return;
+  setSidebar(false);
+});
 
 /* ------------------------------------------------------ composer selectors */
 $("#sel-backend").onchange = async () => {

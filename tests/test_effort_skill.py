@@ -71,11 +71,11 @@ def test_ollama_think_levels():
         asyncio.run(go())
         return cap["b"]
 
-    assert "thinking" not in run("off")
-    assert run("low")["thinking"] == "low"
-    assert run("high")["thinking"] == "high"
-    assert run("xhigh")["thinking"] is True
-    assert run("max")["thinking"] is True
+    assert "think" not in run("off")
+    assert run("low")["think"] == "low"
+    assert run("high")["think"] == "high"
+    assert run("xhigh")["think"] is True
+    assert run("max")["think"] is True
 
 
 def test_mock_ladder_strictly_increases_and_ultrathink_tops():
@@ -191,7 +191,7 @@ def test_ollama_gates_think_by_template():
         return httpx.Response(200, text=_DONE)
 
     runs = _ollama_run(show_nothink, "llama3", "medium")
-    assert runs and "thinking" not in runs[0], "non-thinking template must not get the knob"
+    assert runs and "think" not in runs[0], "non-thinking template must not get the knob"
 
     def show_think(req, body):
         if "messages" not in body:
@@ -199,19 +199,19 @@ def test_ollama_gates_think_by_template():
         return httpx.Response(200, text=_DONE)
 
     runs = _ollama_run(show_think, "qwen3", "medium")
-    assert runs[0]["thinking"] == "medium"
+    assert runs[0]["think"] == "medium"
 
 
 def test_ollama_400_retry_drops_knob_and_caches():
     def handler(req, body):
         if "messages" not in body:
             return httpx.Response(404, json={"error": "gone"})  # template unknown
-        if "thinking" in body:
+        if "think" in body:
             return httpx.Response(400, json={"error": "this model does not support thinking"})
         return httpx.Response(200, text=_DONE)
 
     runs = _ollama_run(handler, "mystery", "high")
-    assert len(runs) == 2 and "thinking" in runs[0] and "thinking" not in runs[1]
+    assert len(runs) == 2 and "think" in runs[0] and "think" not in runs[1]
 
 
 def test_ollama_400_retry_caches_across_calls():
@@ -223,7 +223,7 @@ def test_ollama_400_retry_caches_across_calls():
         if "messages" not in body:
             return httpx.Response(404, json={})
         seen.append(body)
-        if "thinking" in body:
+        if "think" in body:
             return httpx.Response(400, json={"error": "does not support thinking"})
         return httpx.Response(200, text=_DONE)
 
@@ -238,7 +238,7 @@ def test_ollama_400_retry_caches_across_calls():
     asyncio.run(go())
     # call 1: probe with knob -> 400 -> retry clean (2 reqs); call 2: cached, clean (1 req)
     assert len(seen) == 3, seen
-    assert "thinking" in seen[0] and "thinking" not in seen[1] and "thinking" not in seen[2]
+    assert "think" in seen[0] and "think" not in seen[1] and "think" not in seen[2]
 
 
 def test_status_snapshot_carries_effort(svc):

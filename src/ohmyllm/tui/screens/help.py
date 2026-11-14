@@ -87,9 +87,10 @@ The graphical console runs beside this TUI. From any terminal:
 
 | command | what |
 |---|---|
-| `oml gui` or `ohmyllm gui` | native window; falls back to your browser automatically |
-| `ohmyllm gui --browser` | force the browser console |
-| `ohmyllm gui --no-open` | print the URL only (open it anywhere on this machine) |
+| `oml gui` or `ohmyllm gui` | native window when available; otherwise a background loopback console whose URL is printed |
+| `ohmyllm gui --web` | open the console in your browser (explicit opt-in) |
+| `ohmyllm gui --no-open` | print the full tokenized URL and launch nothing (keep the URL private) |
+| `ohmyllm gui --stop` | close the running console (native window + its bridge, or background web) |
 
 Same engine, same permission gates, same chats & memory files. The GUI bridge binds
 to 127.0.0.1 only with a per-process token; nothing else on your network can reach it.

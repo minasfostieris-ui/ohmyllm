@@ -31,9 +31,11 @@ def _coerce(value: Any, spec: ParamSpec) -> tuple[Any, str | None]:
         if isinstance(value, bool):
             return None, f"parameter '{spec.name}' must be {want}, got boolean"
         try:
-            num = int(value) if want == "integer" else float(value)
-            if want == "integer" and isinstance(value, float) and not value.is_integer():
-                num = int(round(num))  # tolerate 4096.0 style
+            # round BEFORE int: int(4096.7) truncates to 4096 when the model
+            # meant ~4097. ints pass through untouched so values beyond 2**53
+            # never lose precision through a float round-trip.
+            num = (value if isinstance(value, int) else int(round(float(value)))) \
+                if want == "integer" else float(value)
             return num, None
         except (TypeError, ValueError):
             return None, f"parameter '{spec.name}' must be {want}, got {value!r}"

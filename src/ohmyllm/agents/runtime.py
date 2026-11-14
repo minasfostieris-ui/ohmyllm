@@ -517,7 +517,7 @@ class AgentRuntime:
                 emit({"type": "agentloop_echo_break", "steps": step})
                 break
 
-            if step == self.config.agent.max_steps:
+            if step == budget:
                 break
         if not final_text.strip():
             # never end a tool-heavy turn in silence: one last tool-free summary pass

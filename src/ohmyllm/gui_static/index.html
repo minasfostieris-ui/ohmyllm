@@ -75,7 +75,7 @@
       </div>
     </nav>
     <main class="main" id="main">
-      <section class="view view-chat" id="view-chat">
+      <section class="view view-chat" id="view-chat" role="tabpanel" aria-label="Chat conversation">
         <div class="stream" id="stream" role="log" aria-live="polite"></div>
         <div class="stream-foot">
           <button class="btn small" id="jump-latest" type="button" hidden>↓ Latest</button>
@@ -244,8 +244,8 @@
 </div>
 
 <div class="modal palette" id="palette-modal" role="dialog" aria-modal="true" aria-label="Command palette" hidden>
-  <input type="search" id="palette-input" aria-label="Search commands" placeholder="Type a command…" autocomplete="off" />
-  <ul id="palette-list"></ul>
+  <input type="search" id="palette-input" aria-label="Search commands" placeholder="Type a command…" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="palette-list" aria-autocomplete="list" aria-haspopup="listbox" />
+  <ul id="palette-list" role="listbox" aria-label="Commands"></ul>
 </div>
 
 <div class="toasts" id="toasts" aria-live="polite"></div>

@@ -270,7 +270,9 @@ class CloudBackend(BaseBackend):
         usage: dict[str, Any] | None = None
         ended = False
         end_reason: str | None = None
-        timeout = httpx.Timeout(gen.timeout, read=None)
+        # bounded read gap like the local backends: a provider that accepts
+        # the request then goes silent must not hang the turn forever
+        timeout = httpx.Timeout(gen.timeout, read=min(max(gen.timeout, 300.0), 1800.0))
         async with httpx.AsyncClient(timeout=timeout, transport=self._transport) as c:
             async with c.stream("POST", f"{base}/chat/completions",
                                 headers=self._headers("openai", key), json=body) as resp:
@@ -447,7 +449,16 @@ class CloudBackend(BaseBackend):
             if blocks:
                 out.append({"role": "assistant" if role == "assistant" else "user",
                             "content": blocks})
-        return system, out
+        # Anthropic demands strict role alternation: parallel tool results
+        # (one user message per tool) plus any following user text must fold
+        # into ONE user content list; same for consecutive assistant turns.
+        merged: list[dict[str, Any]] = []
+        for msg in out:
+            if merged and merged[-1]["role"] == msg["role"]:
+                merged[-1]["content"] = merged[-1]["content"] + msg["content"]
+            else:
+                merged.append(msg)
+        return system, merged
 
     async def _stream_anthropic(self, base: str, key: str, model: str,
                                 messages: list[dict[str, Any]], gen: GenerationSettings,
@@ -479,7 +490,9 @@ class CloudBackend(BaseBackend):
         blocks: dict[int, dict[str, Any]] = {}
         usage: dict[str, Any] | None = None
         saw_stop = False
-        timeout = httpx.Timeout(gen.timeout, read=None)
+        # bounded read gap like the local backends: a provider that accepts
+        # the request then goes silent must not hang the turn forever
+        timeout = httpx.Timeout(gen.timeout, read=min(max(gen.timeout, 300.0), 1800.0))
         async with httpx.AsyncClient(timeout=timeout, transport=self._transport) as c:
             async with c.stream("POST", f"{base}/messages",
                                 headers=self._headers("anthropic", key), json=body) as resp:
