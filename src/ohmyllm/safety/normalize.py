@@ -243,6 +243,84 @@ def _drop_token(text: str) -> str:
     return text[m.end():] if m else ""
 
 
+def _read_word(text: str, start: int = 0) -> tuple[str, int, bool]:
+    """One shell word from *start* (R4-S1): single quotes are literal, double
+    quotes and backslash escapes are honored, so a quoted multi-word flag
+    argument (``sudo -p 'x y'``) is consumed as ONE token instead of desyncing
+    the wrapper-skip. Returns (word, end_offset, closed); an unclosed quote
+    yields the remainder with closed=False so callers can fail closed."""
+    buf: list[str] = []
+    quote: str | None = None
+    escaped = False
+    i = start
+    while i < len(text):
+        ch = text[i]
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            i += 1
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            else:
+                buf.append(ch)
+            i += 1
+            continue
+        if ch == "\\":
+            if i + 1 < len(text):
+                buf.append(text[i + 1])
+                i += 2
+            else:
+                escaped = True
+                i += 1
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            else:
+                buf.append(ch)
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch.isspace():
+            break
+        buf.append(ch)
+        i += 1
+    while i < len(text) and text[i].isspace():
+        i += 1
+    return "".join(buf), i, quote is None and not escaped
+
+
+def _quotes_balanced(text: str) -> bool:
+    """shlex-style quote-state scan (R4-S1): False when a quote or trailing
+    escape is left unclosed — wrapper-flag boundaries are then unknowable
+    and callers must fail closed rather than guess."""
+    quote: str | None = None
+    escaped = False
+    for ch in text:
+        if escaped:
+            escaped = False
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+    return quote is None and not escaped
+
+
 def _skip_wrapper_flags(
     payload: str,
     *,
@@ -255,13 +333,15 @@ def _skip_wrapper_flags(
     command. Required-argument flags also consume their SEPARATED argument;
     optional-argument flags never do (their value is only accepted attached),
     so benign payloads are preserved rather than over-stripped. ``VAR=val``
-    assignments are consumed when *assignments* is set (env)."""
+    assignments are consumed when *assignments* is set (env).
+    R4-S1: token reading is quote-aware — ``sudo -p 'x y' rm …`` consumes the
+    whole quoted prompt, keeping the real payload executable visible to the
+    catastrophic gate, the deny floor and the scorer."""
     while payload:
-        m = re.match(r"(\S+)(\s+|$)", payload)
-        if not m:
+        tok, end, closed = _read_word(payload)
+        if not tok and end == 0:
             break
-        tok = m.group(1)
-        rest = payload[m.end():]
+        rest = payload[end:]
         if assignments and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", tok):
             payload = rest
             continue
@@ -271,7 +351,11 @@ def _skip_wrapper_flags(
             name, eq, _val = tok.partition("=")
             # attached (--flag=v), optional and no-arg longs consume only the
             # token; required-arg longs also drop their separated argument.
-            payload = _drop_token(rest) if (not eq and name in req_long) else rest
+            if not eq and name in req_long:
+                _arg, arg_end, _closed = _read_word(rest)
+                payload = rest[arg_end:]
+            else:
+                payload = rest
             continue
         take_next = False
         chars = tok[1:]
@@ -281,7 +365,16 @@ def _skip_wrapper_flags(
                 break
             if ch in opt_short:
                 break  # optional arg: attached only, never a separated token
-        payload = _drop_token(rest) if take_next else rest
+        if take_next:
+            _arg, arg_end, _closed = _read_word(rest)
+            payload = rest[arg_end:]
+        else:
+            payload = rest
+        if not closed:
+            # Unclosed flag token: boundaries are unknowable — stop rather
+            # than fabricate a payload (callers fail closed on the quote
+            # imbalance itself).
+            break
     return payload
 
 
@@ -290,8 +383,15 @@ def _xargs_repl(text: str) -> str | None:
     (R3 S7), or None when no placeholder substitution is configured. Only
     xargs' own leading flags are scanned; separated flag arguments (``-n 1``)
     are skipped so they cannot be misread as the placeholder or the payload.
-    Bare ``-i``/``--replace`` default to ``{}`` (getopt: attached-only)."""
-    toks = text.split()
+    Bare ``-i``/``--replace`` default to ``{}`` (getopt: attached-only).
+    R4-S3: word reading is quote-aware so ``-a 'my file'`` cannot desync the
+    scan."""
+    toks: list[str] = []
+    pos = 0
+    while pos < len(text):
+        word, pos, _closed = _read_word(text, pos)
+        if word:
+            toks.append(word)
     i = 0
     while i < len(toks):
         tok = toks[i]
@@ -722,22 +822,42 @@ def command_variants(command: str) -> list[str]:
                     if ci + 1 < len(rtoks):
                         pargs = [_strip_tricks(t) for t in rtoks[ci + 2:]]
                         walk(rtoks[ci + 1], depth + 1, pargs[1:])
-                elif rbase == "xargs" and "|" in sep and "||" not in sep and idx > 0:
-                    lit = _literal_output(raw_segs[idx - 1][1])
-                    remainder = _raw_remainder(_strip_tricks(rseg))
+                elif rbase == "xargs":
+                    # R4-S3: the RAW remainder keeps quoted flag arguments
+                    # (``-a 'my file'``) intact for the quote-aware skip, and
+                    # non-piped xargs payloads are exposed too — the deny
+                    # floor must see them even without upstream stdin.
+                    remainder = _raw_remainder(rseg)
                     payload = _skip_wrapper_flags(
                         remainder,
                         req_short=_XARGS_REQ_SHORT, opt_short=_XARGS_OPT_SHORT,
                         req_long=_XARGS_REQ_LONG,
                     )
-                    if lit is not None and payload.strip():
-                        repl = _xargs_repl(remainder)
-                        if repl is not None:
-                            # R3 S7: substitute the -I placeholder so the
-                            # deny floor sees the real payload command.
-                            walk(payload.replace(repl, lit), depth + 1, positionals)
-                        else:
-                            walk(payload + " " + lit, depth + 1, positionals)
+                    if not payload.strip():
+                        continue
+                    if "|" in sep and "||" not in sep and idx > 0:
+                        lit = _literal_output(raw_segs[idx - 1][1])
+                        if lit is not None:
+                            repl = _xargs_repl(remainder)
+                            if repl is not None:
+                                # R3 S7: substitute the -I placeholder so the
+                                # deny floor sees the real payload command.
+                                walk(payload.replace(repl, lit), depth + 1, positionals)
+                            else:
+                                walk(payload + " " + lit, depth + 1, positionals)
+                    else:
+                        walk(payload, depth + 1, positionals)
+                elif rbase in _PRIV_WRAPPERS:
+                    # R4-S1: sudo/doas are transparent — walk the real payload
+                    # from the RAW remainder so quoted multi-word flag args
+                    # (``sudo -p 'x y' rm -rf /home``) cannot hide it from the
+                    # deny floor or the catastrophic gate.
+                    payload = _skip_wrapper_flags(
+                        _raw_remainder(rseg),
+                        req_short=_PRIV_REQ_SHORT, req_long=_PRIV_REQ_LONG,
+                    )
+                    if payload.strip():
+                        walk(payload, depth + 1, positionals)
 
     walk(str(command), 0)
     return seen

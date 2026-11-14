@@ -411,12 +411,15 @@ function focusables(m) {
     .filter((x) => !x.disabled && !x.hidden && !x.closest("[hidden]") && x.getClientRects().length);
 }
 /* R3 U1 defense-in-depth: while the consent modal is up, the surfaces behind
-   the scrim (chat stream + sidebar) go inert, so screen-reader or programmatic
-   activation cannot reach an inline approval card and decide a request the
-   user never saw. The prior state is captured and restored on close. */
+   the scrim go inert, so screen-reader or programmatic activation cannot reach
+   an inline approval card and decide a request the user never saw. The prior
+   state is captured and restored on close.
+   R4-16: #main + #sidebar alone left the topbar (mode chip, view buttons) and
+   the rail reachable — Tab walked straight out of the dialog into them. Every
+   chrome surface behind the scrim is now covered. */
 function syncApprovalInert() {
   const on = !$("#approval-modal").hidden;
-  ["#main", "#sidebar"].forEach((sel) => {
+  ["#main", "#sidebar", "#topbar", "#rail"].forEach((sel) => {
     const el = $(sel);
     if (!el) return;
     if (on) {
@@ -429,6 +432,13 @@ function syncApprovalInert() {
       delete el.dataset.apInert;
     }
   });
+}
+/* R4-01: disabling the button that currently holds focus blurs it onto <body>.
+   Park focus on the dialog itself (tabindex=-1 keeps it out of the tab order)
+   so the trap still has an anchor while the decision POST is in flight. */
+function holdModalFocus(m) {
+  if (!m || m.hidden) return;
+  if (!m.contains(document.activeElement)) { m.tabIndex = -1; m.focus(); }
 }
 function openModal(sel, focusSel) {
   const m = typeof sel === "string" ? $(sel) : sel;
@@ -474,8 +484,17 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { e.preventDefault(); e.stopImmediatePropagation(); dismissModal(m); return; }
   if (e.key === "Tab") {
     const items = focusables(m);
+    // R4-01: while the decision POST is in flight EVERY button is disabled, so
+    // focusables() is empty. The old length-guard let the browser's default Tab
+    // run and focus escaped the dialog into the chrome. Hold the trap until the
+    // decision lands.
+    if (!items.length) {
+      e.preventDefault();
+      holdModalFocus(m);
+      return;
+    }
     const i = items.indexOf(document.activeElement);
-    if (items.length && (i < 0 || (e.shiftKey ? i === 0 : i === items.length - 1))) {
+    if (i < 0 || (e.shiftKey ? i === 0 : i === items.length - 1)) {
       e.preventDefault(); items[e.shiftKey ? items.length - 1 : 0].focus();
     }
   }
@@ -685,10 +704,17 @@ function sealThinkLive() {
   }
 }
 const ACTION = {
+  // R4-19: keyed by the REAL tool registry names (tools/registry.py SPECS).
+  // The old map still listed glob/grep/web_fetch/web_search/soul_write/
+  // soul_remember, which no longer exist — every one of those calls fell back
+  // to the generic "tool 🔧" glyph.
   write_file: ["write", "📝"], patch_file: ["edit", "✏️"], run_command: ["exec", "⚡"],
-  read_file: ["read", "📖"], list_dir: ["ls", "📂"], glob: ["find", "🔎"], grep: ["find", "🔎"],
-  web_fetch: ["net", "🌐"], web_search: ["net", "🌐"], soul_write: ["memory", "🧠"],
-  soul_remember: ["memory", "🧠"], soul_forget: ["memory", "🧠"], soul_append: ["memory", "🧠"],
+  read_file: ["read", "📖"], list_dir: ["ls", "📂"], search_files: ["find", "🔎"],
+  http_fetch: ["net", "🌐"], soul_read: ["memory", "🧠"], soul_search: ["memory", "🧠"],
+  soul_upsert: ["memory", "🧠"], soul_append: ["memory", "🧠"], soul_forget: ["memory", "🧠"],
+  email_search: ["mail", "✉️"], email_read: ["mail", "✉️"], email_draft: ["mail", "✉️"],
+  email_send: ["mail", "✉️"], skills_list: ["skill", "🧩"], skills_read: ["skill", "🧩"],
+  tone_create: ["tone", "🎭"], get_system_status: ["system", "💻"],
 };
 const actionOf = (n) => ACTION[n] || ["tool", "🔧"];
 function firstLine(s) { const x = String(s || "").trim().split("\n")[0]; return x.length > 140 ? x.slice(0, 140) + "…" : x; }
@@ -1041,6 +1067,9 @@ async function answerApproval(decision, aid) {
   if (d.tool === "run_command" && ["session", "always"].includes(decision)) return;
   state.answeringApproval = true;
   $$("#approval-modal button").forEach((b) => (b.disabled = true));
+  // R4-01: the disabled button just blurred to <body> — keep focus in the
+  // dialog so Tab cannot escape while the decision is still in flight.
+  holdModalFocus($("#approval-modal"));
   try {
     await post(`/api/approval/${d.id}`, { decision });
     markCard(d.id, "decided", decision === "deny" ? "denied by you" : `allowed · ${decision}`);
@@ -1057,6 +1086,14 @@ async function answerApproval(decision, aid) {
   } finally {
     state.answeringApproval = false;
     $$("#approval-modal button").forEach((b) => (b.disabled = false));
+    // R4-01: a queued successor (or a failed POST) keeps the dialog up — hand
+    // focus back to a real control instead of leaving it parked on the shell.
+    const am = $("#approval-modal");
+    if (!am.hidden) {
+      const first = focusables(am)[0];
+      if (first && !am.contains(document.activeElement)) first.focus();
+      else holdModalFocus(am);
+    }
     // U4: the next queued approval owns the status — never clobber its
     // "Waiting for approval" (pollState skips run-state while streaming).
     if (!state.approvalQueue.length) $("#run-state").textContent = state.streaming ? "Working" : "Ready";
@@ -1474,9 +1511,11 @@ async function handleSlash(text) {
       }
       default:
         if (cmd.startsWith("/skill:")) {
-          clear();
           const name = cmd.slice(7);
-          if (!state.session) { toast("start a chat first", "warn"); return; }
+          // R4-06: the guard must run BEFORE clear() — wiping the composer
+          // first destroyed the instruction the user had just typed.
+          if (!state.session) { toast("start a chat first", "warn"); keep(); return; }
+          clear();
           // R3 U4: the trailing instruction travels with the cast (additive args)
           await post("/api/skills/cast", { name, session: state.session, args: arg });
           toast(`cast skill: ${name}`); renderSidebar(); return;
@@ -1558,7 +1597,11 @@ function renderTabs() {
     b.classList.toggle("active", active);
     b.setAttribute("aria-selected", String(active));
     b.setAttribute("aria-label", `${title}${st !== "idle" ? ` · ${st}` : ""}`);
-    b.tabIndex = active ? 0 : -1;
+    // R4-03: the 2s poll used to reset the roving tabindex on the tab the user
+    // arrow-focused, so Shift+Tab re-entry jumped back to the active tab. Keep
+    // exactly one tab at 0: the focused one while focus is in the strip,
+    // otherwise the active one.
+    b.tabIndex = (focusSid ? b === aeTab : active) ? 0 : -1;
     b.title = title;
     const glyph = b.querySelector(".glyph");
     glyph.style.background = glyphColor(id); // CSSOM: CSP blocks style attrs in markup
@@ -1574,7 +1617,7 @@ function renderTabs() {
   });
   prev.forEach((el) => el.remove());
   const act = tabs.querySelector(".tab.active");
-  if (!act && tabs.firstChild) tabs.firstChild.tabIndex = 0;
+  if (!act && !focusSid && tabs.firstChild) tabs.firstChild.tabIndex = 0;
   tabs.scrollLeft = keepScroll;
   // auto-scroll only when the tab set / active chat actually changed.
   // instant (not smooth): openChat renders twice in one tick — a smooth
@@ -1589,6 +1632,15 @@ function renderTabs() {
     if (nb) (focusClose ? nb.querySelector(".tab-close") : nb).focus();
   }
 }
+/* R4-04: recovering to the empty state must not leave a live turn painting into
+   a cleared stream. Ask the bridge to cancel, drop the local streaming flags
+   and abort any pending chat load. */
+function killStaleStream() {
+  if (state.streaming) { try { $("#cancel").click(); } catch { /* best-effort */ } }
+  state.streaming = false; state.stopping = false;
+  $("#cancel").hidden = true; resetSendBtn();
+  loadAbort?.abort();
+}
 async function closeTab(id) {
   if (!state.openTabs.includes(id)) return;
   // K5: the streaming guard runs BEFORE any pruning — a refused close must
@@ -1602,12 +1654,26 @@ async function closeTab(id) {
   if (state.session === id) {
     const next = state.openTabs[Math.min(idx, state.openTabs.length - 1)];
     if (next) {
-      const seqBefore = loadSeq;
       const ok = await openChat(next);
-      // K5: restore only when the switch was refused (streaming guard / Stay).
-      // If a newer openChat won the load race, the close stands — restoring
-      // here would resurrect the closed tab as a zombie.
-      if (!ok && loadSeq === seqBefore) { state.openTabs.splice(Math.min(idx, state.openTabs.length), 0, id); renderTabs(); return; }
+      // R4-04: a FAILED successor load used to orphan the session. The old
+      // load-sequence equality test could not tell "refused" from "failed":
+      // loadSessionIntoView bumps loadSeq BEFORE the fetch, so a network/error
+      // response also moved it and the pruned tab was never restored —
+      // state.session pointed at a chat with no tab and a stale stream.
+      // Restore whenever no open tab owns the view any more; a newer switch
+      // that genuinely won the race still keeps the close (K5: no zombie).
+      if (!ok && (state.session === id || !state.openTabs.includes(state.session))) {
+        state.openTabs.splice(Math.min(idx, state.openTabs.length), 0, id);
+        if (!state.openTabs.includes(state.session)) {
+          // nothing valid left to show: kill the stale stream and fall back to
+          // the empty state rather than leaving a phantom chat on screen.
+          killStaleStream();
+          state.session = null;
+          clearStream(); emptyState();
+        }
+        renderTabs();
+        return;
+      }
     } else {
       state.session = null;
       clearStream(); emptyState();
@@ -1716,6 +1782,12 @@ async function renderSidebar() {
   if (!q) state.chats = rows;
   renderTabs();
   const list = $("#sb-list"), hero = $("#sb-hero");
+  // R4-05: innerHTML="" drops the focused row onto <body>. Remember which chat
+  // (and which action button) held focus and put it back after the rebuild.
+  const ae = document.activeElement;
+  const aeRow = ae && ae.closest ? ae.closest("#sb-list .sb-row") : null;
+  const focusCid = aeRow ? aeRow.dataset.cid : null;
+  const focusAct = aeRow && ae.dataset ? ae.dataset.act || null : null;
   list.innerHTML = "";
   if (!rows.length) {
     if (!q) {
@@ -1723,6 +1795,9 @@ async function renderSidebar() {
       hero.innerHTML = `<span class="hero-glyph"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="12" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="16" cy="16" r="4.5" fill="currentColor"/></svg></span>
         <h2>No chats yet.</h2><p>Everything stays on this machine. Try a real command:</p>${teachHtml()}`;
     } else { hero.hidden = false; hero.innerHTML = `<p class="muted">No chats match “${esc(q)}”.</p>`; }
+    // R4-05: the row that held focus is gone — land on the search field instead
+    // of stranding the user on <body>.
+    if (focusCid) $("#sb-search").focus();
     return;
   }
   hero.hidden = true;
@@ -1730,8 +1805,14 @@ async function renderSidebar() {
     const row = document.createElement("div");
     row.className = "sb-row" + (c.id === state.session ? " active" : "");
     row.tabIndex = 0;
-    row.setAttribute("role", "button"); // U17: div-button semantics for AT
-    row.innerHTML = `<div class="sb-main">
+    row.dataset.cid = c.id;
+    // R4-16: role=button on a row nesting four real buttons is invalid ARIA
+    // (interactive content inside a button). The row is a named group; the open
+    // affordance keeps button semantics on .sb-main, which has no focusable
+    // descendants, and the actions keep their own labels.
+    row.setAttribute("role", "group");
+    row.setAttribute("aria-label", `Chat: ${c.title || "New chat"}`);
+    row.innerHTML = `<div class="sb-main" role="button" tabindex="-1" aria-label="Open chat ${esc(c.title || "New chat")}">
       <div class="top"><span class="title">${esc(c.title || "New chat")}</span>${c.pinned ? '<span class="pin" aria-label="Pinned">●</span>' : ""}</div>
       <div class="meta"><p class="prev">${esc(c.preview || "")}</p><time>${esc(relTime(c.updated))}</time></div>
     </div>
@@ -1763,6 +1844,18 @@ async function renderSidebar() {
     });
     list.appendChild(row);
   });
+  // R4-05: hand focus back to the same chat (and the same action) after the
+  // rebuild, so a poll / rename / pin / cast never steals it to <body>.
+  if (focusCid) {
+    const nr = list.querySelector(`.sb-row[data-cid="${focusCid}"]`);
+    if (nr) {
+      const target = focusAct ? nr.querySelector(`[data-act="${focusAct}"]`) : null;
+      // .sb-acts is visibility:hidden until the row has focus — focus the row
+      // first so the action button is actually focusable, then hand it over.
+      nr.focus();
+      if (target) target.focus();
+    } else $("#sb-search").focus();
+  }
 }
 $("#sb-search").addEventListener("input", debounce(() => renderSidebar(), 250));
 
@@ -1784,6 +1877,14 @@ async function loadModels(backend, selectModel, force) {
     return data;
   } catch (e) { return null; }
 }
+/* R4-09: one place paints the mode chip, so an applied mode is visible at once
+   instead of waiting for the next 5s refreshStatus tick. */
+function paintModeChip(mode) {
+  const chip = $("#chip-mode");
+  chip.textContent = `⦿ ${mode}`;
+  chip.className = `badge mode mode-${mode}`;
+  if (state.status) state.status.mode = mode;
+}
 async function refreshStatus() {
   try {
     const s = await get("/api/status");
@@ -1793,9 +1894,7 @@ async function refreshStatus() {
     const used = s.ctx_used || 0, win = s.ctx_window || s.num_ctx || 0;
     $("#ctx-badge").textContent = `◍ ${fmtTok(used)}/${fmtTok(win)}`;
     $("#ctx-badge").title = `context ${used} / ${win} tokens` + (s.tok_s ? ` · ${s.tok_s.toFixed(1)} tok/s` : "");
-    const chip = $("#chip-mode");
-    chip.textContent = `⦿ ${s.mode}`;
-    chip.className = `badge mode mode-${s.mode}`;
+    paintModeChip(s.mode);
     $("#version").textContent = "v" + (s.version || "");
     if (!$("#sel-opmode").contains(document.activeElement)) $("#sel-opmode").value = s.op_mode || "build";
     syncBackendSelect(s.backend);
@@ -1831,7 +1930,16 @@ function ensureModeModal() {
   return m;
 }
 function setModeUi(preset) {
-  if (preset && MODE_DESC[preset]) { chooseMode(preset); return; }
+  if (preset) {
+    // R4-19: plain/TUI print "unknown mode" — the GUI silently opened the
+    // chooser, which read as "your argument was ignored". Reject it the same way.
+    if (!MODE_DESC[preset]) {
+      toast(`unknown mode '${preset}' — ` + Object.keys(MODE_DESC).join("|"), "err");
+      return;
+    }
+    chooseMode(preset);
+    return;
+  }
   const m = ensureModeModal();
   const body = m.querySelector(".ap-body");
   body.innerHTML = "";
@@ -1856,7 +1964,16 @@ async function chooseMode(mode) {
     await post("/api/mode", { mode, phrase });
     closeModal("#mode-modal");
     toast(`permission mode: ${mode}`);
-    refreshStatus();
+    // R4-09: the chip used to lag up to 5s. The immediate refreshStatus can
+    // read a pre-commit snapshot (the mtime reload race right after set_mode)
+    // and pollState only repaints run-state dots. Paint the applied mode now,
+    // re-sync, and re-assert if the snapshot was still stale.
+    paintModeChip(mode);
+    await refreshStatus();
+    if (state.status && state.status.mode !== mode) {
+      paintModeChip(mode);
+      setTimeout(() => { refreshStatus(); }, 600);
+    }
   } catch (e) { toast(e.message, "err"); }
 }
 
@@ -2136,9 +2253,33 @@ $("#prov-search").addEventListener("input", debounce(() => paintProviders(), 200
 let marketData = null, marketSection = "", marketTimer = null;
 async function renderMarket() {
   $("#market-grid").innerHTML = '<p class="muted">loading catalog…</p>';
-  try { marketData = await get("/api/market"); } catch (e) { $("#market-grid").innerHTML = ""; toast(e.message, "err"); return; }
+  try { marketData = await get("/api/market"); }
+  catch (e) { marketError(e.message || "catalog unavailable"); return; }
   paintMarket();
   pollMarket(); // surface any in-flight download
+}
+/* R4-14: a failed catalog fetch used to leave a BLANK grid plus a 4s toast —
+   once the toast faded there was no explanation and no way to retry. Paint a
+   persistent, announced error state with a real retry affordance. */
+function marketError(msg) {
+  marketData = null;
+  const grid = $("#market-grid");
+  grid.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = "market-error";
+  box.setAttribute("role", "alert");
+  const h = document.createElement("h2");
+  h.textContent = "Model catalog unavailable";
+  const p = document.createElement("p");
+  p.className = "muted";
+  p.textContent = msg;
+  const b = document.createElement("button");
+  b.type = "button"; b.className = "btn small"; b.id = "market-retry";
+  b.textContent = "Retry";
+  b.onclick = () => renderMarket();
+  box.append(h, p, b);
+  grid.appendChild(box);
+  toast(msg, "err");
 }
 function paintMarket() {
   if (!marketData) return;
@@ -2577,7 +2718,7 @@ $("#settings-save").onclick = async () => {
 function renderHelp() {
   const keys = [
     ["Enter", "send · Shift+Enter = newline"],
-    ["Esc", "close hints / modal · stop the running turn"],
+    ["Esc", "close hints / modal · stop the running turn · on an approval: DENY (fail-closed)"],
     ["Ctrl+K", "command palette"],
     ["Ctrl+N", "new chat"],
     ["Ctrl+P", "permission mode"],

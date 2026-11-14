@@ -265,6 +265,11 @@ class AgentRuntime:
         finally:
             self._turn_active = False
             self._steer_queue.clear()
+            # R4-2: yolo is one-prompt-only. Cancel/error paths never reach
+            # _finish, so disarm here too — otherwise the NEXT prompt would
+            # silently bypass approvals.
+            if getattr(self.config.agent, "yolo", False):
+                self.config.agent.yolo = False
 
     async def _run_turn(
         self,

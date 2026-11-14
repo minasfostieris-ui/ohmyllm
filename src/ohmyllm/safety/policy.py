@@ -20,6 +20,7 @@ from .normalize import (
     _PRIV_REQ_LONG,
     _PRIV_REQ_SHORT,
     _PRIV_WRAPPERS,
+    _quotes_balanced,
     _skip_wrapper_flags,
     command_variants,
     normalize_command,
@@ -30,12 +31,32 @@ from .risk import RiskScorer, _basename, level_for
 #: In-place write verbs whose destinations bypass redirect detection (S2/S2g).
 _WRITE_VERBS = frozenset({"sed", "tee", "cp", "mv", "ln", "install", "dd"})
 
+#: Redirect operators (R4-S2): ``>>`` append, ``>&`` stdout+stderr, ``>|``
+#: clobber, plain ``>``. Pure-digit ``>&N`` targets are fd duplicates, not
+#: file writes, and are skipped by _redirect_targets.
+_REDIRECT_RX = re.compile(r"(>>|>&|>\|?)\s*['\"]?([^\s'\"|&;]+)")
+
+
+def _redirect_targets(cmd: str) -> list[str]:
+    """Redirect destinations from the RAW spelling UNION the deobfuscated
+    form (R4-S2): ANSI-C ``$'…'`` and backslash escapes are decoded by
+    normalize_command, and ``>&``/``>|`` operators are honored. The raw pass
+    keeps quoted destinations with spaces intact."""
+    targets: list[str] = []
+    for text in (cmd, normalize_command(cmd)):
+        for m in _REDIRECT_RX.finditer(text):
+            op, tgt = m.group(1), m.group(2)
+            if op == ">&" and tgt.isdigit():
+                continue  # fd duplicate (2>&1), not a file write
+            targets.append(tgt)
+    return targets
+
 
 def _quote_segments(text: str) -> list[str] | None:
-    """Split on ``; & |`` OUTSIDE quotes (shlex-style quote state: single
-    quotes literal, double quotes honor backslash escapes, backslash escapes
-    outside quotes). Returns None when a quote/escape is left unclosed —
-    callers fail closed for write verbs (task #71)."""
+    """Split on ``; & |`` and newlines OUTSIDE quotes (shlex-style quote
+    state: single quotes literal, double quotes honor backslash escapes,
+    backslash escapes outside quotes). Returns None when a quote/escape is
+    left unclosed — callers fail closed for write verbs (task #71, R4-S5)."""
     segs: list[str] = []
     buf: list[str] = []
     quote: str | None = None
@@ -63,7 +84,7 @@ def _quote_segments(text: str) -> list[str] | None:
             quote = ch
             buf.append(ch)
             continue
-        if ch in ";&|":
+        if ch in ";&|\n":
             segs.append("".join(buf))
             buf = []
             continue
@@ -197,6 +218,9 @@ _SENSITIVE_RX = (
     # package-manager / registry credentials and git hook config (M2)
     r"[/\\]\.npmrc($|[^-\w])", r"[/\\]\.pypirc($|[^-\w])",
     r"[/\\]\.docker[/\\]config\.json($|[^-\w])", r"[/\\]\.git[/\\]config($|[^-\w])",
+    # R4-S6: shell startup files are persistence vectors — same treatment
+    # as .git/config/.npmrc (sensitive in every mode, explicit allow escapes).
+    r"[/\\]\.(bashrc|zshrc|profile|bash_profile|bash_login|zprofile|zlogin|zshenv)($|[^-\w])",
 )
 
 
@@ -322,6 +346,16 @@ class PolicyEngine:
         if not isinstance(command, str) or not command.strip():
             return None
         variants = command_variants(command)
+        if not _quotes_balanced(command):
+            # R4-S1 fail-closed: an unclosed quote makes wrapper-flag
+            # boundaries unknowable; expose every payload-position suffix
+            # so anchored deny globs still see the real executable.
+            for seg in re.split(r"[;&|\n]+", command):
+                toks = seg.split()
+                while toks and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", toks[0]):
+                    toks = toks[1:]
+                if toks and _basename(toks[0]) in _PRIV_WRAPPERS:
+                    variants.extend(" ".join(toks[i:]) for i in range(1, len(toks)))
         for rule in rules:
             needle = rule.strip()
             lowered = needle.casefold()
@@ -406,6 +440,11 @@ class PolicyEngine:
                 exe = _basename(tokens[0])
                 # sudo/doas are transparent: position-match the real verb
                 if exe in _PRIV_WRAPPERS:
+                    if not _quotes_balanced(cmd):
+                        # R4-S1 fail-closed: an unclosed quote makes the
+                        # wrapper's flag boundaries unknowable — never
+                        # silent-allow a wrapper we cannot parse.
+                        return True
                     payload = _skip_wrapper_flags(
                         " ".join(tokens[1:]), req_short=_PRIV_REQ_SHORT,
                         req_long=_PRIV_REQ_LONG,
@@ -601,7 +640,7 @@ class PolicyEngine:
                                     (*reasons, f"sensitive path {tgt!r} in shell command — denied in every mode"))
             # R3 S2: system writes via shell mirror the WRITE gate — redirects
             # and piped/sudo tee / sed -i are never silent in full_access.
-            writes = [m.group(1) for m in re.finditer(r">>?\s*['\"]?([^\s'\"|&;]+)", cmd)]
+            writes = _redirect_targets(cmd)
             inline = self._inline_write_targets(cmd)
             if inline is None:
                 return Decision(False, False, max(risk, 9),
@@ -684,8 +723,7 @@ class PolicyEngine:
         return False
 
     def _redirect_outside(self, cmd: str) -> bool:
-        for m in re.finditer(r">>?\s*['\"]?([^\s'\"|&;]+)", cmd):
-            tgt = m.group(1)
+        for tgt in _redirect_targets(cmd):
             if tgt.lower() == "/dev/null":
                 continue
             if not self.within_workspace(tgt):
@@ -693,8 +731,7 @@ class PolicyEngine:
         return False
 
     def _redirect_system(self, cmd: str) -> bool:
-        for m in re.finditer(r">>?\s*['\"]?([^\s'\"|&;]+)", cmd):
-            tgt = m.group(1)
+        for tgt in _redirect_targets(cmd):
             if tgt.lower() in ("/dev/null", "/dev/stdout", "/dev/stderr"):
                 continue
             if self.is_system(tgt):
@@ -714,7 +751,7 @@ class PolicyEngine:
         there). Returns None — fail closed — when a write-verb segment has
         an unclosed quote/escape; non-write segments keep legacy behavior."""
         targets: list[str] = []
-        for seg in re.split(r"[;&|]+", normalize_command(cmd)):
+        for seg in re.split(r"[;&|\n]+", normalize_command(cmd)):
             tokens = seg.split()
             while tokens and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
                 tokens = tokens[1:]
@@ -762,7 +799,7 @@ class PolicyEngine:
         segments = _quote_segments(cmd)
         suspect = segments is None
         if segments is None:
-            segments = re.split(r"[;&|]+", cmd)
+            segments = re.split(r"[;&|\n]+", cmd)
         targets: list[str] = []
         for seg in segments:
             words = None if suspect else _quote_words(seg)
@@ -772,13 +809,17 @@ class PolicyEngine:
                 tokens = seg.split()
                 while tokens and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
                     tokens = tokens[1:]
-                if tokens and _basename(tokens[0]) in _PRIV_WRAPPERS:
+                probe = tokens
+                if probe and _basename(probe[0]) in _PRIV_WRAPPERS:
                     payload = _skip_wrapper_flags(
-                        " ".join(tokens[1:]), req_short=_PRIV_REQ_SHORT,
+                        " ".join(probe[1:]), req_short=_PRIV_REQ_SHORT,
                         req_long=_PRIV_REQ_LONG,
                     )
-                    tokens = payload.split()
-                if tokens and _basename(normalize_command(tokens[0])) in _WRITE_VERBS:
+                    # R4-S1: an unclosed flag arg can swallow the payload —
+                    # fall back to the naive remainder so the write verb
+                    # stays visible to the fail-closed check.
+                    probe = payload.split() or probe[1:]
+                if any(_basename(normalize_command(t)) in _WRITE_VERBS for t in probe):
                     return None
                 continue
             texts = [w for w, _ in words]
@@ -797,8 +838,8 @@ class PolicyEngine:
                 )
                 sub = _quote_words(payload)
                 if sub is None:
-                    tokens = payload.split()
-                    if tokens and _basename(normalize_command(tokens[0])) in _WRITE_VERBS:
+                    tokens = payload.split() or seg[ends[k]:].split()
+                    if any(_basename(normalize_command(t)) in _WRITE_VERBS for t in tokens):
                         return None
                     continue
                 texts = [w for w, _ in sub]
@@ -865,14 +906,13 @@ class PolicyEngine:
                 return None
 
         targets: list[str] = []
-        for m in re.finditer(r">>?\s*['\"]?([^\s'\"|&;]+)", cmd):
-            targets.append(m.group(1))
+        targets.extend(_redirect_targets(cmd))
         inline = self._inline_write_targets(cmd)
         if inline is None:
             return None
         targets.extend(inline)
         norm = normalize_command(cmd)
-        for seg in re.split(r"[;&|]+", norm):
+        for seg in re.split(r"[;&|\n]+", norm):
             for tok in seg.split()[1:]:
                 if not tok.startswith("-"):
                     targets.append(tok)

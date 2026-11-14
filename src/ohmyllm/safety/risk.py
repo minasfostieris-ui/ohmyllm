@@ -78,6 +78,11 @@ _RULES: list[tuple[str, int, str, frozenset[str] | None]] = [
      r"|__import__\s*\(.*\)\s*\.\s*(rmtree|system|popen|remove|unlink|exec\w*|spawn\w*)"
      r"|\brmSync\b|\bfs\s*\.\s*(rm|unlink|rmdir)(Sync)?\b|promises\s*\.\s*(unlink|rm|rmdir)\b"
      r"|\bunlink\s+glob\b", 9, "destructive interpreter payload", frozenset({"python", "python3", "node", "perl", "ruby", "sh", "bash", "zsh", "dash", "ksh", "eval"})),
+    # R4-S4: perl system/exec WITHOUT parens (and backticks) are the same
+    # destructive payloads as the parenthesized form — the subshell extractor
+    # only sees parens/$()/backtick interiors, so score the bare spellings.
+    (r"\b(system|exec)\s*\(?\s*['\"]?\s*(rm|shred|wipefs|mkfs(\.\w+)?|dd|chmod|chown)\b"
+     r"|`[^`]*\b(rm|shred|wipefs|mkfs|dd)\b", 9, "destructive interpreter payload", frozenset({"perl"})),
     # process control
     (r"\b(killall|pkill)\b|\bkill\s+-9\b", 5, "process kill", frozenset({"killall", "pkill", "kill"})),
     # credential / privacy access

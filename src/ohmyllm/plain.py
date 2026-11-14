@@ -256,12 +256,18 @@ class PlainApp:
             c.print(f"[bold]mode → {cmd}[/bold] · {desc}")
         elif cmd == "yolo":
             cur = bool(getattr(self.svc.config.agent, "yolo", False))
-            want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
-            self.svc.config.agent.yolo = want == "on"
-            c.print("[bold red]⚡ YOLO armed — the NEXT prompt auto-approves routine tool calls; "
-                    "shell/network/mail still ask; catastrophic commands "
-                    "(rm -rf /, fork bombs) stay blocked[/bold red]"
-                    if want == "on" else "[green]yolo off — approvals restored[/green]")
+            if arg and arg.lower() not in ("on", "off"):
+                # R4-07: an invalid argument must REJECT, never silently arm
+                # (or disarm) — same semantics as the GUI control.
+                c.print("[red]⚠ /yolo expects on or off[/red] — unchanged ("
+                        + ("armed" if cur else "off") + ")")
+            else:
+                want = arg.lower() if arg else ("off" if cur else "on")
+                self.svc.config.agent.yolo = want == "on"
+                c.print("[bold red]⚡ YOLO armed — the NEXT prompt auto-approves routine tool calls; "
+                        "shell/network/mail still ask; catastrophic commands "
+                        "(rm -rf /, fork bombs) stay blocked[/bold red]"
+                        if want == "on" else "[green]yolo off — approvals restored[/green]")
         elif cmd == "settings":
             # NEVER dump raw config: [cloud] keys would land in terminal
             # scrollback / logs / bug reports. Same masking as the bridge.

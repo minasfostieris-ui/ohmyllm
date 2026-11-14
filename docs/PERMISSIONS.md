@@ -101,6 +101,10 @@ When the engine asks, you can answer:
   persisted privately to `~/.ohmyllm/rules.json`.
 - **Deny** — the model is told the call was denied and must adapt.
 
+Pressing **Esc** (or dismissing the approval dialog) is a **Deny**: the pending
+call is denied fail-closed, exactly like clicking the Deny button. Esc never
+allows a call, and a closed or crashed approval UI also means denied.
+
 Approval identities hash the complete canonical arguments; values are neither
 whitespace-normalized nor truncated. Shell approvals are always one-shot outside
 active `full_access`, even if “session” or “always” is selected. Legacy unscoped

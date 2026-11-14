@@ -1228,13 +1228,20 @@ class ChatScreen(Screen):
             self._sysline(f"mode → {cmd} · {desc}", "system")
         elif cmd == "yolo":
             cur = bool(getattr(app.svc.config.agent, "yolo", False))
-            want = arg.lower() if arg.lower() in ("on", "off") else ("off" if cur else "on")
-            app.svc.config.agent.yolo = want == "on"
-            self._push_status()
-            app.notify(
-                "⚡ YOLO armed — the NEXT prompt auto-approves routine tool calls; "
-                "shell/network/mail still ask; catastrophic commands stay blocked"
-                if want == "on" else "yolo off — approvals restored")
+            a = arg.lower().strip()
+            # R4-07: an unknown argument must NEVER arm YOLO — a typo used to
+            # fall through to the toggle, so `/yolo banana` armed it silently.
+            # Reject with usage and keep the state, matching the GUI leg.
+            if a and a not in ("on", "off"):
+                app.notify("usage: /yolo [on|off]", severity="warning")
+            else:
+                want = a if a in ("on", "off") else ("off" if cur else "on")
+                app.svc.config.agent.yolo = want == "on"
+                self._push_status()
+                app.notify(
+                    "⚡ YOLO armed — the NEXT prompt auto-approves routine tool calls; "
+                    "shell/network/mail still ask; catastrophic commands stay blocked"
+                    if want == "on" else "yolo off — approvals restored")
         elif cmd.startswith("skill:"):
             name = cmd.split(":", 1)[1]
             body = app.svc.skills.read(name)
@@ -1247,9 +1254,13 @@ class ChatScreen(Screen):
                     # R3 U4: the trailing instruction after /skill:name travels
                     # with the cast — same additive contract as the GUI's `args`.
                     instruction = arg.strip()
+                    # R4-19: frame the trailing instruction exactly like the
+                    # bridge's /api/skills/cast so both legs produce the same
+                    # message (a bare newline read as part of the skill body).
                     sess.add_message("user", f"<skill name=\"{name}\">\n{body}\n</skill>\n"
                                    "Apply this skill to my requests in this chat."
-                                   + (f"\n{instruction}" if instruction else ""))
+                                   + (f"\n\nAdditional instruction from the user: {instruction}"
+                                      if instruction else ""))
                     app.svc.sessions.save(sess)
                     app.save_state = True
                 self._sysline(f"skill cast · {name} — the agent will follow it from here", "system")

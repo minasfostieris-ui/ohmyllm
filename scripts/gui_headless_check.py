@@ -845,6 +845,17 @@ def flows_laptop(page, client) -> None:
         ("r3-skill-cast-args", lambda: f_r3_skill_cast_args(page, client)),
         ("r3-mode-tone-case", lambda: f_r3_mode_tone_case(page, client)),
         ("r3-reject-hero", lambda: f_r3_reject_hero(page, client)),
+        # ---- R4 UX regression flows (task #82) ----
+        ("r4-approval-focus", lambda: f_r4_approval_focus(page, client)),
+        ("r4-close-tab-recovery", lambda: f_r4_close_tab_recovery(page, client)),
+        ("r4-roving-tabindex", lambda: f_r4_roving_tabindex(page, client)),
+        ("r4-sidebar-focus", lambda: f_r4_sidebar_focus(page, client)),
+        ("r4-skill-draft", lambda: f_r4_skill_draft(page, client)),
+        ("r4-mode-chip", lambda: f_r4_mode_chip(page, client)),
+        ("r4-market-error", lambda: f_r4_market_error(page, client)),
+        ("r4-row-aria", lambda: f_r4_row_aria(page, client)),
+        ("r4-help-esc", lambda: f_r4_help_esc(page, client)),
+        ("r4-action-map", lambda: f_r4_action_map(page, client)),
     ]:
         dismiss_stray_modals(page)
         flow(name, fn)
@@ -1816,14 +1827,22 @@ def f_r2_misc(page, client) -> None:
 
 def f_r2_div_buttons(page, client) -> None:
     """U17: sidebar rows and market cards expose button semantics and
-    respond to Enter/Space without a mouse."""
+    respond to Enter/Space without a mouse. R4-16: the sidebar ROW is now a
+    named group (role=button nesting four real buttons was invalid ARIA);
+    the open affordance keeps button semantics on .sb-main."""
     page.click("#rail [data-view='chat']")
     page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
     sb = page.evaluate("""() => {
         const row = document.querySelector('#sb-list .sb-row');
-        return row ? {role: row.getAttribute('role'), tab: row.tabIndex} : null;
+        if (!row) return null;
+        const main = row.querySelector('.sb-main');
+        return {role: row.getAttribute('role'), tab: row.tabIndex,
+                named: !!row.getAttribute('aria-label'),
+                mainRole: main ? main.getAttribute('role') : null};
     }""")
-    check("U17 sidebar row: role=button + tabIndex=0", sb is not None and sb["role"] == "button" and sb["tab"] == 0)
+    check("U17 sidebar row: named group + tabIndex=0, .sb-main role=button (R4-16)",
+          sb is not None and sb["role"] == "group" and sb["tab"] == 0
+          and sb["named"] and sb["mainRole"] == "button")
     page.click("#rail [data-view='market']")
     page.wait_for_selector("#view-market:not([hidden])", timeout=10_000)
     page.wait_for_function("() => document.querySelectorAll('.market-card').length > 0", timeout=20_000)
@@ -2249,6 +2268,454 @@ def f_r3_reject_hero(page, client) -> None:
         qid = page.evaluate("() => (state.chats.find(c => (c.title || '').includes('quartz')) || {}).id")
         if qid:
             page.evaluate("async (s) => { await openChat(s); }", qid)
+
+
+# --------------------------------------------------------------------------
+# R4 UX regression flows (task #82). Live PoCs for the CONFIRMED findings:
+# R4-01 focus trap during the decision POST, R4-04 close-tab orphan recovery,
+# R4-03 poll-stable roving tabindex, R4-05 sidebar focus restore, R4-06 skill
+# draft, R4-09 instant mode chip, R4-14 market error state, R4-16 row ARIA +
+# inert chrome, R4-11 Esc-deny help, R4-19 ACTION map / unknown-mode parity.
+# REFUTED findings (R4-00/02/08/10/12/13/17/99) are deliberately not "fixed".
+# --------------------------------------------------------------------------
+def f_r4_approval_focus(page, client) -> None:
+    """R4-01 (High) + R4-16: while the decision POST is in flight every modal
+    button is disabled, so focusables() is empty. The old trap released Tab
+    and focus escaped into chrome that was not inert (topbar/rail)."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    decided: list[dict] = []
+
+    def stub(route):
+        aid = route.request.url.rsplit("/", 1)[-1].split("?")[0]
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except ValueError:
+            body = {}
+        decided.append({"id": aid, "decision": body.get("decision")})
+        route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/approval/*", stub)
+    try:
+        # Hold the real decision POST open with a fetch shim so the in-flight
+        # window (all buttons disabled) is observable, not a microtask race.
+        page.evaluate("""() => {
+            state.streaming = true;
+            state.approvalQueue = [];
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            window.__r4origFetch = window.fetch;
+            window.__r4hold = true;
+            window.fetch = (url, opts) => {
+                if (window.__r4hold && String(url).includes('/api/approval/')) {
+                    return new Promise((res) => {
+                        window.__r4release = () => {
+                            window.__r4release = null;
+                            res(window.__r4origFetch(url, opts));
+                        };
+                    });
+                }
+                return window.__r4origFetch(url, opts);
+            };
+            queueApproval({id: 'r4a', tool: 'write_file', level: 'medium', risk: 4,
+                           mode: 'sandboxed', args: {path: 'r4.txt'}, reasons: []});
+        }""")
+        page.wait_for_selector("#approval-modal:not([hidden])", timeout=5_000)
+        inert = page.evaluate("""() => ['main', 'sidebar', 'topbar', 'rail'].map((id) => {
+            const el = document.getElementById(id);
+            return {id, inert: el.inert, aria: el.getAttribute('aria-hidden')};
+        })""")
+        check("R4-16 consent inert covers ALL chrome (main/sidebar/topbar/rail)",
+              all(x["inert"] and x["aria"] == "true" for x in inert))
+        page.click("#ap-allow")
+        page.wait_for_function(
+            "() => Array.from(document.querySelectorAll('#approval-modal button'))"
+            ".every(b => b.disabled)", timeout=5_000)
+        held = page.evaluate("""() => {
+            const m = document.getElementById('approval-modal');
+            return {inside: m.contains(document.activeElement),
+                    ae: document.activeElement.id || document.activeElement.tagName};
+        }""")
+        print("PROBE R4-01 in-flight focus: " + json.dumps(held), flush=True)
+        check("R4-01 disabling the decision buttons keeps focus inside the dialog",
+              held["inside"])
+        page.keyboard.press("Tab")
+        page.keyboard.press("Tab")
+        page.keyboard.press("Shift+Tab")
+        trapped = page.evaluate("""() => {
+            const m = document.getElementById('approval-modal');
+            return {inside: m.contains(document.activeElement),
+                    topbarInert: document.getElementById('topbar').inert,
+                    railInert: document.getElementById('rail').inert};
+        }""")
+        check("R4-01 Tab/Shift+Tab cannot escape the empty-focusables trap",
+              trapped["inside"] and trapped["topbarInert"] and trapped["railInert"])
+        page.evaluate("() => { if (window.__r4release) window.__r4release(); }")
+        page.wait_for_function("() => state.approvalQueue.length === 0", timeout=5_000)
+        page.wait_for_timeout(200)
+        check("R4-01 the held decision lands exactly once (approve r4a)",
+              decided == [{"id": "r4a", "decision": "approve"}])
+        released = page.evaluate("""() => ({
+            modal: document.getElementById('approval-modal').hidden,
+            topbarInert: document.getElementById('topbar').inert,
+            railInert: document.getElementById('rail').inert})""")
+        check("R4-01/R4-16 inert released once the consent queue drains",
+              released["modal"] and not released["topbarInert"] and not released["railInert"])
+    finally:
+        page.unroute("**/api/approval/*")
+        page.evaluate("""() => {
+            window.__r4hold = false;
+            if (window.__r4release) window.__r4release();
+            if (window.__r4origFetch) window.fetch = window.__r4origFetch;
+            state.approvalQueue = []; state.streaming = false;
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            closeModal('#approval-modal');
+            document.getElementById('run-state').textContent = 'Ready';
+        }""")
+
+
+def f_r4_close_tab_recovery(page, client) -> None:
+    """R4-04 (High): closing the active tab whose successor fails to load
+    orphaned the session — state.session pointed at a chat with no open tab
+    and the stale stream kept painting. Recover to a valid tab/empty state."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    a = client.post("/api/chats", {"first_message": "r4 recovery alpha"})["id"]
+    b = client.post("/api/chats", {"first_message": "r4 recovery beta"})["id"]
+    page.evaluate("async (s) => { await openChat(s); }", b)
+    page.evaluate("async (s) => { await openChat(s); }", a)
+    page.route(f"**/api/chats/{b}", lambda route: route.fulfill(
+        status=500, content_type="application/json",
+        body=json.dumps({"error": "r4 injected successor load failure"})))
+    try:
+        page.evaluate("async (s) => { await closeTab(s); }", a)
+        page.wait_for_timeout(300)
+        st = page.evaluate("""() => ({
+            tabs: state.openTabs.slice(), session: state.session,
+            streaming: state.streaming,
+            cancelHidden: document.getElementById('cancel').hidden})""")
+        print("PROBE R4-04 failed successor: " + json.dumps(st), flush=True)
+        check("R4-04 failed successor load restores the closed tab (no orphan)",
+              a in st["tabs"] and st["session"] == a)
+        check("R4-04 recovered view is owned by an open tab",
+              st["session"] is None or st["session"] in st["tabs"])
+    finally:
+        page.unroute(f"**/api/chats/{b}")
+    kill = page.evaluate("""() => {
+        state.streaming = true; state.stopping = true;
+        document.getElementById('cancel').hidden = false;
+        killStaleStream();
+        return {streaming: state.streaming, stopping: state.stopping,
+                cancelHidden: document.getElementById('cancel').hidden};
+    }""")
+    check("R4-04 killStaleStream clears the streaming flags + hides cancel",
+          not kill["streaming"] and not kill["stopping"] and kill["cancelHidden"])
+
+
+def f_r4_roving_tabindex(page, client) -> None:
+    """R4-03 (Med): the 2s poll re-ran renderTabs, which reset tabIndex to the
+    ACTIVE tab — the arrow-focused tab lost its roving 0 and Shift+Tab re-entry
+    jumped back. Focus and the single roving 0 must survive a poll."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    if page.evaluate("() => state.openTabs.length") < 2:
+        sid = client.post("/api/chats", {"first_message": ""})["id"]
+        page.evaluate("async (s) => { await openChat(s); }", sid)
+    moved = page.evaluate("""() => {
+        const ts = Array.from(document.querySelectorAll('#tabs .tab'));
+        let i = ts.findIndex((t, k) => !t.classList.contains('active')
+            && ts[k + 1] && !ts[k + 1].classList.contains('active'));
+        if (i < 0) i = 0;
+        ts[i].focus();
+        ts[i].dispatchEvent(new KeyboardEvent('keydown', {key: 'ArrowRight', bubbles: true}));
+        const ae = document.activeElement;
+        return {sid: ae.dataset ? ae.dataset.sid : null,
+                isTab: !!(ae.classList && ae.classList.contains('tab'))};
+    }""")
+    page.evaluate("async () => { await pollState(); renderTabs(); }")
+    st = page.evaluate("""() => {
+        const ts = Array.from(document.querySelectorAll('#tabs .tab'));
+        const ae = document.activeElement;
+        return {focusedSid: ae.dataset ? ae.dataset.sid : null,
+                focusedZero: ae.tabIndex,
+                zeros: ts.filter(t => t.tabIndex === 0).length};
+    }""")
+    print("PROBE R4-03 after poll: " + json.dumps({"moved": moved, "after": st}), flush=True)
+    check("R4-03 poll keeps focus on the arrow-focused tab",
+          moved["isTab"] and st["focusedSid"] == moved["sid"])
+    check("R4-03 poll keeps exactly one roving tabIndex=0 — on the focused tab",
+          st["zeros"] == 1 and st["focusedZero"] == 0)
+
+
+def f_r4_sidebar_focus(page, client) -> None:
+    """R4-05 (Med): renderSidebar's innerHTML reset dropped the focused row
+    onto <body> on every poll/rename/pin. Focus must return to the same chat
+    (and the same action button); an emptied list lands on the search field."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    page.evaluate("async () => { await renderSidebar(); }")
+    page.wait_for_selector("#sb-list .sb-row", timeout=10_000)
+    row = page.evaluate("""() => {
+        const r = document.querySelector('#sb-list .sb-row');
+        r.focus();
+        return {cid: r.dataset.cid};
+    }""")
+    page.evaluate("async () => { await renderSidebar(); }")
+    st = page.evaluate("""() => {
+        const ae = document.activeElement;
+        const r = ae.closest ? ae.closest('#sb-list .sb-row') : null;
+        return {cid: r ? r.dataset.cid : null, body: ae === document.body};
+    }""")
+    check("R4-05 sidebar rebuild restores focus to the same chat row",
+          st["cid"] == row["cid"] and not st["body"])
+    act = page.evaluate("""() => {
+        const r = document.querySelector('#sb-list .sb-row');
+        r.focus();  // :focus-within reveals .sb-acts (visibility:hidden otherwise)
+        const b = r.querySelector('[data-act="pin"]');
+        b.focus();
+        return {cid: r.dataset.cid, focused: document.activeElement === b};
+    }""")
+    page.evaluate("async () => { await renderSidebar(); }")
+    st2 = page.evaluate("""() => {
+        const ae = document.activeElement;
+        const r = ae.closest ? ae.closest('#sb-list .sb-row') : null;
+        return {cid: r ? r.dataset.cid : null, act: ae.dataset ? ae.dataset.act : null};
+    }""")
+    check("R4-05 sidebar rebuild restores focus to the same action button",
+          act["focused"] and st2["cid"] == act["cid"] and st2["act"] == "pin")
+    # emptied list: focus must land on the search field, never <body>. Move
+    # focus back onto a row AFTER fill (fill focuses the search box itself).
+    page.fill("#sb-search", "zzz-r4-no-such-chat")
+    page.evaluate("""() => {
+        const r = document.querySelector('#sb-list .sb-row');
+        if (r) r.focus();
+    }""")
+    page.wait_for_timeout(700)  # 250ms debounce + fetch
+    st3 = page.evaluate("""() => ({
+        rows: document.querySelectorAll('#sb-list .sb-row').length,
+        ae: document.activeElement.id})""")
+    check("R4-05 an emptied sidebar list lands focus on the search field",
+          st3["rows"] == 0 and st3["ae"] == "sb-search")
+    page.fill("#sb-search", "")
+    page.wait_for_timeout(600)
+
+
+def f_r4_skill_draft(page, client) -> None:
+    """R4-06 (Low): /skill:name with no active chat cleared the composer
+    BEFORE the no-session guard, wiping the instruction the user just typed."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    page.evaluate("() => { state.session = null; }")
+    draft = "/skill:probe-r4 run the probe instruction"
+    page.fill("#input", draft)
+    page.press("#input", "Enter")
+    page.wait_for_timeout(400)
+    st = page.evaluate("""() => ({
+        value: document.getElementById('input').value,
+        toasts: Array.from(document.querySelectorAll('#toasts .toast')).map(t => t.textContent)})""")
+    print("PROBE R4-06 skill draft: " + json.dumps(st, ensure_ascii=False), flush=True)
+    check("R4-06 refused /skill cast keeps the typed draft", st["value"] == draft)
+    check("R4-06 refused /skill cast explains why (start a chat first)",
+          any("start a chat first" in t for t in st["toasts"]))
+    page.evaluate("""async () => {
+        const c = state.chats[0];
+        if (c) await openChat(c.id);
+        document.getElementById('toasts').innerHTML = '';
+    }""")
+    page.fill("#input", "")
+
+
+def f_r4_mode_chip(page, client) -> None:
+    """R4-09 (Low, reframed): the chip lagged up to 5s after a mode change —
+    chooseMode fired refreshStatus un-awaited and a stale /api/status snapshot
+    (mtime reload race) repainted the OLD mode. R4-19: an unknown /mode arg
+    must reject with an error, not silently open the chooser."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    snap = client.get("/api/status")
+    cur = snap.get("mode") or "sandboxed"
+    target = "strict" if cur != "strict" else "safe"
+    stale = dict(snap, mode=cur)
+    page.route("**/api/status", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=json.dumps(stale)))
+    try:
+        page.evaluate("async (m) => { await chooseMode(m); }", target)
+        chip = page.evaluate("""() => ({
+            text: document.getElementById('chip-mode').textContent,
+            cls: document.getElementById('chip-mode').className,
+            mirror: state.status ? state.status.mode : null})""")
+        print("PROBE R4-09 chip vs stale status: " + json.dumps(chip), flush=True)
+        check("R4-09 mode chip repaints immediately even when /api/status is stale",
+              target in chip["text"] and f"mode-{target}" in chip["cls"]
+              and chip["mirror"] == target)
+    finally:
+        page.unroute("**/api/status")
+    check("R4-09 the applied mode reached the server",
+          client.get("/api/status").get("mode") == target)
+    page.evaluate("async (m) => { await chooseMode(m); }", cur)
+    # R4-19 parity: an unknown preset rejects; the chooser stays shut.
+    page.evaluate("() => { setModeUi('r4-bogus'); }")
+    page.wait_for_timeout(300)
+    unk = page.evaluate("""() => ({
+        chooser: !!document.querySelector('#mode-modal:not([hidden])'),
+        toasts: Array.from(document.querySelectorAll('#toasts .toast')).map(t => t.textContent)})""")
+    check("R4-19 unknown /mode arg errors instead of opening the chooser",
+          not unk["chooser"] and any("unknown mode" in t for t in unk["toasts"]))
+    page.evaluate("""() => {
+        const m = document.getElementById('mode-modal');
+        if (m && !m.hidden) closeModal(m);
+        document.getElementById('toasts').innerHTML = '';
+    }""")
+
+
+def f_r4_market_error(page, client) -> None:
+    """R4-14 (Low): a failed /api/market left a BLANK grid plus a 4s toast —
+    no explanation, no retry once the toast faded. Paint a persistent,
+    announced error state with a real retry affordance."""
+    page.route("**/api/market", lambda route: route.fulfill(
+        status=503, content_type="application/json",
+        body=json.dumps({"error": "r4 injected catalog outage"})))
+    try:
+        page.click("#rail [data-view='market']")
+        page.wait_for_selector("#view-market:not([hidden])", timeout=10_000)
+        page.wait_for_selector("#market-grid .market-error", timeout=10_000)
+        st = page.evaluate("""() => {
+            const box = document.querySelector('#market-grid .market-error');
+            const retry = document.getElementById('market-retry');
+            return {role: box.getAttribute('role'),
+                    head: (box.querySelector('h2') || {}).textContent || '',
+                    msg: (box.querySelector('p') || {}).textContent || '',
+                    retry: !!retry && retry.getClientRects().length > 0,
+                    cards: document.querySelectorAll('.market-card').length};
+        }""")
+        print("PROBE R4-14 market error: " + json.dumps(st, ensure_ascii=False), flush=True)
+        check("R4-14 catalog failure paints a persistent announced error state",
+              st["role"] == "alert" and "unavailable" in st["head"].lower()
+              and "r4 injected catalog outage" in st["msg"])
+        check("R4-14 the error state offers a visible Retry affordance", st["retry"])
+    finally:
+        page.unroute("**/api/market")
+    page.click("#market-retry")
+    page.wait_for_function("() => document.querySelectorAll('.market-card').length > 0", timeout=20_000)
+    check("R4-14 Retry recovers the catalog once the bridge answers",
+          page.evaluate("() => !document.querySelector('#market-grid .market-error')"))
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+
+
+def f_r4_row_aria(page, client) -> None:
+    """R4-16 (Low): role=button on a sidebar row nesting four real buttons is
+    invalid ARIA (interactive content inside a button). The row is a named
+    group; .sb-main keeps the open affordance's button semantics."""
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    page.evaluate("async () => { await renderSidebar(); }")
+    page.wait_for_selector("#sb-list .sb-row", timeout=10_000)
+    st = page.evaluate("""() => {
+        const rows = Array.from(document.querySelectorAll('#sb-list .sb-row'));
+        const nested = [];
+        document.querySelectorAll('#sidebar [role="button"]').forEach((b) => {
+            if (b.querySelector('button, input, textarea, select, a[href], [tabindex="0"]'))
+                nested.push(b.className || b.tagName);
+        });
+        return {n: rows.length,
+                groups: rows.every(r => r.getAttribute('role') === 'group'),
+                named: rows.every(r => (r.getAttribute('aria-label') || '').length > 0),
+                mains: rows.every(r => {
+                    const m = r.querySelector('.sb-main');
+                    return !!m && m.getAttribute('role') === 'button';
+                }),
+                nested};
+    }""")
+    check("R4-16 sidebar rows are named groups; .sb-main keeps button semantics",
+          st["n"] > 0 and st["groups"] and st["named"] and st["mains"])
+    check("R4-16 no role=button wraps interactive content in the sidebar",
+          st["nested"] == [])
+    cid = page.evaluate("""() => {
+        const r = document.querySelector('#sb-list .sb-row');
+        r.focus();
+        return r.dataset.cid;
+    }""")
+    page.keyboard.press("Enter")
+    page.wait_for_function("(sid) => state.session === sid", arg=cid, timeout=10_000)
+    check("R4-16 Enter on a sidebar row still opens the chat",
+          page.evaluate("(sid) => state.session === sid", cid))
+
+
+def f_r4_help_esc(page, client) -> None:
+    """R4-11 (Low): Esc on an approval DENIES it (fail-closed) — the help
+    table never said so. Pin the doc row AND the live fail-closed behaviour."""
+    page.click("#rail [data-view='help']")
+    page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
+    page.wait_for_selector("#help-body table", timeout=10_000)
+    row = page.evaluate("""() => {
+        const trs = Array.from(document.querySelectorAll('#help-body table tr'));
+        const tr = trs.find(t => {
+            const k = t.querySelector('kbd');
+            return k && k.textContent.trim() === 'Esc';
+        });
+        return tr ? tr.textContent : '';
+    }""")
+    low = row.lower()
+    check("R4-11 help documents Esc on an approval as fail-closed DENY",
+          "deny" in low and "approval" in low and "fail-closed" in low)
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    decided: list[dict] = []
+
+    def stub(route):
+        aid = route.request.url.rsplit("/", 1)[-1].split("?")[0]
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except ValueError:
+            body = {}
+        decided.append({"id": aid, "decision": body.get("decision")})
+        route.fulfill(status=200, content_type="application/json", body="{}")
+
+    page.route("**/api/approval/*", stub)
+    try:
+        page.evaluate("""() => {
+            state.streaming = true;
+            state.approvalQueue = [];
+            queueApproval({id: 'r4e', tool: 'write_file', level: 'medium', risk: 4,
+                           mode: 'sandboxed', args: {path: 'esc.txt'}, reasons: []});
+        }""")
+        page.wait_for_selector("#approval-modal:not([hidden])", timeout=5_000)
+        page.keyboard.press("Escape")
+        page.wait_for_function("() => state.approvalQueue.length === 0", timeout=5_000)
+        check("R4-11 Esc on an approval POSTs deny (fail-closed), never allow",
+              decided == [{"id": "r4e", "decision": "deny"}])
+    finally:
+        page.unroute("**/api/approval/*")
+        page.evaluate("""() => {
+            state.approvalQueue = []; state.streaming = false;
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            closeModal('#approval-modal');
+            document.getElementById('run-state').textContent = 'Ready';
+        }""")
+
+
+def f_r4_action_map(page, client) -> None:
+    """R4-19 (Low): the ACTION icon map still listed tools that no longer
+    exist (glob/grep/web_fetch/web_search/soul_write/soul_remember), so real
+    calls fell back to the generic glyph. Key it by the LIVE registry."""
+    from ohmyllm.tools.registry import build_default_registry
+
+    names = set(build_default_registry().names())
+    keys = set(page.evaluate("() => Object.keys(ACTION)"))
+    print("PROBE R4-19 ACTION vs registry: " + json.dumps(
+        {"missing": sorted(names - keys), "extra": sorted(keys - names)}), flush=True)
+    check("R4-19 ACTION icon map matches the live tool registry exactly", keys == names)
+    glyphs = page.evaluate("""() => ({
+        read: actionOf('read_file'), exec: actionOf('run_command'),
+        unknown: actionOf('no_such_tool_r4')})""")
+    check("R4-19 real tools get their own glyph; unknown names fall back safely",
+          glyphs["read"][0] == "read" and glyphs["exec"][0] == "exec"
+          and glyphs["unknown"][0] == "tool")
 
 
 def flows_responsive(page, width: int) -> None:

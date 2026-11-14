@@ -106,9 +106,11 @@ class BridgeState:
         self.cfg_mtime = 0.0
         self.talk: Any = None  # server-side hold-to-talk recorder
         self.talk_pending = False  # start() still spawning the recorder
+        self.voice_stop_pending = False  # R4-3: stop timed out while a start was spawning
         self.shutdown_hook = lambda: None
         self.active_turn: Any = None
         self.active_runtime: Any = None  # live AgentRuntime while a turn runs (D4/D6)
+        self.active_session: Any = None  # R4-5: the live turn's Session (a cast must not clobber it)
         self.deleted_sessions: set[str] = set()  # D8: tombstones — a deleted chat must not resurrect
         self.heartbeat_task: Any = None  # D15: cancelled explicitly on shutdown
 
@@ -1062,6 +1064,9 @@ class Handler(BaseHTTPRequestHandler):
                         or self.state.talk_pending:
                     return 200, {"ok": True, "already": True}
                 self.state.talk_pending = True
+                # R4-3: a fresh start supersedes any stop left pending by an
+                # earlier timed-out release.
+                self.state.voice_stop_pending = False
             wav = V.voice_dir() / f"gui-hold-{int(time.time() * 1000)}.wav"
             rec = V.Recorder(wav)
             try:
@@ -1070,6 +1075,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.state.talk_pending = False
             if err:
                 return 500, {"error": err}
+            if self.state.voice_stop_pending:
+                # R4-3: stop's 3s cap elapsed while this recorder was still
+                # spawning — tear it down instead of leaving the mic live
+                # after the UI was told "not recording".
+                self.state.voice_stop_pending = False
+                await asyncio.to_thread(rec.stop)
+                with contextlib.suppress(OSError):
+                    wav.unlink(missing_ok=True)
+                return 200, {"ok": True, "stopped": True}
             self.state.talk = {"rec": rec, "path": wav}
             return 200, {"ok": True}
         if action == "stop":
@@ -1081,6 +1095,10 @@ class Handler(BaseHTTPRequestHandler):
                 await asyncio.sleep(0.1)
             talk, self.state.talk = self.state.talk, None
             if talk is None:
+                if self.state.talk_pending:
+                    # R4-3: the start is still spawning past the cap — mark
+                    # the stop so the late start tears its recorder down.
+                    self.state.voice_stop_pending = True
                 return 200, {"text": "", "note": "not recording"}
             await asyncio.to_thread(talk["rec"].stop)
             wav = talk["path"]
@@ -1201,6 +1219,12 @@ class Handler(BaseHTTPRequestHandler):
                "Apply this skill to my requests in this chat.")
         if args:
             msg += f"\n\nAdditional instruction from the user: {args}"
+        # R4-5: a running turn holds its OWN in-memory Session and saves it
+        # last — appending to a fresh disk copy would be clobbered by that
+        # final save. Cast into the live session so the turn persists it.
+        live = self.state.active_session
+        if live is not None and live.id == sid:
+            sess = live
         sess.add_message("user", msg)
         svc.sessions.save(sess)
         self._json(200, {"ok": True, "cast": name})
@@ -1232,6 +1256,9 @@ class Handler(BaseHTTPRequestHandler):
         changed = sorted(key for key in protected if merged.get(key) != live.get(key))
         if changed:
             return self._json(403, {"error": "security config requires a dedicated control: " + ", ".join(changed)})
+        # R4-1: carry runtime-only flags AFTER the protected comparison — the
+        # live dump lacks them, so injecting earlier would fake an agent delta.
+        merged = _carry_runtime_flags(cfg, merged)
         try:
             new = Config.model_validate(merged)
         except Exception as exc:  # noqa: BLE001
@@ -1253,7 +1280,7 @@ class Handler(BaseHTTPRequestHandler):
         changed = sorted(k for k in sensitive if k in incoming and incoming[k] != live_agent.get(k))
         if changed and body.get("confirm") is not True:
             return self._json(403, {"error": "agent policy change requires confirm=true: " + ", ".join(changed)})
-        merged = deep_merge(live, {"agent": incoming})
+        merged = _carry_runtime_flags(svc.config, deep_merge(live, {"agent": incoming}))
         try:
             new = Config.model_validate(merged)
         except Exception as exc:  # noqa: BLE001
@@ -1269,7 +1296,7 @@ class Handler(BaseHTTPRequestHandler):
     def _memory_config(self, body: dict[str, Any]) -> None:
         """Apply explicit memory-policy changes through a dedicated control."""
         live = json.loads(self.state.svc.config.model_dump_json())
-        merged = deep_merge(live, {"memory": body})
+        merged = _carry_runtime_flags(self.state.svc.config, deep_merge(live, {"memory": body}))
         try:
             new = Config.model_validate(merged)
         except Exception as exc:  # noqa: BLE001
@@ -1411,6 +1438,11 @@ class Handler(BaseHTTPRequestHandler):
                 self.state.busy = False
             raise
 
+        # R4-5: publish the live Session before the turn starts so a mid-turn
+        # skill cast appends to THIS object — the turn's final save persists it.
+        with self.state.turn_lock:
+            self.state.active_session = sess
+
         def emit(kind: str, payload: dict[str, Any]) -> bool:
             try:
                 q.put((kind, payload), timeout=1.0)
@@ -1490,6 +1522,7 @@ class Handler(BaseHTTPRequestHandler):
                 with self.state.turn_lock:
                     self.state.busy = False
                     self.state.active_turn = None
+                    self.state.active_session = None
                     self.state.active_runtime = None
                     self.state.interjections.clear()
                 # Normal events may be dropped after bounded backpressure, but a
@@ -1505,6 +1538,7 @@ class Handler(BaseHTTPRequestHandler):
         except BaseException:
             with self.state.turn_lock:
                 self.state.busy = False
+                self.state.active_session = None
             raise
         self._sse_init()
         try:
@@ -1618,6 +1652,25 @@ def _validation_sentence(exc: Exception) -> str:
         if len(parts) >= 4:
             break
     return "; ".join(parts)[:300] or "invalid configuration"
+
+
+def _carry_runtime_flags(cfg: Config, merged: dict[str, Any]) -> dict[str, Any]:
+    """R4-1: model_dump_json() omits Field(exclude=True) runtime flags
+    (agent.yolo — one prompt, never persisted). Rebuilding a partial save
+    from the dump would silently disarm yolo and trip a spurious security
+    retire (policy_generation bump → the live turn cancelled). Mirror the
+    #76 reload_config merge: carry the live values into the merged payload;
+    an explicit incoming value (dedicated agent control) still wins."""
+    for name in Config.model_fields:
+        live = getattr(cfg, name)
+        sub_fields = getattr(type(live), "model_fields", None)
+        section = merged.get(name)
+        if sub_fields is None or not isinstance(section, dict):
+            continue
+        for sub_name, sub_info in sub_fields.items():
+            if sub_info.exclude:
+                section.setdefault(sub_name, getattr(live, sub_name))
+    return merged
 
 
 def _safe_config(cfg: Config) -> dict:

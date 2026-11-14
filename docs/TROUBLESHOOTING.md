@@ -3,7 +3,7 @@
 First stop, always:
 
 ```bash
-ohmyllm doctor          # 25+ checks, each with a fix hint
+ohmyllm doctor          # 20 checks, each with a fix hint
 tail -n 50 ~/.ohmyllm/logs/ohmyllm.log
 ```
 
