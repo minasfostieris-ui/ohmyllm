@@ -78,6 +78,45 @@ class AgentCancelled(asyncio.CancelledError):
     pass
 
 
+class _EchoScanner:
+    """Incremental rolling-hash repeat detector (R3 C20).
+
+    Keeps its hash state across feed() calls so a streamed generation is
+    scanned in O(n) total instead of re-scanning the whole reply every
+    +2000 chars (O(n^2/2000))."""
+
+    def __init__(self, win: int = 300) -> None:
+        self.win = win
+        self.seen: dict[int, int] = {}
+        self.h = 0
+        self.pos = 0
+        self.m = (1 << 61) - 1
+        self.base = 101
+        self.powk = pow(self.base, win, self.m)
+
+    def feed(self, text: str) -> int | None:
+        """Scan only the chars appended since the last call; return the start
+        index of a verbatim `win`-char block that already occurred earlier
+        (non-overlapping), else None."""
+        win, m, base, powk = self.win, self.m, self.base, self.powk
+        h = self.h
+        seen = self.seen
+        for i in range(self.pos, len(text)):
+            h = (h * base + (ord(text[i]) + 1)) % m
+            if i >= win:
+                h = (h - powk * (ord(text[i - win]) + 1)) % m
+            if i + 1 >= win:
+                j = seen.get(h)
+                if j is not None and i - j - win + 1 >= win:
+                    self.pos = i + 1
+                    self.h = h
+                    return i - win + 1
+                seen.setdefault(h, i - win + 1)
+        self.pos = len(text)
+        self.h = h
+        return None
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -158,7 +197,7 @@ class AgentRuntime:
 
     # ------------------------------------------------------------- steer (D6)
     def steer(self, text: str) -> int:
-        """Queue mid-turn guidance; drained at the next tool_result boundary.
+        """Queue mid-turn guidance; drained at the next tool-batch boundary.
         Returns the 1-based queue position. Steer text is inert literal user
         content: it can never change mode, unlock tools, or dismiss approvals."""
         if self._retired:
@@ -208,6 +247,14 @@ class AgentRuntime:
         except AgentCancelled:
             self._publish_state("idle", session_id=session.id, backend=self.backend.name.value, model=session.model)
             raise
+        except asyncio.CancelledError:
+            # R3 C12: bridge Stop cancels the TASK as well as setting the
+            # event; a raw CancelledError with the event set is a user stop,
+            # not a failure — never publish a phantom error state for it.
+            user_stop = cancel is not None and cancel.is_set()
+            self._publish_state("idle" if user_stop else "error", session_id=session.id,
+                                backend=self.backend.name.value, model=session.model)
+            raise
         except BaseException:
             self._publish_state("error", session_id=session.id, backend=self.backend.name.value, model=session.model)
             raise
@@ -250,6 +297,7 @@ class AgentRuntime:
         result = TurnResult()
         self._turn_usage = {}
         self._invalid_counts: dict[tuple[str, str], int] = {}
+        self._call_sigs: dict[tuple[str, str], int] = {}
         ctx = ToolContext(
             workspace=self.policy.workspace,
             mode=mode.value,
@@ -320,6 +368,7 @@ class AgentRuntime:
             thinking_seen = False
             finish_reason = ""
             scan_at = 4000
+            echo_scan = _EchoScanner()
             echo_dup: int | None = None
             try:
                 async for chunk in self.backend.stream_chat(
@@ -346,7 +395,7 @@ class AgentRuntime:
                         # step-end checks never get control. Scan while
                         # streaming; a verbatim repeat aborts generation.
                         if agent_loop and len(assistant_text) >= scan_at:
-                            echo_dup = self._self_repeats(assistant_text)
+                            echo_dup = echo_scan.feed(assistant_text)
                             if echo_dup is not None:
                                 break
                             scan_at = len(assistant_text) + 2000
@@ -501,21 +550,33 @@ class AgentRuntime:
                 ]
             session.add_message("assistant", assistant_text.strip(), **extra)
 
+            call_count_before = len(result.calls)
             for call in parsed:
                 self._check_active()
                 self._check_cancel(cancel)
                 await self._handle_call(call, session, ctx, mode, prompt_fn, emit, result, model,
                                       truncated=finish_reason == "length")
+            # D6/R3 C2: steer lands only at BATCH boundaries — a user message
+            # injected between tool results of ONE declared tool_calls batch
+            # splits the batch and 400s on the OpenAI wire.
+            self._drain_steer(session, emit)
 
             # ECHO BREAKER: small models in loop mode paste the same tool
             # call (or its ledger) into their prose forever — each duplicate
-            # burns a 60-90 s generation. Two cached duplicates and the turn
-            # goes straight to the forced tool-free final instead of spending
-            # the whole budget re-echoing.
-            if agent_loop and sum(1 for c in result.calls
-                                  if c.get("status") == "cached") >= 2:
-                emit({"type": "agentloop_echo_break", "steps": step})
-                break
+            # burns a 60-90 s generation. Two duplicates of one (name, args)
+            # signature (R3 C14: counted for real — no producer ever emitted
+            # status "cached") and the turn goes straight to the forced
+            # tool-free final instead of spending the whole budget re-echoing.
+            if agent_loop:
+                dup_max = 0
+                for rec in result.calls[call_count_before:]:
+                    call_sig = (str(rec.get("name")),
+                                json.dumps(rec.get("args") or {}, sort_keys=True, default=str))
+                    self._call_sigs[call_sig] = self._call_sigs.get(call_sig, 0) + 1
+                    dup_max = max(dup_max, self._call_sigs[call_sig] - 1)
+                if dup_max >= 2:
+                    emit({"type": "agentloop_echo_break", "steps": step})
+                    break
 
             if step == budget:
                 break
@@ -587,7 +648,7 @@ class AgentRuntime:
             "proved it, what (if anything) is still missing.",
         )
         system = self.prompt_builder.system_prompt(mode=self.policy.mode, native=False, ultrathink=self.config.generation.ultrathink)
-        history = trim_messages(self._outgoing(session), max(4000, params.num_ctx * 3))
+        history = trim_messages(self._outgoing(session), max(4000, self._ctx_budget(model, params) * 3))
         messages = self.prompt_builder.assemble(system, history)
         # hard cap the summary pass: an echo-prone model otherwise keeps
         # generating pasted ledgers for the whole max_tokens window
@@ -692,7 +753,6 @@ class AgentRuntime:
             session.add_message("assistant", f"[attempted {name}]")
             session.add_message("tool", body, name=name, tool_call_id=call.id)
             emit({"type": "tool_result", "name": name, "ok": False, "blocked": True, "output": body, "call_id": call.id})
-            self._drain_steer(session, emit)
             return
 
         outcome = ApprovalOutcome.APPROVED
@@ -735,7 +795,6 @@ class AgentRuntime:
             session.add_message("assistant", f"[asked to run {name}]")
             session.add_message("tool", "The user DENIED this tool call. Do not retry it; adapt your answer.", name=name, tool_call_id=call.id)
             emit({"type": "tool_result", "name": name, "ok": False, "denied": True, "output": "denied", "call_id": call.id})
-            self._drain_steer(session, emit)
             return
 
         try:
@@ -791,7 +850,6 @@ class AgentRuntime:
             meta_public["images"] = len(tool_result.meta["images"])  # never ship base64 into UI events
         emit({"type": "tool_result", "name": name, "ok": tool_result.ok, "approval": outcome.value, "output": out_text[:4000], "duration_ms": duration, "call_id": call.id, "file": meta_public or None})
         self._publish_state("working", session_id=session.id, backend=self.backend.name.value, model=model)
-        self._drain_steer(session, emit)
 
     # ------------------------------------------------------------- plumbing
 
@@ -968,21 +1026,7 @@ class AgentRuntime:
         position (period-agnostic — sampled windows miss cyclic prose); the
         exact fingerprint of ledger regurgitation. Honest answers rarely
         re-emit a verbatim 300-char paragraph."""
-        seen: dict[int, int] = {}
-        h = 0
-        m = (1 << 61) - 1
-        base = 101
-        powk = pow(base, win, m)
-        for i, ch in enumerate(text):
-            h = (h * base + (ord(ch) + 1)) % m
-            if i >= win:
-                h = (h - powk * (ord(text[i - win]) + 1)) % m
-            if i + 1 >= win:
-                j = seen.get(h)
-                if j is not None and i - j - win + 1 >= win:
-                    return i - win + 1
-                seen.setdefault(h, i - win + 1)
-        return None
+        return _EchoScanner(win).feed(text)
 
     def _finish(
         self, session: Session, result: TurnResult, text: str, gen_time: float, tokens: int,

@@ -106,7 +106,8 @@ class CloudBackend(BaseBackend):
             return True, {"provider": label, "models": len(static), "note": "static model list"}
         url = f"{base}/models"
         try:
-            async with httpx.AsyncClient(timeout=8.0, transport=self._transport) as c:
+            async with httpx.AsyncClient(timeout=8.0, transport=self._transport,
+                                         trust_env=False, follow_redirects=False) as c:
                 r = await c.get(url, headers=self._headers(kind, key))
                 if r.status_code == 200:
                     try:
@@ -167,7 +168,8 @@ class CloudBackend(BaseBackend):
         static = self._static_models(pid, label)
         if static:
             return static
-        async with httpx.AsyncClient(timeout=15.0, transport=self._transport) as c:
+        async with httpx.AsyncClient(timeout=15.0, transport=self._transport,
+                                     trust_env=False, follow_redirects=False) as c:
             r = await c.get(f"{base}/models", headers=self._headers(kind, key))
             if r.status_code != 200:
                 raise BackendError(f"{label}: model list failed ({r.status_code}): {r.text[:200]}")
@@ -254,6 +256,9 @@ class CloudBackend(BaseBackend):
             "temperature": gen.temperature,
             "top_p": gen.top_p,
             "max_tokens": max(gen.max_tokens, 16384) if gen.ultrathink else gen.max_tokens,
+            # R3 C9: OpenAI only emits the usage trailer when asked — without
+            # this every cloud turn reports usage=None (char/4 guesses).
+            "stream_options": {"include_usage": True},
         }
         if gen.effort != "off" or gen.ultrathink:
             lvl = "xhigh" if gen.ultrathink else gen.effort
@@ -273,7 +278,8 @@ class CloudBackend(BaseBackend):
         # bounded read gap like the local backends: a provider that accepts
         # the request then goes silent must not hang the turn forever
         timeout = httpx.Timeout(gen.timeout, read=min(max(gen.timeout, 300.0), 1800.0))
-        async with httpx.AsyncClient(timeout=timeout, transport=self._transport) as c:
+        async with httpx.AsyncClient(timeout=timeout, transport=self._transport,
+                                     trust_env=False, follow_redirects=False) as c:
             async with c.stream("POST", f"{base}/chat/completions",
                                 headers=self._headers("openai", key), json=body) as resp:
                 if resp.status_code != 200:
@@ -458,6 +464,11 @@ class CloudBackend(BaseBackend):
                 merged[-1]["content"] = merged[-1]["content"] + msg["content"]
             else:
                 merged.append(msg)
+        # R3 C10: Anthropic requires messages[0].role == user — trimming can
+        # drop the leading user turn and leave an assistant-first history.
+        if merged and merged[0]["role"] != "user":
+            merged.insert(0, {"role": "user", "content": [
+                {"type": "text", "text": "(earlier context was trimmed; continuing the conversation)"}]})
         return system, merged
 
     async def _stream_anthropic(self, base: str, key: str, model: str,
@@ -493,7 +504,8 @@ class CloudBackend(BaseBackend):
         # bounded read gap like the local backends: a provider that accepts
         # the request then goes silent must not hang the turn forever
         timeout = httpx.Timeout(gen.timeout, read=min(max(gen.timeout, 300.0), 1800.0))
-        async with httpx.AsyncClient(timeout=timeout, transport=self._transport) as c:
+        async with httpx.AsyncClient(timeout=timeout, transport=self._transport,
+                                     trust_env=False, follow_redirects=False) as c:
             async with c.stream("POST", f"{base}/messages",
                                 headers=self._headers("anthropic", key), json=body) as resp:
                 if resp.status_code != 200:

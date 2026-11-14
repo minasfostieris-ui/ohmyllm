@@ -285,6 +285,40 @@ def _skip_wrapper_flags(
     return payload
 
 
+def _xargs_repl(text: str) -> str | None:
+    """The replacement string of xargs' ``-I``/``-i``/``--replace`` flag
+    (R3 S7), or None when no placeholder substitution is configured. Only
+    xargs' own leading flags are scanned; separated flag arguments (``-n 1``)
+    are skipped so they cannot be misread as the placeholder or the payload.
+    Bare ``-i``/``--replace`` default to ``{}`` (getopt: attached-only)."""
+    toks = text.split()
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if not tok.startswith("-") or tok == "-":
+            break
+        if tok.startswith("--"):
+            name, eq, val = tok.partition("=")
+            if name == "--replace":
+                return val if eq else "{}"
+            i += 2 if (not eq and name in _XARGS_REQ_LONG) else 1
+            continue
+        if tok.startswith("-I"):
+            return tok[2:] or (toks[i + 1] if i + 1 < len(toks) else "{}")
+        if tok.startswith("-i"):
+            return tok[2:] or "{}"
+        step = 1
+        chars = tok[1:]
+        for idx, ch in enumerate(chars):
+            if ch in _XARGS_REQ_SHORT:
+                step = 2 if idx == len(chars) - 1 else 1
+                break
+            if ch in _XARGS_OPT_SHORT:
+                break
+        i += step
+    return None
+
+
 # ---------------------------------------------------------------- R2 C3
 # Dynamic-target resolution. The deny floor and the catastrophic gate need
 # the EFFECTIVE operand, not the spelling: ${UNSET:-/}, $(echo /), backticks,
@@ -439,12 +473,22 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
         if (toks and toks[0].rsplit("/", 1)[-1] == "xargs"
                 and "|" in sep and "||" not in sep and idx > 0):
             lit = _literal_output(segs[idx - 1][1])
+            remainder = _raw_remainder(s)
             payload = _skip_wrapper_flags(
-                _raw_remainder(s), req_short=_XARGS_REQ_SHORT,
+                remainder, req_short=_XARGS_REQ_SHORT,
                 opt_short=_XARGS_OPT_SHORT, req_long=_XARGS_REQ_LONG,
             )
             if lit is not None and payload.strip():
-                s = s + " " + lit
+                repl = _xargs_repl(remainder)
+                if repl is not None:
+                    # R3 S7: -I REPL substitutes the placeholder with the
+                    # upstream literal — `echo rm | xargs -I{} {} -rf /`
+                    # denotes `rm -rf /`, not a command named "{}".
+                    head = s[:len(s) - len(remainder)]
+                    flags = remainder[:len(remainder) - len(payload)]
+                    s = head + flags + payload.replace(repl, lit)
+                else:
+                    s = s + " " + lit
         out.append(sep + s)
     return "".join(out)
 
@@ -531,22 +575,33 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
             base = toks[0].rsplit("/", 1)[-1]
             args = toks[1:]
         if base == "xargs":
+            argtext = " ".join(args)
+            repl = _xargs_repl(argtext)
             payload = _skip_wrapper_flags(
-                " ".join(args), req_short=_XARGS_REQ_SHORT,
+                argtext, req_short=_XARGS_REQ_SHORT,
                 opt_short=_XARGS_OPT_SHORT, req_long=_XARGS_REQ_LONG,
             )
             ptoks = payload.split()
             if not ptoks:
                 continue
+            lit: str | None = None
+            if "|" in sep and "||" not in sep:
+                upstream = segs[idx - 1][1] if idx > 0 else ""
+                lit = _literal_output(upstream)
+            if repl is not None:
+                if lit is not None:
+                    ptoks = [t.replace(repl, lit) for t in ptoks]
+                elif any(repl in t for t in ptoks):
+                    # R3 S7 fail-closed: an unsubstituted placeholder (exe or
+                    # operand) is an unresolvable target, exactly like $VAR.
+                    return True
             pbase = ptoks[0].rsplit("/", 1)[-1]
             destructive = pbase in _DESTRUCTIVE_EXES or (
                 pbase == "find" and _is_find_delete(ptoks[1:]))
             if not destructive:
                 continue
-            if "|" in sep and "||" not in sep:
-                upstream = segs[idx - 1][1] if idx > 0 else ""
-                if _literal_output(upstream) is None:
-                    return True
+            if "|" in sep and "||" not in sep and lit is None:
+                return True
             if any("$" in t or "`" in t for t in ptoks[1:] if not t.startswith("-")):
                 return True
             continue
@@ -669,13 +724,20 @@ def command_variants(command: str) -> list[str]:
                         walk(rtoks[ci + 1], depth + 1, pargs[1:])
                 elif rbase == "xargs" and "|" in sep and "||" not in sep and idx > 0:
                     lit = _literal_output(raw_segs[idx - 1][1])
+                    remainder = _raw_remainder(_strip_tricks(rseg))
                     payload = _skip_wrapper_flags(
-                        _raw_remainder(_strip_tricks(rseg)),
+                        remainder,
                         req_short=_XARGS_REQ_SHORT, opt_short=_XARGS_OPT_SHORT,
                         req_long=_XARGS_REQ_LONG,
                     )
                     if lit is not None and payload.strip():
-                        walk(payload + " " + lit, depth + 1, positionals)
+                        repl = _xargs_repl(remainder)
+                        if repl is not None:
+                            # R3 S7: substitute the -I placeholder so the
+                            # deny floor sees the real payload command.
+                            walk(payload.replace(repl, lit), depth + 1, positionals)
+                        else:
+                            walk(payload + " " + lit, depth + 1, positionals)
 
     walk(str(command), 0)
     return seen

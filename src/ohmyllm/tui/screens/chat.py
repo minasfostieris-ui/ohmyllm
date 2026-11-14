@@ -43,6 +43,7 @@ class ChatScreen(Screen):
         ("/backend", "[ollama|lmstudio|cloud|mock]", "switch backend"), ("/mode", "[name]", "permission mode"), ("/perms", "", "permission modes"),
         ("/think", "[off|low|medium|high|xhigh|max|hide|show]", "reasoning effort"),
         ("/skillimport", "", "open the skills folder (add/remove/move skills)"),
+        ("/skill:<name>", "[instruction]", "cast a saved skill — trailing text is sent as your instruction"),
         ("/market", "", "recommended models — VRAM fit + one-key download"),
         ("/providers", "", "connect cloud API keys — OpenRouter, Anthropic, OpenAI, …"),
         ("/voice", "", "speech-to-text status (hold ctrl+E to talk)"),
@@ -1243,8 +1244,12 @@ class ChatScreen(Screen):
             else:
                 sess = app.session
                 if sess is not None:
+                    # R3 U4: the trailing instruction after /skill:name travels
+                    # with the cast — same additive contract as the GUI's `args`.
+                    instruction = arg.strip()
                     sess.add_message("user", f"<skill name=\"{name}\">\n{body}\n</skill>\n"
-                                   "Apply this skill to my requests in this chat.")
+                                   "Apply this skill to my requests in this chat."
+                                   + (f"\n{instruction}" if instruction else ""))
                     app.svc.sessions.save(sess)
                     app.save_state = True
                 self._sysline(f"skill cast · {name} — the agent will follow it from here", "system")

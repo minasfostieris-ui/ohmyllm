@@ -44,8 +44,8 @@ All notable changes to OhMyLLM are documented here. Format follows
 - **Corrupt-trash restore safety**: restoring a session with corrupt trash no longer destroys data.
 
 ### Verified
-- Integration gate: 916 passed / 0 failed / 5 deselected under guarded isolation (`scripts/verify_isolated.py`). The 5 standing subprocess exclusions: `test_run_command_output_and_timeout`, `test_shell_uses_resolved_cwd_sanitized_environment_and_output_cap`, `test_shell_timeout_terminates_descendants`, `test_shell_cleans_descendants_after_leader_exits`, `test_recorder_stop_is_fast`.
-- GUI headless check: 178/178 at 420/1280/1720/2560 px, Chromium sandbox retained at every width (R1 regression flows and hidden tab-strip scrollbar assertions included). mypy: 83 files clean. ruff clean. e2e check OK. TUI smoke green at 80x24, 100x30, 140x46. cargo fmt/check/test green. L3 deep pre-push security review: 0 findings.
+- Integration gate: 1190 passed / 0 failed / 5 deselected under guarded isolation (`scripts/verify_isolated.py`). The 5 standing subprocess exclusions: `test_run_command_output_and_timeout`, `test_shell_uses_resolved_cwd_sanitized_environment_and_output_cap`, `test_shell_timeout_terminates_descendants`, `test_shell_cleans_descendants_after_leader_exits`, `test_recorder_stop_is_fast`.
+- GUI headless check: 298/298 at 320/420/768/1280/1720/2560 px, Chromium sandbox retained at every width (R1 regression flows, hidden tab-strip scrollbar assertions, and the R3 flows included: id-aware approval routing with an inert consent background, live-surface WCAG AA contrast on bg3/acc-dim, `/skill` instruction cast, case-insensitive `/mode` `/tone` `/yolo`, rejected-send hero restore, and narrow sidebar focus restore). Every check is a real assertion — no hardcoded passes — and the closing banner reports the numeric pass/fail/total. mypy: 83 files clean. ruff clean. e2e check OK. TUI smoke green at 80x24, 100x30, 140x46. cargo fmt/check/test green. L3 deep pre-push security review: 0 findings.
 
 ### Earlier in this cycle
 

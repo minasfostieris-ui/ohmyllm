@@ -12,7 +12,7 @@
   --line2: #2b353f;
   --fg: #d5dce2;
   --dim: #94a2ad;
-  --mute: #74838f; /* ≥4.5:1 on bg0/bg1/bg2 only — text on bg3 surfaces uses --dim (U9) */
+  --mute: #74838f; /* ≥4.5:1 on bg0/bg1/bg2 only — text on bg3 or acc-dim surfaces uses --dim (U9, R3 U2) */
   --acc: #7ac79f;
   --acc-dim: rgba(122, 199, 159, .14);
   --acc-ink: #0a0c0e;
@@ -276,8 +276,10 @@ code { font: 12.5px var(--mono); background: var(--bg3); border: 1px solid var(-
 .sb-row .title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; color: var(--fg); }
 .sb-row .pin { color: var(--acc); font-size: 10px; flex: 0 0 auto; }
 .sb-row .meta { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-top: 2px; }
-.sb-row .prev { flex: 1; min-width: 0; margin: 0; font-size: 11.5px; color: var(--mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sb-row time { font: 10.5px var(--mono); color: var(--mute); flex: 0 0 auto; }
+/* R3 U2: the active row sits on bg3, where --mute measures 4.36:1 — --dim
+   keeps the preview/timestamp at 6.50:1 (WCAG AA 4.5:1). */
+.sb-row .prev { flex: 1; min-width: 0; margin: 0; font-size: 11.5px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sb-row time { font: 10.5px var(--mono); color: var(--dim); flex: 0 0 auto; }
 /* Actions live in a reserved in-flow slot, never over the title hit area.
    visibility (not display) keeps the slot sized, so hover/focus reveal
    cannot shift layout or intercept a click aimed at the title. */
@@ -645,7 +647,7 @@ progress { width: 100%; margin-top: 10px; accent-color: var(--acc); }
 .market-seg { display: flex; gap: 6px; }
 .chip { border: 1px solid var(--line); border-radius: 999px; padding: 4px 12px; font: 12px var(--mono); color: var(--dim); }
 .chip.active { color: var(--acc); border-color: rgba(122, 199, 159, .4); background: var(--acc-dim); }
-.chip .cnt { margin-left: 6px; color: var(--mute); }
+.chip .cnt { margin-left: 6px; color: var(--dim); } /* R3 U2: acc-dim composite needs --dim (5.3:1+), --mute fails at 3.6-4.0:1 */
 .market-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 10px; align-items: stretch; } /* U10: min() keeps the track inside narrow (<280px) containers */
 .market-card { border: 1px solid var(--line); border-radius: 10px; background: var(--bg1); padding: 12px; cursor: pointer; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .market-card:hover { border-color: var(--line2); background: var(--bg2); }

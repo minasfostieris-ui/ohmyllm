@@ -295,20 +295,36 @@ class PromptBuilder:
 
 
 def trim_messages(history: list[dict], budget_chars: int) -> list[dict]:
-    """Keep the newest messages that fit; collapse the rest into a note."""
+    """Keep the newest messages that fit; collapse the rest into a note.
+
+    Tool-aware (R3 C1): an assistant tool_calls anchor and its tool results
+    are trimmed as ONE atomic group — dropping the anchor while keeping a
+    tool message orphans it on the OpenAI wire (hard 400)."""
     total = sum(len(str(m.get("content", ""))) for m in history)
     if total <= budget_chars:
         return history
-    kept: list[dict] = []
+    groups: list[list[dict]] = []
+    for m in history:
+        anchor = groups[-1][0] if groups else None
+        if (m.get("role") == "tool" and anchor is not None
+                and anchor.get("role") == "assistant" and anchor.get("tool_calls")):
+            groups[-1].append(m)
+        else:
+            groups.append([m])
+    kept_groups: list[list[dict]] = []
     used = 0
-    for m in reversed(history):
-        size = len(str(m.get("content", "")))
-        if used + size > budget_chars and kept:
+    for g in reversed(groups):
+        size = sum(len(str(m.get("content", ""))) for m in g)
+        if used + size > budget_chars and kept_groups:
             break
-        kept.append(m)
+        kept_groups.append(g)
         used += size
+    kept = [m for g in reversed(kept_groups) for m in g]
     dropped = len(history) - len(kept)
-    kept.reverse()
+    # a tool message whose anchor group did not survive is still an orphan
+    while kept and kept[0].get("role") == "tool":
+        kept.pop(0)
+        dropped += 1
     if kept and kept[0].get("role") == "system":
         kept = kept[1:]
         dropped += 1

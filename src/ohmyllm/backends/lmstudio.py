@@ -280,13 +280,24 @@ class LMStudioBackend(BaseBackend):
         if getattr(self, "_v0_missing", False):
             return None, ""
         async with self._client(self.config.lmstudio.base_url, timeout=10.0) as c:
-            resp = await c.get("/api/v0/models")
+            try:
+                resp = await c.get("/api/v0/models")
+            except httpx.HTTPError as exc:
+                # R3 C6: the BackendError contract — a raw HTTPStatusError/
+                # ConnectError here escapes runtime's BackendError-only catch.
+                raise BackendError(f"LM Studio model-state request failed: {exc}") from exc
             if resp.status_code in (404, 405):
                 # D6: older LM Studio builds have no v0 admin API — remember
                 # it and degrade to v1 (which auto-loads on first chat).
                 self._v0_missing = True
                 return None, ""
-            resp.raise_for_status()
+            try:
+                resp.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise BackendError(
+                    f"LM Studio model-state check failed (HTTP {resp.status_code}): "
+                    f"{resp.text[:200]}"
+                ) from exc
             for m in resp.json().get("data") or []:
                 if m.get("id") == model or m.get("key") == model:
                     return str(m.get("key") or m.get("id")), str(m.get("state") or "")
@@ -354,10 +365,14 @@ class LMStudioBackend(BaseBackend):
                 args += ["--gpu", "off"]
             if gen.num_ctx:
                 args += ["--context-length", str(gen.num_ctx)]
-            proc = await asyncio.to_thread(
-                subprocess.run, args, capture_output=True, text=True, timeout=600,
-                env=sanitized_environment(),
-            )
+            try:
+                proc = await asyncio.to_thread(
+                    subprocess.run, args, capture_output=True, text=True, timeout=600,
+                    env=sanitized_environment(),
+                )
+            except (OSError, subprocess.SubprocessError) as exc:
+                # R3 C6: a hung/missing lms CLI must surface as BackendError
+                raise BackendError(f"LM Studio load CLI failed for {model!r}: {exc}") from exc
             if proc.returncode == 0:
                 loaded_via_cli = True
             elif "unknown option" not in (proc.stderr or proc.stdout).lower():
@@ -390,10 +405,13 @@ class LMStudioBackend(BaseBackend):
                         f"{model}`"
                     )
                 import subprocess
-                proc = await asyncio.to_thread(
-                    subprocess.run, [cli, "load", model],
-                    capture_output=True, text=True, timeout=600, env=sanitized_environment(),
-                )
+                try:
+                    proc = await asyncio.to_thread(
+                        subprocess.run, [cli, "load", model],
+                        capture_output=True, text=True, timeout=600, env=sanitized_environment(),
+                    )
+                except (OSError, subprocess.SubprocessError) as exc:
+                    raise BackendError(f"LM Studio load CLI failed for {model!r}: {exc}") from exc
                 if proc.returncode != 0:
                     raise BackendError(
                         f"LM Studio failed to load {model!r}: "
@@ -454,7 +472,7 @@ class LMStudioBackend(BaseBackend):
         if tools and native_tools:
             body["tools"] = tools
             body["tool_choice"] = "auto"
-        pending_tools: dict[int, dict[str, Any]] = {}
+        pending_tools: dict[Any, dict[str, Any]] = {}
         # reasoning models (gpt-oss family) stream their text into delta.reasoning
         # and may leave delta.content empty — buffer it as a fallback answer.
         # Models whose servers do NOT parse inline tags (raw llama.cpp, vLLM
@@ -465,7 +483,8 @@ class LMStudioBackend(BaseBackend):
         sp = ThinkSplitter()
         reasoning_parts: list[str] = []
         content_seen = False
-        prog_seen: set[int] = set()
+        prog_seen: set[Any] = set()
+        last_tool_key: Any = None
         usage_stash: dict[str, Any] | None = None  # usage-only trailer arrives before [DONE]
         # servers that validate reasoning params strictly (some LM Studio
         # builds reject xhigh for template-controlled models) get ONE graceful
@@ -530,17 +549,33 @@ class LMStudioBackend(BaseBackend):
                             delta = choice.get("delta") or {}
                             finish = choice.get("finish_reason")
                             for tc in delta.get("tool_calls") or []:
-                                idx = tc.get("index", 0)
-                                slot = pending_tools.setdefault(idx, {"name": "", "args": ""})
+                                # R3 C16: index-less deltas must key by server
+                                # id (mirror cloud.py) — defaulting everything
+                                # to index 0 merges distinct calls, corrupts
+                                # args and drops one of the tools.
+                                raw_idx = tc.get("index")
+                                tid = str(tc.get("id") or "")
+                                if isinstance(raw_idx, int) and not isinstance(raw_idx, bool):
+                                    key: Any = raw_idx
+                                elif tid:
+                                    key = tid
+                                elif last_tool_key is not None:
+                                    key = last_tool_key  # continuation fragment
+                                else:
+                                    key = 0
+                                slot = pending_tools.setdefault(key, {"name": "", "args": "", "id": ""})
+                                if tid and not slot["id"]:
+                                    slot["id"] = tid
+                                last_tool_key = key
                                 fn = tc.get("function") or {}
                                 if fn.get("name"):
                                     slot["name"] = fn["name"]
                                 if fn.get("arguments"):
                                     slot["args"] += fn["arguments"]
                                     n = len(slot["args"])
-                                    crossed = idx not in prog_seen or n // 64 > (n - len(fn["arguments"])) // 64
+                                    crossed = key not in prog_seen or n // 64 > (n - len(fn["arguments"])) // 64
                                     if slot["name"] and crossed:
-                                        prog_seen.add(idx)
+                                        prog_seen.add(key)
                                         ct = ""
                                         cm = _CONTENT_START_RX.search(slot["args"])
                                         if cm:
@@ -596,12 +631,20 @@ class LMStudioBackend(BaseBackend):
             except httpx.HTTPError as exc:
                 raise BackendError(f"LM Studio request error: {exc}") from exc
             except BackendError as exc:
-                if _attempt == 0 and ("reasoning" in str(exc).lower() or "effort" in str(exc).lower()) \
+                # R3 C17: retry ONLY when nothing was streamed yet — a
+                # mid-stream error after content/reasoning/tool emission
+                # would re-yield the same text and duplicate the answer.
+                streamed = content_seen or bool(reasoning_parts) or bool(pending_tools)
+                if _attempt == 0 and not streamed \
+                        and ("reasoning" in str(exc).lower() or "effort" in str(exc).lower()) \
                         and ("reasoning_effort" in body or "reasoning" in body):
                     body.pop("reasoning_effort", None)
                     body.pop("reasoning", None)
+                    sp = ThinkSplitter()
+                    usage_stash = None
                     continue
-                if _attempt == 0 and any(k in str(exc).lower() for k in ("image", "vision", "multimodal")) \
+                if _attempt == 0 and not streamed \
+                        and any(k in str(exc).lower() for k in ("image", "vision", "multimodal")) \
                         and any(not isinstance(m.get("content"), str) for m in body.get("messages", [])):
                     # model/server has no vision path — resend as text-only
                     body["messages"] = [
@@ -609,6 +652,8 @@ class LMStudioBackend(BaseBackend):
                                                   if isinstance(x, dict) and x.get("type") == "text").strip() or "[image]"}
                         if not isinstance(m.get("content"), str) else m
                         for m in body["messages"]]
+                    sp = ThinkSplitter()
+                    usage_stash = None
                     continue
                 raise
 
@@ -620,17 +665,19 @@ class LMStudioBackend(BaseBackend):
         )
 
 
-def _finish_tools(pending: dict[int, dict[str, Any]]) -> list[dict[str, Any]] | None:
+def _finish_tools(pending: dict[Any, dict[str, Any]]) -> list[dict[str, Any]] | None:
     if not pending:
         return None
     calls: list[dict[str, Any]] = []
-    for idx in sorted(pending):
+    for idx in sorted(pending, key=lambda k: (0, k, "") if isinstance(k, int) else (1, 0, str(k))):
         raw = pending[idx]
         try:
             args = json.loads(raw["args"] or "{}") if raw["args"] else {}
         except json.JSONDecodeError:
             args = {"_raw": raw["args"]}
-        calls.append({"id": f"call_{idx}", "type": "function", "function": {"name": raw["name"], "arguments": args}})
+        # R3 C16: preserve the server id; synthesize only when absent
+        calls.append({"id": raw.get("id") or f"call_{idx}", "type": "function",
+                      "function": {"name": raw["name"], "arguments": args}})
     return calls
 
 

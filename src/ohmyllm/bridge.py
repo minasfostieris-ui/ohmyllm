@@ -76,6 +76,7 @@ _BODY_FIELDS = {
                                       "agent_loop", "tone", "custom_tones", "op_mode", "yolo", "confirm"},
     ("POST", "/api/soul"): {"action", "text", "backup", "section"},
     ("POST", "/api/chats"): {"first_message"},
+    ("POST", "/api/skills/cast"): {"name", "session", "args"},
     ("POST", "/api/shutdown"): set(),
     ("POST", "/api/pull"): {"backend", "name"},
     ("POST", "/api/steer"): {"text"},
@@ -431,6 +432,8 @@ class Handler(BaseHTTPRequestHandler):
                      "backup": (str, 255), "section": (str, 200)}
         elif path == "/api/chats":
             rules = {"first_message": (str, _MAX_MESSAGE_CHARS)}
+        elif path == "/api/skills/cast":
+            rules = {"name": (str, 128), "session": (str, 128), "args": (str, _MAX_MESSAGE_CHARS)}
         elif path == "/api/pull":
             rules = {"backend": (str, 32), "name": (str, 512)}
         elif path == "/api/steer":
@@ -446,6 +449,12 @@ class Handler(BaseHTTPRequestHandler):
             if rule is None:
                 continue
             expected, max_chars = rule
+            if expected is float and type(value) is int:
+                # R3 C13: JSON has one number type — the GUI's parseFloat
+                # sends whole numbers as ints; accept them for float fields
+                # (bool stays rejected: type(True) is bool, not int).
+                value = float(value)
+                body[key] = value
             if type(value) is not expected:
                 raise RequestBodyError(f"{key} must be a {expected.__name__}")
             if max_chars is not None and type(value) is str and len(value) > max_chars:
@@ -578,9 +587,15 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/soul":
                 return self._soul(body)
             if path == "/api/chats":
-                sess = self.state.svc.new_session(body.get("first_message", ""))
-                self.state.svc.sessions.save(sess)
-                self.state.session_id = sess.id
+                with self.state.turn_lock:
+                    if self.state.busy:
+                        # R3 C4: swapping the active chat mid-turn lets messages
+                        # addressed to the NEW chat inject into the OLD running
+                        # turn — the interjection guard compares the swapped id.
+                        return self._json(409, {"error": "turn running — finish or cancel it before starting a new chat"})
+                    sess = self.state.svc.new_session(body.get("first_message", ""))
+                    self.state.svc.sessions.save(sess)
+                    self.state.session_id = sess.id
                 return self._json(200, sess.to_dict())
             if path.startswith("/api/chats/") and path.endswith("/export"):
                 sid = path.split("/")[3]
@@ -781,7 +796,11 @@ class Handler(BaseHTTPRequestHandler):
         name = str(body.get("model", ""))
         updated = self.state.svc.config.model_copy(deep=True)
         section = getattr(updated, backend, None)
-        if section is None or not name:
+        if section is None or not hasattr(section, "default_model"):
+            # R3 C7: generation/safety/ui/... are config sections, not
+            # backends — a clean 400, not an AttributeError 500.
+            return self._json(400, {"error": f"unknown backend {backend!r}"})
+        if not name:
             return self._json(400, {"error": "bad request"})
         section.default_model = name
         if backend != updated.default_backend.value:
@@ -1036,11 +1055,15 @@ class Handler(BaseHTTPRequestHandler):
 
         action = str(body.get("action") or "")
         if action == "start":
-            if self.state.talk is not None and self.state.talk["rec"].running:
-                return 200, {"ok": True, "already": True}
+            # R3 C18: claim under the lock — two concurrent starts must not
+            # both pass the check and spawn two recorders (one leaked).
+            with self.state.turn_lock:
+                if (self.state.talk is not None and self.state.talk["rec"].running) \
+                        or self.state.talk_pending:
+                    return 200, {"ok": True, "already": True}
+                self.state.talk_pending = True
             wav = V.voice_dir() / f"gui-hold-{int(time.time() * 1000)}.wav"
             rec = V.Recorder(wav)
-            self.state.talk_pending = True
             try:
                 err = await asyncio.to_thread(rec.start)
             finally:
@@ -1120,28 +1143,31 @@ class Handler(BaseHTTPRequestHandler):
         if entry is None:
             return self._json(404, {"error": f"no market entry {mid!r}"})
         st = self.state
-        if getattr(st, "market_thread", None) and st.market_thread.is_alive():
-            return self._json(409, {"error": "a download is already running"})
-        state = DownloadState(entry=entry)
-        st.market_state = state
-        st.market_cancel = False
+        # R3 C18: check-then-set under the lock — concurrent downloads must
+        # not both pass the check and orphan the first thread/state.
+        with st.turn_lock:
+            if getattr(st, "market_thread", None) and st.market_thread.is_alive():
+                return self._json(409, {"error": "a download is already running"})
+            state = DownloadState(entry=entry)
+            st.market_state = state
+            st.market_cancel = False
 
-        def run() -> None:
-            import asyncio as _a
+            def run() -> None:
+                import asyncio as _a
 
-            from .market import download as dl
+                from .market import download as dl
 
-            try:
-                _a.run(dl(entry, state, cancel=lambda: st.market_cancel))
-            except Exception as exc:  # noqa: BLE001 — never leave market_thread set
-                state.error = state.error or f"{type(exc).__name__}: {exc}"
-                state.done = True
-            finally:
-                st.market_thread = None
+                try:
+                    _a.run(dl(entry, state, cancel=lambda: st.market_cancel))
+                except Exception as exc:  # noqa: BLE001 — never leave market_thread set
+                    state.error = state.error or f"{type(exc).__name__}: {exc}"
+                    state.done = True
+                finally:
+                    st.market_thread = None
 
-        t = threading.Thread(target=run, daemon=True)
-        st.market_thread = t
-        t.start()
+            t = threading.Thread(target=run, daemon=True)
+            st.market_thread = t
+            t.start()
         self._json(200, {"ok": True, "started": entry.title})
 
     def _market_progress(self) -> None:
@@ -1168,8 +1194,14 @@ class Handler(BaseHTTPRequestHandler):
         if content is None:
             return self._json(404, {"error": f"no skill {name!r}",
                                     "skills": [sk.name for sk in svc.skills.list()]})
-        sess.add_message("user", f'<skill name="{name}">\n{content}\n</skill>\n'
-                         "Apply this skill to my requests in this chat.")
+        # U4: additive optional "args" — the trailing instruction typed
+        # after /skill:name; empty keeps the legacy message byte-identical.
+        args = str(body.get("args") or "").strip()
+        msg = (f'<skill name="{name}">\n{content}\n</skill>\n'
+               "Apply this skill to my requests in this chat.")
+        if args:
+            msg += f"\n\nAdditional instruction from the user: {args}"
+        sess.add_message("user", msg)
         svc.sessions.save(sess)
         self._json(200, {"ok": True, "cast": name})
 
@@ -1343,8 +1375,12 @@ class Handler(BaseHTTPRequestHandler):
         if len(text) > _MAX_MESSAGE_CHARS:
             return self._json(400, {"error": "message is too large"})
         with self.state.turn_lock:
+            target = body.get("session")
+            if target and self.state.svc.sessions.get(target) is None:
+                # R3 C19: a stale/racy client id must error, never silently
+                # cross-post into whatever chat happens to be current.
+                return self._json(404, {"error": "unknown session"})
             if self.state.busy:
-                target = body.get("session")
                 if target and target != self.state.session_id:
                     # a message aimed at another chat must never be injected
                     # into the running turn's session

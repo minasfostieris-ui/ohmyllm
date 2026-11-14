@@ -42,8 +42,16 @@ def _coerce(value: Any, spec: ParamSpec) -> tuple[Any, str | None]:
     if want == "boolean":
         if isinstance(value, bool):
             return value, None
-        if isinstance(value, str) and value.lower() in ("true", "false", "1", "0", "yes", "no"):
-            return value.lower() in ("true", "1", "yes"), None
+        if isinstance(value, str):
+            # R3 C21: bool("off") is True — a semantic inversion on a common
+            # word. Recognize the full on/off vocabulary; reject anything
+            # else instead of guessing via truthiness.
+            v = value.strip().lower()
+            if v in ("true", "1", "yes", "on", "enabled"):
+                return True, None
+            if v in ("false", "0", "no", "off", "disabled", "none", "null", "nope"):
+                return False, None
+            return None, f"parameter '{spec.name}' must be a boolean, got {value!r}"
         return bool(value), None
     if want == "object":
         if isinstance(value, dict):

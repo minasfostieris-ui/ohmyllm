@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from .. import paths
-from ..secureio import append_private, canonical_json, private_mkdir
+from ..secureio import UnsafePathError, append_private, canonical_json, private_mkdir
 from .redact import redact_secrets, redact_value
 
 _MAX_RECORD_BYTES = 32_768
@@ -119,8 +119,11 @@ class AuditLogger:
                 self._rotate_if_needed(len(record.encode("utf-8")))
                 append_private(self.path, record, max_bytes=_MAX_RECORD_BYTES)
             self.last_error = None
-        except OSError as exc:
-            # Agent execution continues, but health/status surfaces the loss of auditability.
+        except (OSError, UnsafePathError) as exc:
+            # Agent execution continues, but health/status surfaces the loss of
+            # auditability. R3 S5: a symlinked/hostile state dir raises
+            # UnsafePathError (a ValueError) from private_mkdir — it must
+            # degrade to last_error exactly like OSError, never escape log().
             self.last_error = f"{type(exc).__name__}: {exc}"[:300]
 
     def _rotate_if_needed(self, incoming: int = 0) -> None:

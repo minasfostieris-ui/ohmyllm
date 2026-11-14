@@ -81,7 +81,8 @@ Drop a folder with a `SKILL.md` (frontmatter + instructions) and a
 
 Skills are plain files you own and version; `references/` keeps long
 checklists out of the prompt until the skill needs them. `/skillimport`
-opens the folder.
+opens the folder. Anything after `/skill:<name>` is sent along with the cast
+as your instruction — in the TUI and in the GUI console alike.
 
 ## 7. Supervising long runs from herdr/tmux
 

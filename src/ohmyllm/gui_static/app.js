@@ -410,6 +410,26 @@ function focusables(m) {
   return Array.from(m.querySelectorAll('button, input, textarea, select, a[href], [tabindex="0"]'))
     .filter((x) => !x.disabled && !x.hidden && !x.closest("[hidden]") && x.getClientRects().length);
 }
+/* R3 U1 defense-in-depth: while the consent modal is up, the surfaces behind
+   the scrim (chat stream + sidebar) go inert, so screen-reader or programmatic
+   activation cannot reach an inline approval card and decide a request the
+   user never saw. The prior state is captured and restored on close. */
+function syncApprovalInert() {
+  const on = !$("#approval-modal").hidden;
+  ["#main", "#sidebar"].forEach((sel) => {
+    const el = $(sel);
+    if (!el) return;
+    if (on) {
+      if (el.dataset.apInert === undefined) el.dataset.apInert = el.inert ? "1" : "0";
+      el.inert = true;
+      el.setAttribute("aria-hidden", "true");
+    } else if (el.dataset.apInert !== undefined) {
+      el.inert = el.dataset.apInert === "1";
+      el.setAttribute("aria-hidden", String(el.inert));
+      delete el.dataset.apInert;
+    }
+  });
+}
 function openModal(sel, focusSel) {
   const m = typeof sel === "string" ? $(sel) : sel;
   if (!m || modalStack.some((e) => e.el === m)) return;
@@ -419,14 +439,18 @@ function openModal(sel, focusSel) {
   scrim.hidden = false;
   scrim.style.zIndex = 59 + modalStack.length * 2;
   m.hidden = false;
+  if (m.id === "approval-modal") syncApprovalInert();
   (focusSel ? m.querySelector(focusSel) : focusables(m)[0])?.focus();
 }
 function closeModal(sel) {
   const m = typeof sel === "string" ? $(sel) : sel;
   const i = modalStack.findIndex((e) => e.el === m);
-  if (i < 0) { m.hidden = true; return; }
+  if (i < 0) { m.hidden = true; if (m.id === "approval-modal") syncApprovalInert(); return; }
   const [entry] = modalStack.splice(i, 1);
   m.hidden = true;
+  // R3 U1: release the background BEFORE focus is restored — an inert subtree
+  // refuses focus, which would strand the user on <body>.
+  if (m.id === "approval-modal") syncApprovalInert();
   const top = modalStack[modalStack.length - 1];
   const scrim = $("#scrim");
   if (top) { top.el.style.zIndex = 60 + modalStack.length * 2; scrim.style.zIndex = 59 + modalStack.length * 2; scrim.hidden = false; }
@@ -500,7 +524,7 @@ const TEACH = [
   ["@diff · @staged", "review working-tree or staged changes"],
   ["/steer note", "redirect a turn while it is running"],
   ["/mode name", "change the permission mode (you only)"],
-  ["/skill:name", "cast a saved skill into this chat"],
+  ["/skill:name instruction", "cast a saved skill — your instruction goes with it"],
   ["/remember fact", "write a durable memory to soul.md"],
 ];
 function teachHtml() { return `<ul class="teach">${TEACH.map(([c, d]) => `<li><code>${esc(c)}</code><span>${esc(d)}</span></li>`).join("")}</ul>`; }
@@ -962,7 +986,9 @@ function queueApproval(d) {
 }
 $("#stream").addEventListener("click", (e) => {
   const b = e.target.closest(".app-card button[data-dec]");
-  if (b) answerApproval(b.dataset.dec);
+  // R3 U1: decide the CLICKED card, never the queue head — the request id
+  // travels with the button so consent matches what the user acted on.
+  if (b) answerApproval(b.dataset.dec, b.closest(".app-card").dataset.aid);
 });
 function showApproval(d) {
   $("#ap-risk").textContent = `${(d.level || "low").toUpperCase()} · risk ${d.risk ?? "?"}`;
@@ -1000,13 +1026,17 @@ function markCard(aid, cls, text) {
   card.querySelectorAll("button").forEach((b) => (b.disabled = true));
   card.querySelector(".state").textContent = text;
 }
-function closeApproval() {
-  closeModal("#approval-modal");
-  state.approvalQueue.shift();
+function closeApproval(aid) {
+  // R3 U1: drop the decided request BY ID — shift() removed the head even when
+  // an inline card further down the queue was the one answered.
+  const i = aid ? state.approvalQueue.findIndex((x) => x.id === aid) : 0;
+  if (i >= 0) state.approvalQueue.splice(i, 1);
   if (state.approvalQueue.length) showApproval(state.approvalQueue[0]);
+  else closeModal("#approval-modal");
 }
-async function answerApproval(decision) {
-  const d = state.approvalQueue[0];
+async function answerApproval(decision, aid) {
+  // R3 U1: an explicit card id wins; the modal buttons keep the head fallback.
+  const d = aid ? state.approvalQueue.find((x) => x.id === aid) : state.approvalQueue[0];
   if (!d || state.answeringApproval) return; // duplicate-decision guard
   if (d.tool === "run_command" && ["session", "always"].includes(decision)) return;
   state.answeringApproval = true;
@@ -1014,13 +1044,13 @@ async function answerApproval(decision) {
   try {
     await post(`/api/approval/${d.id}`, { decision });
     markCard(d.id, "decided", decision === "deny" ? "denied by you" : `allowed · ${decision}`);
-    closeApproval();
+    closeApproval(d.id);
   } catch (e) {
     if (e.status === 404) {
       // fail-closed: the bridge no longer holds this approval → treat as denied
       markCard(d.id, "expired", "expired — denied");
       toast("Approval expired — denied (fail-closed)", "warn");
-      closeApproval();
+      closeApproval(d.id);
     } else {
       toast(`Approval not confirmed: ${e.message}`, "err");
     }
@@ -1080,7 +1110,7 @@ const SLASHES = [
   { cmd: "/build", desc: "op mode: build (full agent)" },
   { cmd: "/remember", desc: "write a durable memory", arg: true },
   { cmd: "/steer", desc: "redirect the running turn", arg: true },
-  { cmd: "/skill:", desc: "cast a saved skill", arg: true },
+  { cmd: "/skill:", desc: "cast a saved skill + instruction", arg: true },
   { cmd: "/soul", desc: "edit soul.md" },
   { cmd: "/doctor", desc: "run health checks" },
   { cmd: "/settings", desc: "open settings" },
@@ -1245,7 +1275,12 @@ async function sendNormal(text, memoryDirective) {
     if (!state.approvalQueue.length) $("#run-state").textContent = "Ready";
     renderTabs();
   }
-  if (!accepted && !partial) { userNode.remove(); restoreDraft(text); } // rejected → draft survives
+  // R3 U10: a rejected send must not leave a blank stream — restore the hero
+  if (!accepted && !partial) {
+    userNode.remove();
+    if (!$("#stream").querySelector(".msg")) emptyState();
+    restoreDraft(text);
+  } // rejected → draft survives
   else { refreshStatus(); renderSidebar(); }
 }
 let steerTimer = null;
@@ -1299,7 +1334,8 @@ async function handleSlash(text) {
     switch (cmd) {
       case "/help": clear(); switchView("help"); return;
       case "/new": clear(); newChat(); return;
-      case "/mode": clear(); setModeUi(arg || null); return;
+      // R3 U5: case parity with plain — `/mode SAFE` applies, not the chooser
+      case "/mode": clear(); setModeUi((arg || "").toLowerCase() || null); return;
       case "/models": clear(); switchView("models"); return;
       case "/model":
         clear();
@@ -1336,8 +1372,10 @@ async function handleSlash(text) {
         const opts = ["default", "ruthless", "chill", "friendly", "professional", "terse"]
           .concat(Object.keys((state.config && state.config.agent && state.config.agent.custom_tones) || {}).sort());
         if (!arg) { toast("usage: /tone " + opts.join("|"), "warn"); keep(); return; }
-        if (!opts.includes(arg)) { toast("unknown tone — " + opts.join("|"), "warn"); keep(); return; }
-        await post("/api/config/agent", { tone: arg, confirm: true }); toast(`tone: ${arg}`); refreshStatus(); return;
+        // R3 U6: case parity with plain — normalize once, validate and POST it
+        const want = arg.toLowerCase();
+        if (!opts.includes(want)) { toast("unknown tone — " + opts.join("|"), "warn"); keep(); return; }
+        await post("/api/config/agent", { tone: want, confirm: true }); toast(`tone: ${want}`); refreshStatus(); return;
       }
       case "/agentloop": {
         clear();
@@ -1359,11 +1397,15 @@ async function handleSlash(text) {
       case "/market": clear(); switchView("market"); return;
       case "/yolo": {
         clear();
-        const cur = !!state.yolo;
-        const want = arg === "on" ? true : arg === "off" ? false : arg ? null : !cur;
+        // R3 U3: the server is the truth — state.yolo is never synced, so a bare
+        // /yolo re-armed an already-ON bridge instead of disarming it.
+        const cur = !!(state.status && state.status.yolo);
+        const a = arg.toLowerCase();
+        const want = a === "on" ? true : a === "off" ? false : a ? null : !cur;
         if (want == null) { toast("usage: /yolo [on|off]", "warn"); keep(); return; }
         await post("/api/config/agent", { yolo: want, confirm: true });
         state.yolo = want;
+        if (state.status) state.status.yolo = want; // next bare toggle stays honest
         toast(want ? "yolo on — skips approvals except shell, network and mail; disarms at turn end" : "yolo off");
         return;
       }
@@ -1435,7 +1477,9 @@ async function handleSlash(text) {
           clear();
           const name = cmd.slice(7);
           if (!state.session) { toast("start a chat first", "warn"); return; }
-          await post("/api/skills/cast", { name, session: state.session }); toast(`cast skill: ${name}`); renderSidebar(); return;
+          // R3 U4: the trailing instruction travels with the cast (additive args)
+          await post("/api/skills/cast", { name, session: state.session, args: arg });
+          toast(`cast skill: ${name}`); renderSidebar(); return;
         }
         toast(`unknown command ${cmd} — try /help`, "err"); keep();
     }
@@ -2801,6 +2845,9 @@ function setSidebar(open) {
   const sb = $("#sidebar");
   if (narrowMQ.matches) { sb.classList.toggle("open", open); sb.classList.remove("closed"); }
   else { sb.classList.toggle("closed", !open); sb.classList.remove("open"); }
+  // R3 U11: closing must not strand focus on <body> — hand it back to the
+  // toggle BEFORE inert blurs the focused descendant.
+  if (!open && sb.contains(document.activeElement)) $("#btn-sidebar").focus();
   // K7: a closed sidebar must be unreachable — inert drops it from the tab
   // order and the accessibility tree while it sits off-screen.
   sb.inert = !open;

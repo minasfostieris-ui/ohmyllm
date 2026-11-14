@@ -38,7 +38,7 @@ HELP = """\
 `/memory` `/soul` `/doctor` `/settings` `/chats` `/new` `/clear` `/rename <title>` `/delete` `/search <term>`
 `/export [markdown|json]` `/remember <fact>` `/forget <thing>` `/steer <text>` `/gui` `/omlgui` `/quit`
 `/market` `/providers` `/voice` `/mail` `/skillimport` `/onboarding` `/ultrathink [on|off]` `/agentloop [on|off]`
-`/tone [name]` `/chat` `/plan` `/build` `/yolo [on|off]`
+`/tone [name]` `/chat` `/plan` `/build` `/yolo [on|off]` `/skill:<name> [instruction]`
 
 **`/agentloop`** arms a relentless completion loop: the system prompt forbids
 stopping until every requirement is verified with evidence (run it, test it,
@@ -81,6 +81,10 @@ Import OpenCode/Claude-style skill folders: `oml skills import ~/.config/opencod
 Each folder needs a `SKILL.md` (name + description frontmatter). The agent sees the
 index, reads a skill with `skills_read` before working in its domain, and lists them
 with `skills_list`. Imported skills live in `~/.ohmyllm/skills/`.
+
+Cast one into the current chat with `/skill:<name>` — anything after the name is
+sent along as your instruction, e.g. `/skill:release-checklist run it for this repo`
+(the GUI console does the same).
 
 ## GUI console
 The graphical console runs beside this TUI. From any terminal:

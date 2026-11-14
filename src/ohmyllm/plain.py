@@ -50,6 +50,13 @@ class PlainApp:
             def _sigint() -> None:
                 if self._cancel is not None:
                     self._cancel.set()
+                else:
+                    # R3 C11: idle prompt — input() lives in a worker thread,
+                    # so the signal must still be observable instead of a
+                    # swallowed no-op. (Cancelling the input task would leave
+                    # the executor thread blocked on stdin at shutdown.)
+                    self.console.print("\n[dim]Ctrl+C — type /quit (or Ctrl+D) to exit; "
+                                       "chats & memory are saved.[/dim]")
 
             loop.add_signal_handler(signal.SIGINT, _sigint)
         except (NotImplementedError, AttributeError):
@@ -72,7 +79,11 @@ class PlainApp:
                 except Exception as exc:  # a broken command must not kill the REPL
                     self.console.print(f"[red]command failed: {exc}[/red]")
                 continue
-            await self._turn(line)
+            try:
+                await self._turn(line)
+            except Exception as exc:  # R3 C3: an offline backend (BackendError
+                # from _auto_model before the stream try) must not kill the REPL
+                self.console.print(f"[red]turn failed: {exc}[/red]  (try /backend)")
 
     async def _backend_banner(self) -> None:
         be = self.svc.backend()
@@ -458,7 +469,7 @@ class PlainApp:
 
     def _print_help(self) -> None:
         self.console.print(Panel(
-            "/help /model /backend /mode /soul /memory [edit|forget …] /doctor /settings /agentloop /tone\n"
+            "/help /model /backend /mode /soul /memory [edit|forget …] /remember <fact> /doctor /settings /agentloop /tone\n"
             "/chat /plan /build — operation modes · /yolo — next prompt auto-approves routine calls; shell/network/mail still ask\n"
             "/chats [open N] /new /rename <title> /delete [id] /export [json|markdown] /clear /quit\n"
             "Plain mode uses the SAME permission engine as the TUI — blocked is blocked.",

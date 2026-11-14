@@ -27,6 +27,102 @@ from .normalize import (
 )
 from .risk import RiskScorer, _basename, level_for
 
+#: In-place write verbs whose destinations bypass redirect detection (S2/S2g).
+_WRITE_VERBS = frozenset({"sed", "tee", "cp", "mv", "ln", "install", "dd"})
+
+
+def _quote_segments(text: str) -> list[str] | None:
+    """Split on ``; & |`` OUTSIDE quotes (shlex-style quote state: single
+    quotes literal, double quotes honor backslash escapes, backslash escapes
+    outside quotes). Returns None when a quote/escape is left unclosed —
+    callers fail closed for write verbs (task #71)."""
+    segs: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    escaped = False
+    for ch in text:
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            continue
+        if quote == "'":
+            buf.append(ch)
+            if ch == "'":
+                quote = None
+            continue
+        if ch == "\\":
+            buf.append(ch)
+            escaped = True
+            continue
+        if quote == '"':
+            buf.append(ch)
+            if ch == '"':
+                quote = None
+            continue
+        if ch in "'\"":
+            quote = ch
+            buf.append(ch)
+            continue
+        if ch in ";&|":
+            segs.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    if quote is not None or escaped:
+        return None
+    segs.append("".join(buf))
+    return segs
+
+
+def _quote_words(text: str) -> list[tuple[str, int]] | None:
+    """shlex-style words with end offsets (posix semantics: single quotes
+    literal, double quotes honor backslash escapes, backslash escapes outside
+    quotes). Offsets let callers recover the RAW remainder after a word, so
+    sudo/doas payloads keep their quoting. None when unclosed (task #71)."""
+    words: list[tuple[str, int]] = []
+    buf: list[str] = []
+    quote: str | None = None
+    escaped = False
+    in_word = False
+    for i, ch in enumerate(text):
+        if escaped:
+            buf.append(ch)
+            escaped = False
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            else:
+                buf.append(ch)
+            continue
+        if ch == "\\":
+            escaped = True
+            in_word = True
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            else:
+                buf.append(ch)
+            continue
+        if ch in "'\"":
+            quote = ch
+            in_word = True
+            continue
+        if ch.isspace():
+            if in_word:
+                words.append(("".join(buf), i))
+                buf = []
+                in_word = False
+            continue
+        buf.append(ch)
+        in_word = True
+    if quote is not None or escaped:
+        return None
+    if in_word:
+        words.append(("".join(buf), len(text)))
+    return words
+
 
 class ToolClass(StrEnum):
     READ = "read"
@@ -263,16 +359,25 @@ class PolicyEngine:
     _CATASTROPHIC_RULES: tuple[tuple[frozenset[str], str], ...] = (
         (frozenset({"rm"}),
          r"\brm\s+(-[a-z]*\s+)*-?[a-z]*[rf][a-z]*\s+"
-         r"(/(?:\.{1,2}/)*\.{0,2}(?=[\s'\"*]|$)|\$HOME/?(?=[\s'\"*]|$)|\*(?=[\s'\"*]|$))"),
+         r"(/(?:\.{1,2}/)*\.{0,2}(?=[\s'\"*]|$)"
+         r"|/(?:home|usr|etc|var|boot|opt|srv)/?(?=[\s'\"*]|$)"
+         r"|\$HOME/?(?=[\s'\"*]|$)|\*(?=[\s'\"*]|$))"),
         (frozenset({"rm"}), r"--no-preserve-root"),
         (frozenset({":"}), r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;"),
         (frozenset({"mkfs"}), r"\bmkfs(\.\w+)?\b"),
         (frozenset({"dd"}), r"\bdd\b[^|;]*\bof=/dev/"),
+        (frozenset({"shred", "wipefs"}), r"\b(shred|wipefs)\b"),
         (frozenset({"shutdown", "reboot", "halt", "poweroff"}),
          r"\b(shutdown|reboot|halt|poweroff)\b"),
-        (frozenset({"chmod"}), r"\bchmod\s+-R\s+777\s+/(\s|$)"),
+        # R3 S3: mode/flag order and 0777 spelling must not dodge the gate.
+        (frozenset({"chmod"}),
+         r"\bchmod\s+(?:-[a-z]+\s+)*0?777\s+/(\s|$)"
+         r"|\bchmod\s+0?777\s+(?:-[a-z]+\s+)*/(\s|$)"),
         (frozenset({"chown"}), r"\bchown\s+-R\s+[^ ]+\s+/(\s|$)"),
-        (frozenset({"find"}), r"\bfind\b[^|;]*\s-delete(\s|$)"),
+        # R3 S6: only absolute/system-root find -delete is catastrophic;
+        # workspace-scoped (relative) cleanup stays approvable.
+        (frozenset({"find"}),
+         r"\bfind\s+(?:-{1,2}\S+\s+)*['\"]?(?:/|~|\$HOME\b)[^|;]*\s-delete(\s|$)"),
         (frozenset({"find"}), r"\bfind\b[^|;]*\s-exec\s+rm\b"),
         (frozenset({"find"}), r"\bfind\b[^|;]*\s-execdir\s+rm\b"),
     )
@@ -448,7 +553,11 @@ class PolicyEngine:
                     return Decision(False, False, max(risk, 9), (*reasons, "output redirect into a system location"))
                 if self._redirect_outside(cmd):
                     return Decision(True, True, max(risk, 6), (*reasons, "output redirect outside the workspace"))
-                for tgt in self._inline_write_targets(cmd):
+                inline = self._inline_write_targets(cmd)
+                if inline is None:
+                    return Decision(False, False, max(risk, 9),
+                                    (*reasons, "unresolved quoted write target (fail-closed)"))
+                for tgt in inline:
                     if self.is_system(tgt) and not self._explicitly_allows(tgt):
                         return Decision(False, False, max(risk, 9),
                                         (*reasons, f"in-place write to system location {tgt!r}"))
@@ -477,7 +586,12 @@ class PolicyEngine:
             # R2 C4: the sensitive-path invariant holds for SHELL too —
             # operand paths and redirect targets go through the same
             # predicate as read_file/write_file (docs/PERMISSIONS.md).
-            for tgt in self._shell_sensitive_targets(cmd):
+            # R3 S1: relative operands are expanded against the resolved cwd.
+            sensitive_targets = self._shell_sensitive_targets(cmd, cwd)
+            if sensitive_targets is None:
+                return Decision(False, False, max(risk, 9),
+                                (*reasons, "unresolved quoted write target (fail-closed)"))
+            for tgt in sensitive_targets:
                 try:
                     sensitive = self.is_sensitive(tgt)
                 except (OSError, ValueError, UnsafePathError):
@@ -485,6 +599,25 @@ class PolicyEngine:
                 if sensitive:
                     return Decision(False, False, max(risk, 8),
                                     (*reasons, f"sensitive path {tgt!r} in shell command — denied in every mode"))
+            # R3 S2: system writes via shell mirror the WRITE gate — redirects
+            # and piped/sudo tee / sed -i are never silent in full_access.
+            writes = [m.group(1) for m in re.finditer(r">>?\s*['\"]?([^\s'\"|&;]+)", cmd)]
+            inline = self._inline_write_targets(cmd)
+            if inline is None:
+                return Decision(False, False, max(risk, 9),
+                                (*reasons, "unresolved quoted write target (fail-closed)"))
+            writes.extend(inline)
+            for tgt in writes:
+                if tgt.lower() in ("/dev/null", "/dev/stdout", "/dev/stderr"):
+                    continue
+                try:
+                    resolved = str(resolve_path(tgt, base=Path(cwd), reject_symlinks=False))
+                    system = self.is_system(resolved)
+                except (OSError, ValueError, UnsafePathError):
+                    continue
+                if system and not self._explicitly_allows(resolved):
+                    return Decision(True, True, max(risk, 9),
+                                    (*reasons, f"system location {tgt!r}"))
             return Decision(True, False, risk, tuple(reasons))
 
         if cls is ToolClass.NET:
@@ -568,10 +701,44 @@ class PolicyEngine:
                 return True
         return False
 
-    def _inline_write_targets(self, cmd: str) -> list[str]:
+    def _inline_write_targets(self, cmd: str) -> list[str] | None:
         """File operands of in-place writers that bypass redirect detection:
-        ``sed -i SCRIPT FILE…`` and ``tee [-a] FILE…`` (M1)."""
-        tokens = normalize_command(cmd).split()
+        ``sed -i SCRIPT FILE…`` and ``tee [-a] FILE…`` (M1). R3 S2: scanned at
+        EVERY segment position (piped ``… | tee``) and through transparent
+        sudo/doas prefixes, not just the first token of the whole command.
+        R3 S2g (task #70): the same treatment covers the rest of the
+        write-vector family — cp/mv/ln/install destinations (last operand or
+        ``-t DIR``) and ``dd of=`` — keyed on the destination only.
+        Task #71: a quote-aware pass on the RAW command is unioned in (the
+        normalized form strips quotes, so ``cp x "/etc/my dir"`` would split
+        there). Returns None — fail closed — when a write-verb segment has
+        an unclosed quote/escape; non-write segments keep legacy behavior."""
+        targets: list[str] = []
+        for seg in re.split(r"[;&|]+", normalize_command(cmd)):
+            tokens = seg.split()
+            while tokens and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+                tokens = tokens[1:]
+            if not tokens:
+                continue
+            if _basename(tokens[0]) in _PRIV_WRAPPERS:
+                payload = _skip_wrapper_flags(
+                    " ".join(tokens[1:]), req_short=_PRIV_REQ_SHORT,
+                    req_long=_PRIV_REQ_LONG,
+                )
+                tokens = payload.split()
+                if not tokens:
+                    continue
+            targets.extend(self._dests_for_verb(tokens))
+        raw = self._raw_write_targets(cmd)
+        if raw is None:
+            return None
+        targets.extend(raw)
+        return targets
+
+    @staticmethod
+    def _dests_for_verb(tokens: list[str]) -> list[str]:
+        """Destination operands of one segment whose first token is already
+        the executable (assignment/sudo stripping happened upstream)."""
         if not tokens:
             return []
         base = _basename(tokens[0])
@@ -581,24 +748,140 @@ class PolicyEngine:
             return args[1:] if len(args) >= 2 else []
         if base == "tee":
             return args
+        if base in ("cp", "mv", "ln", "install"):
+            return PolicyEngine._copy_dest_args(tokens[1:], dirs_only=base == "install")
+        if base == "dd":
+            return [t[3:] for t in tokens[1:] if t.startswith("of=") and len(t) > 3]
         return []
 
-    def _shell_sensitive_targets(self, cmd: str) -> list[str]:
+    def _raw_write_targets(self, cmd: str) -> list[str] | None:
+        """Quote-aware destination pass on the RAW command (task #71): honors
+        single/double quotes, escaped quotes and backslash escapes, and keeps
+        quoted ``; & |`` inside destinations. None = a write-verb segment is
+        unparseable (unclosed quote/escape) -> fail closed."""
+        segments = _quote_segments(cmd)
+        suspect = segments is None
+        if segments is None:
+            segments = re.split(r"[;&|]+", cmd)
+        targets: list[str] = []
+        for seg in segments:
+            words = None if suspect else _quote_words(seg)
+            if words is None:
+                # Unparseable/unclosed: fail closed only when a write verb
+                # leads the segment; anything else keeps legacy behavior.
+                tokens = seg.split()
+                while tokens and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+                    tokens = tokens[1:]
+                if tokens and _basename(tokens[0]) in _PRIV_WRAPPERS:
+                    payload = _skip_wrapper_flags(
+                        " ".join(tokens[1:]), req_short=_PRIV_REQ_SHORT,
+                        req_long=_PRIV_REQ_LONG,
+                    )
+                    tokens = payload.split()
+                if tokens and _basename(normalize_command(tokens[0])) in _WRITE_VERBS:
+                    return None
+                continue
+            texts = [w for w, _ in words]
+            ends = [e for _, e in words]
+            k = 0
+            while k < len(texts) and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", texts[k]):
+                k += 1
+            if k >= len(texts):
+                continue
+            if _basename(normalize_command(texts[k])) in _PRIV_WRAPPERS:
+                # Strip the wrapper from the RAW remainder so the payload's
+                # quoting survives (sudo cp x "/etc/my dir").
+                payload = _skip_wrapper_flags(
+                    seg[ends[k]:].strip(), req_short=_PRIV_REQ_SHORT,
+                    req_long=_PRIV_REQ_LONG,
+                )
+                sub = _quote_words(payload)
+                if sub is None:
+                    tokens = payload.split()
+                    if tokens and _basename(normalize_command(tokens[0])) in _WRITE_VERBS:
+                        return None
+                    continue
+                texts = [w for w, _ in sub]
+                k = 0
+                while k < len(texts) and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", texts[k]):
+                    k += 1
+                if k >= len(texts):
+                    continue
+            if _basename(normalize_command(texts[k])) not in _WRITE_VERBS:
+                continue
+            targets.extend(self._dests_for_verb(texts[k:]))
+        return targets
+
+    @staticmethod
+    def _copy_dest_args(flags: list[str], *, dirs_only: bool = False) -> list[str]:
+        """Destination operands of cp/mv/ln/install: ``-t DIR`` wins, else the
+        last operand (``install -d`` creates every operand directory). Flags
+        that consume a separated argument (-t/-m/-o/-g/-S/-D…) are skipped so
+        their values are never mistaken for destinations."""
+        operands: list[str] = []
+        target_dir: str | None = None
+        make_dirs = False
+        skip = 0
+        for tok in flags:
+            if skip:
+                skip -= 1
+                continue
+            if tok in ("-t", "--target-directory"):
+                target_dir = ""  # completed by the next token, if any
+                continue
+            if target_dir == "":
+                target_dir = tok
+                continue
+            if tok.startswith("-"):
+                if tok in ("-m", "-o", "-g", "-S", "-D", "--mode", "--owner",
+                           "--group", "--suffix", "--directory"):
+                    skip = 1
+                elif dirs_only and tok == "-d":
+                    make_dirs = True
+                continue
+            operands.append(tok)
+        if target_dir:
+            return [target_dir]
+        if make_dirs:
+            return operands
+        return operands[-1:] if operands else []
+
+    def _shell_sensitive_targets(self, cmd: str, cwd: str | Path | None = None) -> list[str] | None:
         """Operand paths + redirect targets of a shell command (R2 C4).
-        Reuses the redirect/inline-write extraction and scans ``~``/``$HOME``
-        /absolute operand tokens so the sensitive-path invariant can be
-        enforced on the shell branch exactly like the file tools."""
+        Reuses the redirect/inline-write extraction. R3 S1: relative operands
+        are expanded against the resolved cwd (the file-tool resolver), so
+        ``cat .ssh/id_rsa`` with cwd=$HOME is gated exactly like
+        ``cat ~/.ssh/id_rsa``; ``~``/``$HOME``/absolute tokens keep working."""
+        base = Path(cwd) if cwd else self.workspace
+        home = str(Path.home())
+
+        def absolutize(tok: str) -> str | None:
+            tok = tok.replace("${HOME}", home).replace("$HOME", home)
+            if tok.startswith(("~", "/")):
+                return tok
+            try:
+                return str(resolve_path(tok, base=base, reject_symlinks=False))
+            except (OSError, ValueError, UnsafePathError):
+                return None
+
         targets: list[str] = []
         for m in re.finditer(r">>?\s*['\"]?([^\s'\"|&;]+)", cmd):
             targets.append(m.group(1))
-        targets.extend(self._inline_write_targets(cmd))
+        inline = self._inline_write_targets(cmd)
+        if inline is None:
+            return None
+        targets.extend(inline)
         norm = normalize_command(cmd)
         for seg in re.split(r"[;&|]+", norm):
             for tok in seg.split()[1:]:
-                if not tok.startswith("-") and tok.startswith(("~", "$HOME", "/")):
+                if not tok.startswith("-"):
                     targets.append(tok)
-        home = str(Path.home())
-        return [t.replace("${HOME}", home).replace("$HOME", home) for t in targets]
+        out: list[str] = []
+        for t in targets:
+            resolved = absolutize(t)
+            if resolved is not None:
+                out.append(resolved)
+        return out
 
 
 def describe(tool: str, args: dict, decision: Decision) -> str:

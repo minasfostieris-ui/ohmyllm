@@ -87,7 +87,9 @@ def test_c1_dot_root_operands_denied_every_mode(tmp_path, cmd):
 
 def test_c1_root_regex_does_not_swallow_named_dirs(tmp_path):
     sc = RiskScorer()
-    for cmd in ("rm -rf /home", "rm -rf /.hidden", "rm -rf /tmp/x"):
+    # R3 S3 superseded the /home case: top-level system dirs are now
+    # root-equivalent (catastrophic). Subpaths and other named dirs stay 6.
+    for cmd in ("rm -rf /.hidden", "rm -rf /tmp/x", "rm -rf /home/user"):
         r = sc.score_command(cmd)
         assert "rm of root filesystem" not in r.reasons, cmd
         assert not r.catastrophic, cmd

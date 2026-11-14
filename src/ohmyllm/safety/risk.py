@@ -27,14 +27,20 @@ from .normalize import (
 _RULES: list[tuple[str, int, str, frozenset[str] | None]] = [
     # filesystem destruction
     (r"\brm\s+(-[a-zA-Z]+\s+)*(-[rRf]\S*\s+)*(-[fRr]\S*\s+)*['\"]?/(?:\.{1,2}/)*\.{0,2}(?=[\s'\"*]|$)", 10, "rm of root filesystem", frozenset({"rm"})),
+    # R3 S3: top-level system directories are root-equivalent operands
+    # (/home itself, NOT /home/user — the boundary lookahead keeps subpaths).
+    (r"\brm\s+(-[a-zA-Z]+\s+)*(-[rRf]\S*\s+)*(-[fRr]\S*\s+)*['\"]?/(?:home|usr|etc|var|boot|opt|srv)/?(?=[\s'\"*]|$)", 10, "rm of top-level system directory", frozenset({"rm"})),
     (r"\brm\s+-[rRf]{1,3}\b", 6, "recursive/forced rm", frozenset({"rm"})),
     (r"\brm\s+(-[a-zA-Z]+\s+)*['\"]?(~/?(?=\s|$)|\$HOME/?(?=\s|$))", 10, "rm of home directory", frozenset({"rm"})),
-    (r"\bshred\b|\bwipefs\b", 8, "secure erase", frozenset({"shred", "wipefs"})),
+    (r"\bshred\b|\bwipefs\b", 9, "secure erase", frozenset({"shred", "wipefs"})),
     (r"\btruncate\s+-s\s*0\b", 7, "file truncation to zero", frozenset({"truncate"})),
     # raw devices / disks
     (r"\bmkfs(\.\w+)?\b", 10, "format filesystem (mkfs)", frozenset({"mkfs"})),
     (r"\bdd\b[^|;]*\bof=/dev/", 10, "dd write to raw device", frozenset({"dd"})),
-    (r"\bfind\b[^|;]*\s-delete(\s|$)", 10, "find -delete mass removal", frozenset({"find"})),
+    # R3 S6: find -delete is catastrophic for absolute/system roots; a
+    # relative (workspace-scoped) target stays high-risk but approvable.
+    (r"\bfind\s+(?:-{1,2}\S+\s+)*['\"]?(?:/|~|\$HOME\b)[^|;]*\s-delete(\s|$)", 10, "find -delete mass removal", frozenset({"find"})),
+    (r"\bfind\b[^|;]*\s-delete(\s|$)", 6, "find -delete removal (scoped)", frozenset({"find"})),
     (r"\bfind\b[^|;]*\s-exec(dir)?\s+rm\b", 10, "find -exec rm mass removal", frozenset({"find"})),
     (r">\s*/dev/(sd|nvme|hd|disk|mapper)", 10, "redirect onto raw device", None),
     (r"\bfdisk\b|\bparted\b|\bmkswap\b|\blvm\b", 9, "disk partitioning/volumes", frozenset({"fdisk", "parted", "mkswap", "lvm"})),
@@ -44,12 +50,14 @@ _RULES: list[tuple[str, int, str, frozenset[str] | None]] = [
     (r"\bsystemctl\s+(poweroff|reboot|halt)\b", 9, "power state change via systemctl", frozenset({"systemctl"})),
     (r":\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;", 9, "fork bomb", frozenset({":"})),
     # permissions
-    (r"\bchmod\s+(-[a-zA-Z]+\s+)*777\s+/(?:\s|\*|$)", 9, "chmod 777 on /", frozenset({"chmod"})),
-    (r"\bchmod\s+(-[a-zA-Z]+\s+)*[-+rRwxa]*\s*777\s+~", 9, "chmod 777 on home", frozenset({"chmod"})),
+    # permissions — R3 S3: mode/flag order and 0777 spelling must not dodge
+    # the rule ("chmod 777 -R /", "chmod -R 0777 /").
+    (r"\bchmod\s+(?:-[a-zA-Z]+\s+)*0?777\s+/(?:\s|\*|$)|\bchmod\s+0?777\s+(?:-[a-zA-Z]+\s+)*/(?:\s|\*|$)", 9, "chmod 777 on /", frozenset({"chmod"})),
+    (r"\bchmod\s+(?:-[a-zA-Z]+\s+)*0?777\s+~|\bchmod\s+0?777\s+(?:-[a-zA-Z]+\s+)*~", 9, "chmod 777 on home", frozenset({"chmod"})),
     (r"\bchmod\s+-[a-zA-Z]*R[a-zA-Z]*\b|\bchown\s+-[a-zA-Z]*R[a-zA-Z]*\b", 5, "recursive permission change", frozenset({"chmod", "chown"})),
     (r"\bsudo\b|\bdoas\b", 6, "privilege escalation", frozenset({"sudo", "doas"})),
     # remote code execution
-    (r"\b(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(ba)?sh\b", 10, "piped remote script to shell", frozenset({"curl", "wget"})),
+    (r"\b(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(ba|z|da|k)?sh\b", 10, "piped remote script to shell", frozenset({"curl", "wget"})),
     (r"\b(curl|wget)\b[^|;]*\|\s*python3?\b", 10, "piped remote script to python", frozenset({"curl", "wget"})),
     (r"\beval\s*\$\(\s*(curl|wget)\b", 8, "eval of remote content", frozenset({"eval"})),
     # version control damage
@@ -64,7 +72,12 @@ _RULES: list[tuple[str, int, str, frozenset[str] | None]] = [
     (r"\bnpm\s+(install|i)\b", 4, "node package install", frozenset({"npm"})),
     # in-place editors / arbitrary interpreter payloads (M1)
     (r"\bsed\b[^|;]*\s-i\b", 5, "sed in-place file edit", frozenset({"sed"})),
-    (r"shutil\.rmtree|os\.system\s*\(|subprocess\.(call|run|Popen)\s*\(|os\.exec\w*\s*\(|child_process", 9, "destructive interpreter payload", frozenset({"python", "python3", "node", "perl", "ruby", "sh", "bash", "zsh", "dash", "ksh", "eval"})),
+    # R3 S4: __import__ indirection, node fs.rmSync/unlink and perl unlink
+    # glob are the same destructive payloads in a different spelling.
+    (r"shutil\.rmtree|os\.system\s*\(|subprocess\.(call|run|Popen)\s*\(|os\.exec\w*\s*\(|child_process"
+     r"|__import__\s*\(.*\)\s*\.\s*(rmtree|system|popen|remove|unlink|exec\w*|spawn\w*)"
+     r"|\brmSync\b|\bfs\s*\.\s*(rm|unlink|rmdir)(Sync)?\b|promises\s*\.\s*(unlink|rm|rmdir)\b"
+     r"|\bunlink\s+glob\b", 9, "destructive interpreter payload", frozenset({"python", "python3", "node", "perl", "ruby", "sh", "bash", "zsh", "dash", "ksh", "eval"})),
     # process control
     (r"\b(killall|pkill)\b|\bkill\s+-9\b", 5, "process kill", frozenset({"killall", "pkill", "kill"})),
     # credential / privacy access

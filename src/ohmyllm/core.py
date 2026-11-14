@@ -203,16 +203,18 @@ class Services:
         old_security = self._security_snapshot(self.config)
         new_security = self._security_snapshot(cfg)
         security_changed = old_security != new_security
-        config_changed = self.config.model_dump(mode="json") != cfg.model_dump(mode="json")
         cfg.policy_generation = max(self.config.policy_generation, cfg.policy_generation)
         if security_changed:
             cfg.policy_generation += 1
         old_workspace = self.workspace
         old_memory = self.config.memory.model_dump(mode="json")
         old_logging = self.config.logging.model_dump(mode="json")
-        if config_changed or security_changed:
-            # Security-only deltas (e.g. yolo, which is excluded from dumps)
-            # must retire runtimes too — a live runtime cannot keep stale policy.
+        if security_changed:
+            # R3 C5: retire ONLY on security-boundary deltas (the snapshot
+            # covers yolo/tone/op_mode, which are excluded from dumps).
+            # Cosmetic/generation/ui changes apply in place below — a live
+            # runtime reads them from this same config instance, and a
+            # theme save must never cancel the user's running turn.
             self._retire_runtimes()
         # Existing PolicyEngine and AgentRuntime objects reference this instance.
         for name in Config.model_fields:
@@ -236,6 +238,22 @@ class Services:
         GUI bridge is a separate process, so keys/provider/model changes it
         saves are invisible to this TUI until now."""
         cfg = self.config_store.load()
+        # R3 U3: runtime-only flags (Field exclude=True, e.g. agent.yolo)
+        # never reach config.toml — a wholesale replace on reload would
+        # silently reset them, so any out-of-band save disarm /yolo. Carry
+        # the live values into the reloaded config; real disk edits still
+        # apply, and with the flags preserved a no-op reload produces no
+        # security delta (C5: nothing retires).
+        for name, field_info in Config.model_fields.items():
+            live = getattr(self.config, name)
+            fresh = getattr(cfg, name)
+            sub_fields = getattr(type(live), "model_fields", None)
+            if sub_fields is not None:
+                for sub_name, sub_info in sub_fields.items():
+                    if sub_info.exclude:
+                        setattr(fresh, sub_name, getattr(live, sub_name))
+            elif field_info.exclude:
+                setattr(cfg, name, live)
         self.apply_config(cfg, persist=False)
         return self.config
 

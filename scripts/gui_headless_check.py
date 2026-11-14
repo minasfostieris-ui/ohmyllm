@@ -34,7 +34,9 @@ from pathlib import Path
 RT = Path(__file__).resolve().parents[1]
 VALIDATION = RT / ".validation"
 CHROMIUM = "/usr/bin/chromium"
-WIDTHS = {"narrow": 420, "tiny": 320, "laptop": 1280, "desktop": 1720, "wide": 2560}
+# R3 U9: 768px is the overlay breakpoint (narrowMQ = max-width:900px) — the
+# tablet layout must be exercised, not just phone and desktop widths.
+WIDTHS = {"narrow": 420, "tiny": 320, "tablet": 768, "laptop": 1280, "desktop": 1720, "wide": 2560}
 
 # --------------------------------------------------------------------------
 # Isolation MUST happen before any ohmyllm import (paths caches env at import).
@@ -83,11 +85,17 @@ class FakeBackend(MockBackend):
 registry._CLASSES[BackendName.MOCK] = FakeBackend
 
 FAILURES: list[str] = []
+# R3 U9: a bare "ALL CHECKS PASSED" hides how much was actually asserted, so
+# every check() is counted and the closing banner reports real numbers.
+COUNTS = {"pass": 0, "fail": 0}
 
 
 def check(name: str, ok: bool) -> bool:
     print(f"{'PASS' if ok else 'FAIL'}  {name}", flush=True)
-    if not ok:
+    if ok:
+        COUNTS["pass"] += 1
+    else:
+        COUNTS["fail"] += 1
         FAILURES.append(name)
     return ok
 
@@ -276,7 +284,13 @@ def dismiss_stray_modals(page) -> None:
 def flows_laptop(page, client) -> None:
     def f_boot():
         wait_boot(page)
-        check("boot: bridge connected, run-state Ready", True)
+        boot = page.evaluate("""() => ({
+            off: document.getElementById('conn-dot').classList.contains('off'),
+            rs: document.getElementById('run-state').textContent,
+            status: !!state.status,
+        })""")
+        check("boot: bridge connected, run-state Ready",
+              not boot["off"] and boot["rs"] == "Ready" and boot["status"])
         check("boot: composer visible with required placeholder",
               page.is_visible("#composer")
               and page.get_attribute("#input", "placeholder")
@@ -306,10 +320,12 @@ def flows_laptop(page, client) -> None:
     def f_hints():
         page.fill("#input", "/")
         page.wait_for_selector("#slash-hint:not([hidden])", timeout=5000)
-        check("slash palette hint opens on '/'", True)
+        check("slash palette hint opens on '/'",
+              page.evaluate("() => !slashHint.hidden && slashMatches.length > 0"))
         page.fill("#input", "@")
         page.wait_for_selector("#at-hint:not([hidden])", timeout=5000)
-        check("@-ref autocomplete opens on '@'", True)
+        check("@-ref autocomplete opens on '@'",
+              page.evaluate("() => !atHint.hidden && atMatches.length > 0"))
         page.fill("#input", "")
 
     def f_stream():
@@ -409,7 +425,9 @@ def flows_laptop(page, client) -> None:
                 rows: Array.from(document.querySelectorAll('#sb-list .sb-row .title')).map(e => e.textContent)
             })""")), flush=True)
             raise
-        check("draft persists across session switch", True)
+        check("draft persists across session switch",
+              page.input_value("#input") == "draft alpha"
+              and page.evaluate("() => state.drafts.get(state.session)") == "draft alpha")
         st = page.evaluate(EMPTY_AGENT_JS)
         check("replay: empty placeholders skipped, echo is one decided card",
               st["empty"] == 0 and st["echoes"] == 0 and st["cards"] == 1)
@@ -432,8 +450,23 @@ def flows_laptop(page, client) -> None:
 
     def f_search():
         page.fill("#sb-search", "quartz")
-        page.wait_for_selector("#sb-list .sb-row:has-text('quartz')", timeout=10_000)
-        check("sidebar search returns seeded session", True)
+        # R3 U9: real assertion (was a hardcoded pass). The input handler is
+        # debounced 250ms and the UNFILTERED list already contains the seeded
+        # row, so waiting for the first matching row races the filtered render.
+        # Wait until every rendered row actually matches the query instead.
+        page.wait_for_function(
+            """() => {
+                const rows = Array.from(document.querySelectorAll('#sb-list .sb-row'));
+                return rows.length > 0 && rows.every(r => /quartz/i.test(r.textContent));
+            }""", timeout=10_000)
+        rows = page.evaluate("""() => Array.from(document.querySelectorAll('#sb-list .sb-row'))
+            .map(r => ({title: r.querySelector('.title').textContent, text: r.textContent}))""")
+        # FTS matches message bodies too, so a hit may carry the query only in
+        # its snippet; the seeded session must still be findable by title.
+        check("sidebar search returns seeded session",
+              len(rows) > 0
+              and all("quartz" in r["text"].lower() for r in rows)
+              and any("quartz" in r["title"].lower() for r in rows))
         page.fill("#sb-search", "")
         page.wait_for_timeout(500)
 
@@ -444,7 +477,10 @@ def flows_laptop(page, client) -> None:
         page.fill("#set-generation-temperature", "0.9")
         page.keyboard.press("Control+h")
         page.wait_for_selector("#confirm-modal:not([hidden])", timeout=10_000)
-        check("dirty settings editor warns on navigation", True)
+        check("dirty settings editor warns on navigation",
+              page.is_visible("#confirm-modal")
+              and page.evaluate("() => !!state.settingsDirty")
+              and page.is_visible("#view-settings"))
         page.click("#cf-cancel")
         page.wait_for_selector("#confirm-modal", state="hidden", timeout=5000)
         check("cancel keeps you on the dirty editor",
@@ -452,7 +488,9 @@ def flows_laptop(page, client) -> None:
         page.fill("#set-generation-temperature", "0.7")
         page.keyboard.press("Control+h")
         page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
-        check("clean editor navigates without warning", True)
+        check("clean editor navigates without warning",
+              page.is_visible("#view-help") and page.is_hidden("#confirm-modal")
+              and page.evaluate("() => !state.settingsDirty"))
         # back to chat through the persistent left rail (task #29 replaced
         # the old top-bar view menu with the rail — same real navigation)
         page.click("#rail [data-view='chat']")
@@ -507,9 +545,18 @@ def flows_laptop(page, client) -> None:
         page.keyboard.type("mock-t", delay=60)
         page.keyboard.press("Enter")
         page.wait_for_function("() => document.getElementById('sel-model').value === 'mock-tool-7b'", timeout=5_000)
-        check("type-ahead + Enter selects a model", True)
+        check("type-ahead + Enter selects a model",
+              page.evaluate("""() => {
+                  const el = document.getElementById('sel-model');
+                  const sel = el.querySelectorAll('[role="option"][aria-selected="true"]');
+                  return el.value === 'mock-tool-7b' && sel.length === 1
+                      && sel[0].querySelector('.dd-opt-label').textContent
+                         === el.querySelector('.dd-label').textContent;
+              }"""))
         page.wait_for_function("() => state.status && state.status.model === 'mock-tool-7b'", timeout=10_000)
-        check("selection propagates to the bridge", True)
+        check("selection propagates to the bridge",
+              page.evaluate("() => state.status && state.status.model") == "mock-tool-7b"
+              and client.get("/api/status").get("model") == "mock-tool-7b")
         check("popup closes after selection",
               page.evaluate("() => document.querySelector('#sel-model .dd-pop').hidden"))
         page.click("#sel-model .dd-btn")
@@ -517,7 +564,9 @@ def flows_laptop(page, client) -> None:
         page.keyboard.type(orig, delay=40)
         page.keyboard.press("Enter")
         page.wait_for_function("(m) => state.status && state.status.model === m", arg=orig, timeout=10_000)
-        check("original model restored via type-ahead", True)
+        check("original model restored via type-ahead",
+              page.evaluate("() => document.getElementById('sel-model').value") == orig
+              and client.get("/api/status").get("model") == orig)
         ev = page.evaluate("() => document.getElementById('sel-effort').value")
         page.click("#sel-effort .dd-btn")
         page.wait_for_selector("#sel-effort .dd-pop:not([hidden])", timeout=5_000)
@@ -622,7 +671,15 @@ def flows_laptop(page, client) -> None:
         page.wait_for_selector("#set-generation-effort .dd-pop:not([hidden])", timeout=5_000)
         page.keyboard.press("Enter")
         page.wait_for_function("() => document.getElementById('set-generation-effort').value === 'max'", timeout=5_000)
-        check("listbox End+Enter selects the last option", True)
+        check("listbox End+Enter selects the last option",
+              page.evaluate("""() => {
+                  const el = document.getElementById('set-generation-effort');
+                  const opts = Array.from(el.querySelectorAll('[role="option"]'));
+                  const last = opts[opts.length - 1];
+                  return el.value === 'max' && opts.length > 1
+                      && last.getAttribute('aria-selected') === 'true'
+                      && el.options[el.options.length - 1].value === 'max';
+              }"""))
         page.click("#set-generation-effort .dd-btn")
         page.wait_for_selector("#set-generation-effort .dd-pop:not([hidden])", timeout=5_000)
         page.keyboard.type(e0, delay=40)
@@ -639,7 +696,9 @@ def flows_laptop(page, client) -> None:
         check("settings content spans >= 90% of main width", w["inner"] >= 0.9 * w["main"])
         page.keyboard.press("Control+h")
         page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
-        check("clean settings navigate without a warning", True)
+        check("clean settings navigate without a warning",
+              page.is_visible("#view-help") and page.is_hidden("#confirm-modal")
+              and page.evaluate("() => !state.settingsDirty"))
 
     # ---------------- task #30: tab overflow + per-tab close --------------
     def f_tabs():
@@ -685,7 +744,16 @@ def flows_laptop(page, client) -> None:
             const r = a.getBoundingClientRect();
             return r.left >= t.left - 1 && r.right <= t.right + 1;
         }""", timeout=5_000)
-        check("activating a chat scrolls its tab into view", True)
+        check("activating a chat scrolls its tab into view",
+              page.evaluate("""() => {
+                  const a = document.querySelector('#tabs .tab.active');
+                  if (!a) return false;
+                  const t = document.getElementById('tabs').getBoundingClientRect();
+                  const r = a.getBoundingClientRect();
+                  return a.dataset.sid === state.session
+                      && (a.textContent || '').includes('quartz')
+                      && r.left >= t.left - 1 && r.right <= t.right + 1;
+              }"""))
         reach = page.evaluate("""() => {
             const t = document.getElementById('tabs'), tr = t.getBoundingClientRect();
             return Array.from(t.querySelectorAll('.tab')).every(el => {
@@ -717,7 +785,10 @@ def flows_laptop(page, client) -> None:
                       ".scrollIntoView({inline:'nearest',block:'nearest',behavior:'instant'})", sel2)
         page.click(sel2, button="middle")
         page.wait_for_function("(sid) => !state.openTabs.includes(sid)", arg=v2, timeout=5_000)
-        check("middle-click closes a tab", True)
+        check("middle-click closes a tab",
+              page.evaluate("(sid) => !state.openTabs.includes(sid)", v2)
+              and page.evaluate("(sid) => !document.querySelector(`#tabs .tab[data-sid='${sid}']`)", v2)
+              and any(c["id"] == v2 for c in client.get("/api/chats").get("chats", [])))
         # closing the ACTIVE tab activates a neighbor
         act = page.evaluate("() => state.session")
         sela = f"#tabs .tab[data-sid='{act}']"
@@ -767,6 +838,13 @@ def flows_laptop(page, client) -> None:
         ("r2-bg3-contrast", lambda: f_r2_bg3_contrast(page, client)),
         ("r2-misc-a11y", lambda: f_r2_misc(page, client)),
         ("r2-div-buttons", lambda: f_r2_div_buttons(page, client)),
+        # ---- R3 UX regression flows (task #65) ----
+        ("r3-inline-card-id", lambda: f_r3_inline_card_id(page, client)),
+        ("r3-live-contrast", lambda: f_r3_live_contrast(page, client)),
+        ("r3-yolo-truth", lambda: f_r3_yolo_truth(page, client)),
+        ("r3-skill-cast-args", lambda: f_r3_skill_cast_args(page, client)),
+        ("r3-mode-tone-case", lambda: f_r3_mode_tone_case(page, client)),
+        ("r3-reject-hero", lambda: f_r3_reject_hero(page, client)),
     ]:
         dismiss_stray_modals(page)
         flow(name, fn)
@@ -960,7 +1038,9 @@ def f_stay(page, client) -> None:
     page.wait_for_function("() => !state.settingsDirty", timeout=5_000)
     page.keyboard.press("Control+h")
     page.wait_for_selector("#view-help:not([hidden])", timeout=10_000)
-    check("K6 clean editor navigates after restore", True)
+    check("K6 clean editor navigates after restore",
+          page.is_visible("#view-help") and page.is_hidden("#confirm-modal")
+          and page.evaluate("() => !state.settingsDirty"))
     page.click("#rail [data-view='chat']")
     page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
 
@@ -1053,7 +1133,15 @@ def f_settings_bounds(page, client) -> None:
         page.wait_for_function(
             "() => !document.getElementById('set-generation-temperature').classList.contains('invalid')",
             timeout=5_000)
-        check("K10 inline error clears when the field is corrected", True)
+        cleared = page.evaluate("""() => {
+            const t = document.getElementById('set-generation-temperature');
+            const e = document.getElementById('set-generation-temperature-err');
+            return {invalid: t.classList.contains('invalid'), aria: t.getAttribute('aria-invalid'),
+                    errText: e ? e.textContent.trim() : '', value: t.value};
+        }""")
+        check("K10 inline error clears when the field is corrected",
+              not cleared["invalid"] and cleared["aria"] != "true"
+              and not cleared["errText"] and cleared["value"] == orig)
     finally:
         page.unroute("**/api/config")
         page.unroute("**/api/config/agent")
@@ -1166,7 +1254,10 @@ def f_hints_aria(page, client) -> None:
     check("K35 arrow keys move aria-activedescendant", a1 == "slash-opt-1" and a0 == "slash-opt-0")
     page.keyboard.press("Enter")
     page.wait_for_selector("#mode-modal:not([hidden])", timeout=5_000)
-    check("K41 Enter on the exact match opens the mode modal", True)
+    check("K41 Enter on the exact match opens the mode modal",
+          page.is_visible("#mode-modal")
+          and page.evaluate("() => document.getElementById('mode-modal').contains(document.activeElement)")
+          and page.input_value("#input") == "")
     page.keyboard.press("Escape")
     page.wait_for_selector("#mode-modal", state="hidden", timeout=5_000)
     page.wait_for_timeout(150)
@@ -1316,7 +1407,9 @@ def f_tab_patch(page, client) -> None:
     del_sid = page.evaluate("() => document.activeElement.dataset.sid")
     page.keyboard.press("Delete")
     page.wait_for_function("(sid) => !state.openTabs.includes(sid)", arg=del_sid, timeout=5_000)
-    check("K34 Delete closes the focused tab", True)
+    check("K34 Delete closes the focused tab",
+          page.evaluate("(sid) => !state.openTabs.includes(sid)", del_sid)
+          and page.evaluate("(sid) => !document.querySelector(`#tabs .tab[data-sid='${sid}']`)", del_sid))
     qid = page.evaluate("() => (state.chats.find(c => (c.title || '').includes('quartz')) || {}).id")
     if qid:
         page.evaluate("async (s) => { await openChat(s); }", qid)
@@ -1446,8 +1539,31 @@ def f_r2_approval_queue(page, client) -> None:
     page.click("#rail [data-view='chat']")
     page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
     wait_ready(page)
-    page.route("**/api/approval/*", lambda route: route.fulfill(
-        status=200, content_type="application/json", body="{}"))
+    # R3 U8: an ID-AWARE stub. A blanket `200 {}` accepts any id, so a decision
+    # routed to the WRONG approval (R3 U1) passed every assertion. Record what
+    # was actually POSTed and 404 ids the live queue does not hold, exactly
+    # like the bridge does.
+    decided: list[dict] = []
+    live = {"ids": []}
+
+    def refresh_ids():
+        live["ids"] = page.evaluate("() => state.approvalQueue.map(x => x.id)")
+
+    def approval_stub(route):
+        aid = route.request.url.rsplit("/", 1)[-1].split("?")[0]
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except ValueError:
+            body = {}
+        decided.append({"id": aid, "decision": body.get("decision"),
+                        "queued": list(live["ids"])})
+        if aid in live["ids"]:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+        else:
+            route.fulfill(status=404, content_type="application/json",
+                          body=json.dumps({"error": "no such approval"}))
+
+    page.route("**/api/approval/*", approval_stub)
     try:
         page.evaluate("""() => {
             state.streaming = true;
@@ -1456,24 +1572,34 @@ def f_r2_approval_queue(page, client) -> None:
             queueApproval({id: 'r2a', tool: 'write_file', level: 'medium', risk: 4, mode: 'sandboxed', args: {path: 'a'}, reasons: []});
             queueApproval({id: 'r2b', tool: 'write_file', level: 'medium', risk: 4, mode: 'sandboxed', args: {path: 'b'}, reasons: []});
         }""")
+        refresh_ids()
         page.wait_for_selector("#approval-modal:not([hidden])", timeout=5_000)
         st0 = page.evaluate("() => ({rs: document.getElementById('run-state').textContent, q: state.approvalQueue.length})")
         check("U4 two queued approvals: modal up, status Waiting, queue=2",
-              st0["rs"] == "Waiting for approval" and st0["q"] == 2)
+              st0["rs"] == "Waiting for approval" and st0["q"] == 2
+              and live["ids"] == ["r2a", "r2b"])
         page.click("#ap-allow")
         page.wait_for_function("() => state.approvalQueue.length === 1", timeout=5_000)
         page.wait_for_timeout(150)
+        refresh_ids()
         st1 = page.evaluate("""() => ({rs: document.getElementById('run-state').textContent,
             q: state.approvalQueue.length, modal: !document.getElementById('approval-modal').hidden})""")
         check("U4 after first decision: next approval keeps Waiting + modal + queue=1",
               st1["rs"] == "Waiting for approval" and st1["q"] == 1 and st1["modal"])
+        check("U8 first decision POSTed the head id r2a with decision=approve",
+              decided[-1]["id"] == "r2a" and decided[-1]["decision"] == "approve"
+              and decided[-1]["queued"] == ["r2a", "r2b"] and live["ids"] == ["r2b"])
         page.click("#ap-deny")
         page.wait_for_function("() => state.approvalQueue.length === 0", timeout=5_000)
         page.wait_for_timeout(150)
+        refresh_ids()
         st2 = page.evaluate("""() => ({rs: document.getElementById('run-state').textContent,
             modal: document.getElementById('approval-modal').hidden})""")
         check("U4 queue drained: status returns to Working (streaming), modal closed",
               st2["rs"] == "Working" and st2["modal"])
+        check("U8 second decision POSTed the remaining id r2b with decision=deny",
+              decided[-1]["id"] == "r2b" and decided[-1]["decision"] == "deny"
+              and live["ids"] == [] and len(decided) == 2)
     finally:
         page.unroute("**/api/approval/*")
         page.evaluate("""() => {
@@ -1709,24 +1835,449 @@ def f_r2_div_buttons(page, client) -> None:
     page.evaluate("() => document.querySelector('.market-card').focus()")
     page.keyboard.press("Space")
     page.wait_for_selector("#confirm-modal:not([hidden])", timeout=5_000)
-    check("U17 Space on a market card opens the download confirm", True)
+    check("U17 Space on a market card opens the download confirm",
+          page.is_visible("#confirm-modal")
+          and page.evaluate("() => document.getElementById('confirm-modal').contains(document.activeElement)"))
     page.keyboard.press("Escape")
     page.wait_for_selector("#confirm-modal", state="hidden", timeout=5_000)
     page.click("#rail [data-view='chat']")
     page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
 
 
+# --------------------------------------------------------------------------
+# R3 UX regression flows (task #65). Live PoCs for the findings that only a
+# real browser can prove: U1 consent routing, U2 rendered-surface contrast,
+# U3 server-truth toggle, U4 cast args end-to-end, U5/U6 case parity, U10 hero.
+# --------------------------------------------------------------------------
+# Measure a REAL element against its REAL composited background: walk every
+# translucent ancestor down to an opaque base, then apply the WCAG formula.
+LIVE_CONTRAST_JS = """(sels) => {
+    const parse = (s) => {
+        const m = (s || '').match(/[\\d.]+/g);
+        if (!m) return {r: 0, g: 0, b: 0, a: 0};
+        const n = m.map(Number);
+        return {r: n[0], g: n[1], b: n[2], a: n.length > 3 ? n[3] : 1};
+    };
+    const over = (f, b) => ({r: f.a * f.r + (1 - f.a) * b.r,
+                             g: f.a * f.g + (1 - f.a) * b.g,
+                             b: f.a * f.b + (1 - f.a) * b.b, a: 1});
+    const lum = (c) => {
+        const a = [c.r, c.g, c.b].map(v => { v /= 255;
+            return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); });
+        return 0.2126 * a[0] + 0.7152 * a[1] + 0.0722 * a[2];
+    };
+    const ratio = (x, y) => { const l1 = lum(x), l2 = lum(y);
+        return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05); };
+    const bgOf = (el) => {
+        const stack = [];
+        for (let n = el; n; n = n.parentElement) {
+            const c = parse(getComputedStyle(n).backgroundColor);
+            if (c.a > 0) stack.push(c);
+            if (c.a >= 1) break;
+        }
+        const root = parse(getComputedStyle(document.documentElement).backgroundColor);
+        let acc = root.a >= 1 ? root : {r: 10, g: 12, b: 14, a: 1};
+        for (let i = stack.length - 1; i >= 0; i--) acc = over(stack[i], acc);
+        return acc;
+    };
+    const probe = document.createElement('div');
+    probe.style.display = 'none';
+    document.body.appendChild(probe);
+    const token = (n) => { probe.style.color = 'var(--' + n + ')';
+        return parse(getComputedStyle(probe).color); };
+    const dim = token('dim'), mute = token('mute'), bg3 = token('bg3');
+    const out = {dimOnBg3: ratio(dim, bg3), muteOnBg3: ratio(mute, bg3), surfaces: []};
+    for (const sel of sels) {
+        const el = document.querySelector(sel);
+        if (!el) { out.surfaces.push({sel: sel, missing: true, ratio: 0, isDim: false}); continue; }
+        const cs = getComputedStyle(el);
+        const fg = parse(cs.color);
+        const bg = bgOf(el);
+        const px = parseFloat(cs.fontSize);
+        const large = px >= 24 || (parseInt(cs.fontWeight, 10) >= 700 && px >= 18.66);
+        out.surfaces.push({sel: sel, missing: false,
+            ratio: ratio(fg.a >= 1 ? fg : over(fg, bg), bg),
+            fg: cs.color, px: px, threshold: large ? 3 : 4.5,
+            bg: 'rgb(' + Math.round(bg.r) + ', ' + Math.round(bg.g) + ', ' + Math.round(bg.b) + ')',
+            isDim: fg.r === dim.r && fg.g === dim.g && fg.b === dim.b,
+            text: (el.textContent || '').trim().slice(0, 40)});
+    }
+    probe.remove();
+    return out;
+}"""
+
+
+def f_r3_inline_card_id(page, client) -> None:
+    """R3 U1 (High): an inline approval-card button must decide ITS OWN card.
+
+    PoC: queue A then B, then activate "Allow once" on card B the way assistive
+    tech does (a synthetic DOM click). The scrim blocks ordinary pointer clicks,
+    but the background used to be fully reachable, so the decision went to the
+    queue HEAD: the user consented to B and the bridge approved A.
+    """
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    decided: list[dict] = []
+    live = {"ids": []}
+
+    def stub(route):
+        aid = route.request.url.rsplit("/", 1)[-1].split("?")[0]
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except ValueError:
+            body = {}
+        decided.append({"id": aid, "decision": body.get("decision")})
+        if aid in live["ids"]:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+        else:
+            route.fulfill(status=404, content_type="application/json",
+                          body=json.dumps({"error": "no such approval"}))
+
+    page.route("**/api/approval/*", stub)
+    try:
+        page.evaluate("""() => {
+            state.streaming = true;
+            state.approvalQueue = [];
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            queueApproval({id: 'r3a', tool: 'write_file', level: 'medium', risk: 4,
+                           mode: 'sandboxed', args: {path: 'a.txt'}, reasons: []});
+            queueApproval({id: 'r3b', tool: 'write_file', level: 'medium', risk: 4,
+                           mode: 'sandboxed', args: {path: 'b.txt'}, reasons: []});
+        }""")
+        page.wait_for_selector("#approval-modal:not([hidden])", timeout=5_000)
+        live["ids"] = page.evaluate("() => state.approvalQueue.map(x => x.id)")
+        bg = page.evaluate("""() => {
+            const main = document.getElementById('main'), sb = document.getElementById('sidebar');
+            const b = document.querySelector('.app-card[data-aid="r3b"] button[data-dec="approve"]');
+            b.focus();
+            return {mainInert: main.inert, mainAria: main.getAttribute('aria-hidden'),
+                    sbInert: sb.inert, focusReached: document.activeElement === b};
+        }""")
+        check("U1 consent modal makes the background inert + aria-hidden (no AT reach)",
+              bg["mainInert"] and bg["mainAria"] == "true" and bg["sbInert"]
+              and not bg["focusReached"])
+        page.evaluate("""() => {
+            const b = document.querySelector('.app-card[data-aid="r3b"] button[data-dec="approve"]');
+            b.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
+        }""")
+        page.wait_for_function("() => state.approvalQueue.length === 1", timeout=5_000)
+        page.wait_for_timeout(200)
+        live["ids"] = page.evaluate("() => state.approvalQueue.map(x => x.id)")
+        st = page.evaluate("""() => {
+            const card = (id) => {
+                const c = document.querySelector(`.app-card[data-aid="${id}"]`);
+                return c ? {state: c.querySelector('.state').textContent,
+                            decided: c.classList.contains('decided'),
+                            disabled: Array.from(c.querySelectorAll('button')).every(b => b.disabled)}
+                         : {state: '', decided: false, disabled: false};
+            };
+            return {a: card('r3a'), b: card('r3b'),
+                    modalArgs: document.getElementById('ap-args').textContent,
+                    queue: state.approvalQueue.map(x => x.id)};
+        }""")
+        print("PROBE U1 inline-card decision: " + json.dumps(
+            {"posted": decided, "queue": st["queue"], "a": st["a"]["state"],
+             "b": st["b"]["state"]}, ensure_ascii=False), flush=True)
+        check("U1 inline 'Allow once' on card B POSTs /api/approval/r3b (approve)",
+              bool(decided) and decided[-1]["id"] == "r3b"
+              and decided[-1]["decision"] == "approve")
+        check("U1 card B is the one marked allowed; card A still waits",
+              st["b"]["decided"] and "allowed" in st["b"]["state"] and st["b"]["disabled"]
+              and not st["a"]["decided"] and "waiting" in st["a"]["state"])
+        check("U1 the decided id is dropped, the untouched request stays queued",
+              st["queue"] == ["r3a"] and "a.txt" in st["modalArgs"])
+        page.click("#ap-deny")
+        page.wait_for_function("() => state.approvalQueue.length === 0", timeout=5_000)
+        page.wait_for_timeout(200)
+        check("U1 modal Deny then decides the remaining head r3a",
+              decided[-1]["id"] == "r3a" and decided[-1]["decision"] == "deny"
+              and len(decided) == 2)
+        released = page.evaluate("""() => ({
+            mainInert: document.getElementById('main').inert,
+            mainAria: document.getElementById('main').getAttribute('aria-hidden'),
+            modal: document.getElementById('approval-modal').hidden})""")
+        check("U1 background inert released once the consent queue drains",
+              released["modal"] and not released["mainInert"]
+              and released["mainAria"] != "true")
+    finally:
+        page.unroute("**/api/approval/*")
+        page.evaluate("""() => {
+            state.approvalQueue = []; state.streaming = false;
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            closeModal('#approval-modal');
+            document.getElementById('run-state').textContent = 'Ready';
+        }""")
+
+
+def f_r3_live_contrast(page, client) -> None:
+    """R3 U2: WCAG AA on the REAL rendered surfaces, not synthetic hosts.
+
+    .sb-row.active .prev / time sit on bg3; .chip.active .cnt sits on the
+    translucent acc-dim overlay. --mute measures 4.36:1 / ~4.0:1 there.
+    """
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    page.evaluate("async () => { await renderSidebar(); }")
+    page.wait_for_selector("#sb-list .sb-row.active", timeout=10_000)
+    sb = page.evaluate(LIVE_CONTRAST_JS,
+                       ["#sb-list .sb-row.active .prev", "#sb-list .sb-row.active time"])
+    print("PROBE U2 live sidebar contrast: " + json.dumps(sb, ensure_ascii=False), flush=True)
+    check("U2 premise: --mute fails AA on bg3 while --dim passes",
+          sb["muteOnBg3"] < 4.5 <= sb["dimOnBg3"])
+    prev = next((s for s in sb["surfaces"] if s["sel"].endswith(".prev")), {})
+    clock = next((s for s in sb["surfaces"] if s["sel"].endswith("time")), {})
+    check("U2 live .sb-row.active .prev meets AA on bg3 (renders --dim)",
+          not prev.get("missing", True) and prev.get("ratio", 0) >= 4.5 and prev.get("isDim"))
+    check("U2 live .sb-row.active time meets AA on bg3 (renders --dim)",
+          not clock.get("missing", True) and clock.get("ratio", 0) >= 4.5 and clock.get("isDim"))
+    page.click("#rail [data-view='market']")
+    page.wait_for_selector("#view-market:not([hidden])", timeout=10_000)
+    page.wait_for_function("() => document.querySelectorAll('.market-card').length > 0", timeout=20_000)
+    page.click("#market-head .chip")
+    page.wait_for_selector("#market-head .chip.active .cnt", timeout=5_000)
+    mk = page.evaluate(LIVE_CONTRAST_JS, ["#market-head .chip.active .cnt"])
+    print("PROBE U2 live market chip contrast: " + json.dumps(mk, ensure_ascii=False), flush=True)
+    cnt = (mk["surfaces"] or [{}])[0]
+    check("U2 live .chip.active .cnt meets AA on the acc-dim composite (renders --dim)",
+          not cnt.get("missing", True) and cnt.get("ratio", 0) >= 4.5 and cnt.get("isDim"))
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+
+
+def f_r3_yolo_truth(page, client) -> None:
+    """R3 U3: bare /yolo must toggle from SERVER truth, never a stale local flag.
+
+    Report PoC: the server is already ON while the GUI's own state.yolo is
+    stale/undefined, so a bare /yolo re-ARMED for a user who meant to disarm.
+    The divergence is injected exactly as the PoC describes.
+
+    Scope note: a SEPARATE pre-existing server defect (verified at f8d6952 too)
+    means an out-of-band arm cannot survive the next status poll — /api/status
+    calls bridge._sync_disk_config(), which reloads config.toml, and agent.yolo
+    is Field(exclude=True) (never persisted). That is bridge/core ownership and
+    is reported separately; this flow pins the report's minimal fix, i.e. the
+    GUI's decision source, and still round-trips every POST to the real bridge.
+    """
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    posts: list[dict] = []
+
+    def capture(route):
+        try:
+            posts.append(json.loads(route.request.post_data or "{}"))
+        except ValueError:
+            posts.append({})
+        route.continue_()
+
+    y0 = bool(client.get("/api/status").get("yolo"))
+    page.route("**/api/config/agent", capture)
+    try:
+        check("U3 /api/status carries yolo (server truth is observable)",
+              "yolo" in client.get("/api/status"))
+        # PoC divergence: server truth ON, the GUI's own flag stale OFF.
+        page.evaluate("""() => { state.yolo = false; state.status.yolo = true;
+            document.getElementById('toasts').innerHTML = ''; }""")
+        page.evaluate("async () => { await handleSlash('/yolo'); }")
+        page.wait_for_timeout(250)
+        said = page.text_content("#toasts")
+        print(f"PROBE U3 bare /yolo while status ON: posted={posts[-1] if posts else None}"
+              f" toast={said[:60]!r}", flush=True)
+        check("U3 bare /yolo DISARMS when server truth is ON (posts yolo:false)",
+              bool(posts) and posts[-1].get("yolo") is False
+              and posts[-1].get("confirm") is True)
+        check("U3 the toast reports the real transition (yolo off)", "yolo off" in said)
+        check("U3 the decision is mirrored into state.status (next toggle stays honest)",
+              page.evaluate("() => state.status.yolo") is False)
+        page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+        page.evaluate("async () => { await handleSlash('/yolo'); }")
+        page.wait_for_timeout(250)
+        check("U3 the next bare /yolo re-arms (the toggle stays honest)",
+              posts[-1].get("yolo") is True and "yolo on" in page.text_content("#toasts"))
+        page.evaluate("async () => { await handleSlash('/yolo OFF'); }")
+        page.wait_for_timeout(250)
+        check("U3 explicit /yolo OFF wins over the toggle (case-insensitive)",
+              posts[-1].get("yolo") is False)
+        page.evaluate("async () => { await handleSlash('/yolo on'); }")
+        page.wait_for_timeout(250)
+        check("U3 explicit /yolo on wins over the toggle", posts[-1].get("yolo") is True)
+        page.evaluate("async () => { await refreshStatus(); }")
+        page.wait_for_timeout(250)
+        check("U3 refreshStatus re-syncs the mirror from /api/status",
+              page.evaluate("() => state.status.yolo")
+              == bool(client.get("/api/status").get("yolo")))
+    finally:
+        page.unroute("**/api/config/agent")
+        client.post("/api/config/agent", {"yolo": y0, "confirm": True})
+        page.evaluate("async () => { await refreshStatus(); }")
+        page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+
+
+def f_r3_skill_cast_args(page, client) -> None:
+    """R3 U4: /skill:name <instruction> must carry the instruction end-to-end.
+
+    PoC: the GUI POSTed only {name, session}; the trailing instruction the docs
+    promise was dropped before it ever reached the bridge.
+    """
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    skill_dir = HOME / "skills" / "r3-cast-probe"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: r3-cast-probe\ndescription: R3 cast probe.\n---\n\n# Probe\n\nDo the probe.\n",
+        encoding="utf-8")
+    sid = page.evaluate("() => state.session")
+    if not sid:
+        sid = client.post("/api/chats", {"first_message": ""})["id"]
+        page.evaluate("async (s) => { await openChat(s); }", sid)
+    bodies: list[dict] = []
+
+    def capture(route):
+        try:
+            bodies.append(json.loads(route.request.post_data or "{}"))
+        except ValueError:
+            bodies.append({})
+        route.continue_()
+
+    page.route("**/api/skills/cast", capture)
+    try:
+        page.evaluate("async () => { await handleSlash('/skill:r3-cast-probe run it for this repo'); }")
+        page.wait_for_timeout(500)
+        print("PROBE U4 cast body: " + json.dumps(bodies[-1] if bodies else None,
+                                                 ensure_ascii=False), flush=True)
+        check("U4 GUI cast POSTs the additive args string (name/session unchanged)",
+              bool(bodies) and bodies[-1].get("args") == "run it for this repo"
+              and bodies[-1].get("name") == "r3-cast-probe"
+              and bodies[-1].get("session") == sid)
+        msgs = client.get(f"/api/chats/{sid}").get("messages", [])
+        text = msgs[-1]["content"] if msgs else ""
+        check("U4 the instruction reaches the session transcript",
+              "Do the probe." in text and "run it for this repo" in text)
+        page.evaluate("async () => { await handleSlash('/skill:r3-cast-probe'); }")
+        page.wait_for_timeout(500)
+        msgs = client.get(f"/api/chats/{sid}").get("messages", [])
+        legacy = msgs[-1]["content"] if msgs else ""
+        check("U4 an empty instruction keeps the legacy cast message byte-identical",
+              bodies[-1].get("args") == ""
+              and legacy.endswith("Apply this skill to my requests in this chat.")
+              and "Additional instruction" not in legacy)
+    finally:
+        page.unroute("**/api/skills/cast")
+        page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+
+
+def f_r3_mode_tone_case(page, client) -> None:
+    """R3 U5/U6: /mode SAFE and /tone TERSE must apply — plain parity.
+
+    PoC: handleSlash lowercased the command but not the argument, so "/mode SAFE"
+    opened the chooser and "/tone Friendly" was rejected as unknown.
+    """
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    mode0 = client.get("/api/status").get("mode") or "sandboxed"
+    tone0 = (client.get("/api/config").get("agent") or {}).get("tone") or "default"
+    try:
+        page.evaluate("async () => { await handleSlash('/mode SAFE'); }")
+        page.wait_for_timeout(500)
+        check("U5 /mode SAFE applies the mode instead of opening the chooser",
+              page.is_hidden("#mode-modal")
+              and client.get("/api/status").get("mode") == "safe")
+        check("U5 the mode chip reflects the applied mode",
+              "safe" in (page.text_content("#chip-mode") or "").lower())
+        page.evaluate("async () => { await handleSlash('/tone TERSE'); }")
+        page.wait_for_timeout(500)
+        t = page.evaluate("""() => ({toast: document.getElementById('toasts').innerText,
+            input: document.getElementById('input').value})""")
+        check("U6 /tone TERSE is accepted case-insensitively and persisted",
+              (client.get("/api/config").get("agent") or {}).get("tone") == "terse"
+              and "unknown tone" not in t["toast"] and t["input"] == "")
+        page.evaluate("async () => { await handleSlash('/tone Friendly'); }")
+        page.wait_for_timeout(500)
+        check("U6 /tone Friendly (mixed case) also applies",
+              (client.get("/api/config").get("agent") or {}).get("tone") == "friendly")
+    finally:
+        page.evaluate("async (m) => { await handleSlash('/mode ' + m); }", mode0)
+        page.evaluate("async (t) => { await handleSlash('/tone ' + t); }", tone0)
+        page.wait_for_timeout(400)
+        page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+
+
+def f_r3_reject_hero(page, client) -> None:
+    """R3 U10: a rejected FIRST send must repaint the hero, not a blank stream.
+
+    PoC: on an empty chat, reject /api/message; the phantom user bubble was
+    removed and nothing repainted the .stream-empty hero (streamHtmlLen=0).
+    """
+    page.click("#rail [data-view='chat']")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=10_000)
+    wait_ready(page)
+    fresh = client.post("/api/chats", {"first_message": ""})["id"]
+    page.evaluate("async (s) => { await openChat(s); }", fresh)
+    page.wait_for_function("() => !!document.querySelector('#stream .stream-empty')", timeout=10_000)
+    page.route("**/api/message", lambda route: route.fulfill(
+        status=400, content_type="application/json",
+        body=json.dumps({"error": "busy — R3 hero probe rejection"})))
+    try:
+        send(page, "hello world")
+        page.wait_for_function("() => document.getElementById('input').value === 'hello world'",
+                               timeout=15_000)
+        page.wait_for_timeout(300)
+        st = page.evaluate("""() => {
+            const hero = document.querySelector('#stream .stream-empty');
+            return {msgs: document.querySelectorAll('#stream .msg').length,
+                    hero: !!hero,
+                    heroVisible: !!hero && getComputedStyle(hero).display !== 'none'
+                        && hero.getBoundingClientRect().height > 0,
+                    html: document.getElementById('stream').innerHTML.trim().length,
+                    draft: state.drafts.get(state.session)};
+        }""")
+        print("PROBE U10 rejected first send: " + json.dumps(st, ensure_ascii=False), flush=True)
+        check("U10 rejected first send: no phantom bubble, draft restored",
+              st["msgs"] == 0 and st["draft"] == "hello world")
+        check("U10 rejected first send repaints the hero (never a blank stream)",
+              st["hero"] and st["heroVisible"] and st["html"] > 0)
+        page.screenshot(path=str(VALIDATION / "gui-r3-u10-hero.png"))
+        check("screenshot saved: .validation/gui-r3-u10-hero.png",
+              (VALIDATION / "gui-r3-u10-hero.png").exists())
+    finally:
+        page.unroute("**/api/message")
+        page.fill("#input", "")
+        page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+        qid = page.evaluate("() => (state.chats.find(c => (c.title || '').includes('quartz')) || {}).id")
+        if qid:
+            page.evaluate("async (s) => { await openChat(s); }", qid)
+
+
 def flows_responsive(page, width: int) -> None:
     def f():
         wait_boot(page)
-        check(f"{width}px: boot + health", True)
+        boot = page.evaluate("""() => ({
+            off: document.getElementById('conn-dot').classList.contains('off'),
+            rs: document.getElementById('run-state').textContent,
+            status: !!state.status,
+        })""")
+        check(f"{width}px: boot + health",
+              not boot["off"] and boot["rs"] == "Ready" and boot["status"])
         check(f"{width}px: composer visible", page.is_visible("#composer"))
         if width <= 900:
             check(f"{width}px: sidebar starts closed (overlay mode)",
                   page.evaluate("() => !document.getElementById('sidebar').classList.contains('open')"))
             page.click("#btn-sidebar")
             page.wait_for_selector("#sidebar.open", timeout=5000)
-            check(f"{width}px: sidebar toggles open as overlay", True)
+            page.wait_for_timeout(250)  # let the .22s slide-in settle
+            ov = page.evaluate("""() => {
+                const sb = document.getElementById('sidebar');
+                const cs = getComputedStyle(sb);
+                return {open: sb.classList.contains('open'), inert: sb.inert,
+                        aria: sb.getAttribute('aria-hidden'), vis: cs.visibility,
+                        pos: cs.position, left: sb.getBoundingClientRect().left};
+            }""")
+            check(f"{width}px: sidebar toggles open as overlay",
+                  ov["open"] and not ov["inert"] and ov["aria"] == "false"
+                  and ov["vis"] == "visible" and ov["pos"] == "fixed" and ov["left"] >= -1)
             page.click("#btn-sidebar")
             page.wait_for_timeout(200)
             # K7: a closed overlay sidebar must be inert + visibility:hidden,
@@ -1768,10 +2319,21 @@ def flows_responsive(page, width: int) -> None:
             page.click("#btn-sidebar")
             page.wait_for_selector("#sidebar.open", timeout=5000)
             page.wait_for_timeout(200)
+            # R3 U11: focus a descendant first — closing must hand focus back to
+            # the toggle, never strand it on <body> (inert blurs the descendant).
+            page.evaluate("() => document.getElementById('sb-search').focus()")
             page.keyboard.press("Escape")
             page.wait_for_timeout(350)
             check(f"{width}px: Escape dismisses overlay sidebar (U15)",
                   page.evaluate("() => !document.getElementById('sidebar').classList.contains('open')"))
+            u11 = page.evaluate("""() => ({
+                id: document.activeElement.id, tag: document.activeElement.tagName,
+                inSidebar: document.getElementById('sidebar').contains(document.activeElement),
+                pressed: document.getElementById('btn-sidebar').getAttribute('aria-pressed'),
+            })""")
+            check(f"{width}px: sidebar close restores focus to the toggle (U11)",
+                  u11["id"] == "btn-sidebar" and not u11["inSidebar"]
+                  and u11["tag"] != "BODY" and u11["pressed"] == "false")
         else:
             check(f"{width}px: sidebar visible by default", page.is_visible("#sidebar"))
         # task #29: persistent left rail (icon-only collapse on narrow)
@@ -1865,8 +2427,8 @@ def main() -> int:
 
     VALIDATION.mkdir(parents=True, exist_ok=True)
     client, stop, th = boot_bridge()
-    shot = {"narrow": "gui-narrow.png", "tiny": "gui-tiny.png", "laptop": "gui-laptop.png",
-            "desktop": "gui-desktop.png", "wide": "gui-wide.png"}
+    shot = {"narrow": "gui-narrow.png", "tiny": "gui-tiny.png", "tablet": "gui-tablet.png",
+            "laptop": "gui-laptop.png", "desktop": "gui-desktop.png", "wide": "gui-wide.png"}
     contexts = []
     try:
         # Seed a searchable session; it becomes the bridge's active session.
@@ -1941,7 +2503,10 @@ def main() -> int:
         check("bridge shut down cleanly", not th.is_alive())
         shutil.rmtree(TMP, ignore_errors=True)
 
-    print(f"\n{len(FAILURES)} failure(s)" if FAILURES else "\nALL CHECKS PASSED")
+    # R3 U9: numeric banner — the pass count is real (COUNTS), never implied.
+    total = COUNTS["pass"] + len(FAILURES)
+    print(f"\n{COUNTS['pass']} passed, {len(FAILURES)} failed, {total} checks total"
+          + ("" if FAILURES else " — ALL CHECKS PASSED"))
     return 1 if FAILURES else 0
 
 

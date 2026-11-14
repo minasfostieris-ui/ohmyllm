@@ -109,15 +109,17 @@ How each family's thinking reaches OhMyLLM, and what we do about it. Servers
 that parse reasoning into their own field are handled field-first; models
 whose servers leak the raw chat-template tags into `delta.content` are caught
 by the streaming tag splitter (`backends/thinksplit.py`), so tags and thoughts
-never reach the chat, the parser, or the stored session.
+never reach the chat, the parser, or the stored session. The tag literals below
+are written as inline code on purpose — the splitter matches these exact pairs
+(plus `<thinking>`, `<reasoning>`, `<thought>` and the `◁think▷` variant).
 
 | Family | Thinking arrives as | Effort control | In OhMyLLM |
 |---|---|---|---|
 | Qwen3 / Qwen3.5 / QwQ (LM Studio parsed, Ollama) | `delta.reasoning` / `msg.thinking` | `reasoning_effort` low/medium/high; `enable_thinking` (template) | ✅ field + `/think`, `/ultrathink` |
-| Qwen3 / R1-Distill on raw llama.cpp / vLLM w/o parser | inline `...` inside content | template kwarg only | ✅ streaming tag splitter routes to reasoning |
-| DeepSeek-R1 (+ distills) | `reasoning_content` (vLLM parser) or inline `...` | none (always thinks) | ✅ both paths |
+| Qwen3 / R1-Distill on raw llama.cpp / vLLM w/o parser | inline `<think>…</think>` inside content | template kwarg only | ✅ streaming tag splitter routes to reasoning |
+| DeepSeek-R1 (+ distills) | `reasoning_content` (vLLM parser) or inline `<think>…</think>` | none (always thinks) | ✅ both paths |
 | Kimi K2/K2-Thinking (K3 lineage) | `◁think▷ … ◁/think▷` triangle delimiters (SGLang/vLLM `kimi_k2` parser) or inline raw | none (thinking models always think) | ✅ splitter variant |
-| GLM-4.7 / GLM-5.x / **GLM-5.3-Flash** | `reasoning_content` field via vLLM/SGLang `glm45`/`glm47` parsers; raw GGUF (unsloth et al.) streams inline `…` | **5.3 series: forced thinking, cannot be disabled**; interleaved thinking between tool calls (each block tested) | ✅ field + splitter; `/think off` is a no-op there by design |
+| GLM-4.7 / GLM-5.x / **GLM-5.3-Flash** | `reasoning_content` field via vLLM/SGLang `glm45`/`glm47` parsers; raw GGUF (unsloth et al.) streams inline `＜think＞…＜/think＞` (full-width) | **5.3 series: forced thinking, cannot be disabled**; interleaved thinking between tool calls (each block tested) | ✅ field + splitter; `/think off` is a no-op there by design |
 | Qwen3.8 (Max/Flash/Flash-Next) | template `reasoning_effort` xhigh(default)/high/medium/low + `enable_thinking`; **LM Studio GGUF path exposes only on/off** (lmstudio-bug-tracker #2284) | `chat_template_kwargs` on vLLM/SGLang; LM Studio: on/off | ✅ field + splitter; we send `high` (xhigh 400s/degrades on LM Studio) |
 | gpt-oss-20b/120b | `delta.reasoning` (LM Studio/OGX parser); thinking-only fallback | `reasoning_effort` low/medium/high (`none` disables) | ✅ + empty-content fallback kept |
 | Nemotron-Cascade / Lightning | `reasoning` field when server parses, else content-only (RL, no tags) | `reasoning_effort` on newer servers | ✅ field + splitter passthrough |
