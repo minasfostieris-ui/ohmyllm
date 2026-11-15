@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from .normalize import (
     _ROOT_BARE_RX,
     _ROOT_DIRS_RX,
+    _ROOT_GLOB_RX,
     _ROOT_HOME_RX,
     _SHELL_WRAPPERS,
     _XARGS_OPT_SHORT,
@@ -34,6 +35,9 @@ _RULES: list[tuple[str, int, str, frozenset[str] | None]] = [
     # (/home itself, NOT /home/user — the boundary lookahead keeps subpaths).
     # R6 E1: dot-suffix spellings (/home/., /etc/./) share the same grammar.
     (r"\brm\s+(-[a-zA-Z]+\s+)*(-[rRf]\S*\s+)*(-[fRr]\S*\s+)*['\"]?" + _ROOT_DIRS_RX + r"(?=[\s'\"*]|$)", 10, "rm of top-level system directory", frozenset({"rm"})),
+    # R7 S2: a first-component absolute glob (/hom* /?ome /[h]ome /us*) can
+    # expand to top-level system dirs — same catastrophe, glob spelling.
+    (r"\brm\s+(-[a-zA-Z]+\s+)*(-[rRf]\S*\s+)*(-[fRr]\S*\s+)*['\"]?" + _ROOT_GLOB_RX, 10, "rm of root-equivalent glob", frozenset({"rm"})),
     (r"\brm\s+-[rRf]{1,3}\b", 6, "recursive/forced rm", frozenset({"rm"})),
     (r"\brm\s+(-[a-zA-Z]+\s+)*['\"]?" + _ROOT_HOME_RX + r"(?=[\s'\"*]|$)", 10, "rm of home directory", frozenset({"rm"})),
     (r"\bshred\b|\bwipefs\b", 9, "secure erase", frozenset({"shred", "wipefs"})),

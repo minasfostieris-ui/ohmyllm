@@ -198,11 +198,47 @@ class Services:
             },
         }
 
-    def apply_config(self, cfg: Config, *, persist: bool = True) -> None:
-        """Apply validated config in place so existing runtimes cannot retain stale policy."""
+    def apply_config(self, cfg: Config, *, persist: bool = True, carry_runtime: bool = False) -> None:
+        """Apply validated config in place so existing runtimes cannot retain stale policy.
+
+        carry_runtime=False (default) applies the incoming config as-is: an
+        intentional runtime-flag delta (e.g. a direct agent.yolo arm) is visible
+        to the security snapshot and retires live runtimes (R1-H2 / R3-C5).
+        carry_runtime=True is for the bridge config-mutation endpoints, which
+        ECHO the live runtime flags with no yolo intent — see the carry below.
+        The bridge signals this by marking the cfg (_omllm_carry_runtime) and
+        calling apply_config positionally, so duck-typed fakes (lambda n: ...)
+        keep working; direct callers may pass the kwarg instead.
+        """
+        carry_runtime = carry_runtime or getattr(cfg, "_omllm_carry_runtime", False)
         if cfg.permission_mode is PermissionMode.FULL_ACCESS and self.config.permission_mode is not PermissionMode.FULL_ACCESS:
             cfg = cfg.model_copy(deep=True)
             cfg.permission_mode = PermissionMode.DANGEROUS
+        if carry_runtime:
+            # R7 (Y1/Y2/Y3/Y5): runtime-only flags (Field exclude=True, e.g.
+            # agent.yolo) ARE the live next-prompt state. A config copy taken
+            # before a turn's one-prompt disarm or deferred settle goes stale the
+            # moment the turn ends; applying it must never resurrect a CONSUMED
+            # arm (fail-open) nor wipe a SETTLED/idle arm (F1 break). Carry the
+            # live values at APPLY time — the authoritative state — mirroring
+            # reload_config. This is the unified fix for every config-mutation
+            # endpoint (_set_model/_backend/_config/_memory_config): whatever
+            # stale runtime flags a pre-lock copy carries, the live state wins.
+            # R7 gate blocker 1: this carry is OPT-IN (carry_runtime) so it only
+            # touches runtime ECHOES, never an intentional yolo delta from a
+            # direct caller. It runs BEFORE the snapshot so a pure/stale echo
+            # carries live yolo first and the compare sees NO spurious yolo delta
+            # (a model/theme/memory save must not retire the running turn — C5).
+            for name, field_info in Config.model_fields.items():
+                live = getattr(self.config, name)
+                fresh = getattr(cfg, name)
+                sub_fields = getattr(type(live), "model_fields", None)
+                if sub_fields is not None:
+                    for sub_name, sub_info in sub_fields.items():
+                        if sub_info.exclude:
+                            setattr(fresh, sub_name, getattr(live, sub_name))
+                elif field_info.exclude:
+                    setattr(cfg, name, live)
         old_security = self._security_snapshot(self.config)
         new_security = self._security_snapshot(cfg)
         security_changed = old_security != new_security

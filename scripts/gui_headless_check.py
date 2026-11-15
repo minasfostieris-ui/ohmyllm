@@ -2963,6 +2963,206 @@ def flows_r5(page, client, width: int) -> None:
         flow(f"{name}-{width}", fn)
 
 
+def f_r7_voice_status(page, client, width: int) -> None:
+    """R7-01 (Low): run-state must stay truthful while the mic is live —
+    neither the 2s pollState tick nor the 5s refreshStatus tick may repaint
+    'Ready' over 'Listening… release Ctrl+E', and 'Transcribing…' must hold
+    until the stop POST settles (the stop response is held in-flight here)."""
+    pending: list = []
+
+    def rec(route):
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except ValueError:
+            body = {}
+        if body.get("action") == "stop":
+            pending.append(route)  # hold the stop: makes Transcribing… observable
+        else:
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True}))
+
+    probe = """() => ({
+        talking: talking,
+        mic: input.classList.contains('mic-live'),
+        rs: document.getElementById('run-state').textContent})"""
+    page.route("**/api/voice/record", rec)
+    try:
+        page.evaluate("async () => { await talkStart(); }")
+        st = page.evaluate(probe)
+        check(f"{width}px: R7-01 talkStart paints Listening + mic-live",
+              st["talking"] and st["mic"] and st["rs"] == "Listening… release Ctrl+E")
+        page.evaluate("async () => { await refreshStatus(); await pollState(); }")
+        page.wait_for_timeout(2_300)  # let a natural 2s poll tick land too
+        st2 = page.evaluate(probe)
+        print(f"PROBE R7-01 {width}px mic-live ticks: " + json.dumps(st2), flush=True)
+        check(f"{width}px: R7-01 status ticks never repaint over live Listening",
+              st2["talking"] and st2["rs"] == "Listening… release Ctrl+E")
+        page.evaluate("() => { talkStop(); }")  # release; the stop response is held
+        # the Transcribing paint is synchronous (before the stop POST await) —
+        # probe at once so a natural 2s tick cannot race the observation
+        st3 = page.evaluate(probe)
+        check(f"{width}px: R7-01 talkStop paints Transcribing while stop is in flight",
+              st3["rs"] == "Transcribing…" and not st3["talking"])
+        page.evaluate("async () => { await refreshStatus(); await pollState(); }")
+        page.wait_for_timeout(2_300)
+        st4 = page.evaluate(probe)
+        print(f"PROBE R7-01 {width}px transcribing ticks: " + json.dumps(st4), flush=True)
+        check(f"{width}px: R7-01 ticks keep Transcribing until the stop settles",
+              st4["rs"] == "Transcribing…")
+        for r in pending:
+            r.fulfill(status=200, content_type="application/json",
+                      body=json.dumps({"text": ""}))
+        pending.clear()
+        page.wait_for_function(
+            "() => document.getElementById('run-state').textContent !== 'Transcribing…'",
+            timeout=5_000)
+        st5 = page.evaluate(probe)
+        check(f"{width}px: R7-01 settles to Ready once the stop lands (mic off)",
+              st5["rs"] == "Ready" and not st5["talking"] and not st5["mic"])
+    finally:
+        for r in pending:
+            try:
+                r.abort()
+            except Exception:  # noqa: BLE001
+                pass
+        page.unroute("**/api/voice/record")
+        page.evaluate("""() => {
+            talking = false; clearTimeout(talkTimer);
+            if (typeof transcribing !== 'undefined') transcribing = false;
+            input.classList.remove('mic-live');
+            document.getElementById('toasts').innerHTML = '';
+        }""")
+
+
+def f_r7_approval_voice(page, client, width: int) -> None:
+    """R7-02 (Low): releasing Ctrl+E behind a live approval modal must not
+    clobber 'Waiting for approval' (keyup is modal-gated like keydown), and
+    the timer-path talkStop must restore the consent status while the queue
+    is non-empty. ID-aware approval stub (R3 U8 discipline)."""
+    decided: list[dict] = []
+
+    def ap_stub(route):
+        aid = route.request.url.rsplit("/", 1)[-1].split("?")[0]
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except ValueError:
+            body = {}
+        decided.append({"id": aid, "decision": body.get("decision")})
+        if aid == "r7a":
+            route.fulfill(status=200, content_type="application/json", body="{}")
+        else:
+            route.fulfill(status=404, content_type="application/json",
+                          body=json.dumps({"error": "no such approval"}))
+
+    def rec(route):
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except ValueError:
+            body = {}
+        payload = {"ok": True} if body.get("action") == "start" else {"text": ""}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(payload))
+
+    probe = """() => ({
+        talking: talking,
+        modal: !document.getElementById('approval-modal').hidden,
+        rs: document.getElementById('run-state').textContent})"""
+    page.route("**/api/approval/*", ap_stub)
+    page.route("**/api/voice/record", rec)
+    try:
+        # start talking FIRST — keydown is modal-gated, so Ctrl+E cannot
+        # start a recording behind an already-open modal (by design).
+        page.evaluate("async () => { await talkStart(); }")
+        page.evaluate("""() => {
+            state.streaming = true;
+            state.approvalQueue = [];
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            queueApproval({id: 'r7a', tool: 'write_file', level: 'medium', risk: 4,
+                           mode: 'sandboxed', args: {path: 'r7a.txt'}, reasons: []});
+        }""")
+        page.wait_for_selector("#approval-modal:not([hidden])", timeout=5_000)
+        st = page.evaluate(probe)
+        check(f"{width}px: R7-02 pending approval paints Waiting while mic live",
+              st["rs"] == "Waiting for approval" and st["talking"] and st["modal"])
+        # the release that used to clobber: Ctrl+E keyup behind the modal
+        page.keyboard.down("Control")
+        page.keyboard.down("e")
+        page.keyboard.up("e")
+        page.keyboard.up("Control")
+        page.wait_for_timeout(2_600)  # Chloe's repro window: still Working at +2.6s
+        st2 = page.evaluate(probe)
+        print(f"PROBE R7-02 {width}px keyup behind modal: " + json.dumps(st2), flush=True)
+        check(f"{width}px: R7-02 Ctrl+E release behind modal keeps Waiting for approval",
+              st2["rs"] == "Waiting for approval" and st2["modal"] and st2["talking"])
+        # timer-path stop (30s cap / window blur) with the queue still non-empty
+        page.evaluate("async () => { await talkStop(); }")
+        st3 = page.evaluate(probe)
+        print(f"PROBE R7-02 {width}px timer-path settle: " + json.dumps(st3), flush=True)
+        check(f"{width}px: R7-02 timer-path stop preserves Waiting for approval",
+              st3["rs"] == "Waiting for approval" and not st3["talking"])
+        # decide (Deny) and let the status settle honestly afterwards
+        page.click("#ap-deny")
+        page.wait_for_function("() => state.approvalQueue.length === 0", timeout=5_000)
+        page.evaluate("async () => { state.streaming = false; await refreshStatus(); }")
+        st4 = page.evaluate(probe)
+        check(f"{width}px: R7-02 after the decision the status settles to Ready",
+              st4["rs"] == "Ready" and not st4["modal"]
+              and decided == [{"id": "r7a", "decision": "deny"}])
+    finally:
+        page.unroute("**/api/approval/*")
+        page.unroute("**/api/voice/record")
+        page.evaluate("""() => {
+            state.approvalQueue = []; state.streaming = false;
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            closeModal('#approval-modal');
+            talking = false; clearTimeout(talkTimer);
+            if (typeof transcribing !== 'undefined') transcribing = false;
+            input.classList.remove('mic-live');
+            document.getElementById('run-state').textContent = 'Ready';
+            document.getElementById('toasts').innerHTML = '';
+        }""")
+
+
+def f_r7_help_ctrlq(page, client, width: int) -> None:
+    """R7-03 (Low): the in-app keyboard reference must list the implemented
+    Ctrl+Q quit hotkey, and the hotkey must open the 'Shut down?' confirm
+    (K12 ui.confirm_quit default) — Escape cancels, the bridge stays up."""
+    page.evaluate("async () => { await switchView('help'); }")
+    page.wait_for_selector("#view-help:not([hidden])", timeout=5_000)
+    row = page.evaluate("""() => {
+        const rows = Array.from(document.querySelectorAll('#help-body table tr'));
+        const r = rows.find(tr => {
+            const k = tr.querySelector('kbd');
+            return k && k.textContent.trim() === 'Ctrl+Q';
+        });
+        return r ? r.textContent : null;
+    }""")
+    print(f"PROBE R7-03 {width}px help Ctrl+Q row: {row!r}", flush=True)
+    check(f"{width}px: R7-03 help lists Ctrl+Q with the confirm wording",
+          row is not None and "shut down" in row.lower() and "confirm" in row.lower())
+    page.evaluate("async () => { await switchView('chat'); }")
+    page.wait_for_selector("#view-chat:not([hidden])", timeout=5_000)
+    page.keyboard.press("Control+q")
+    page.wait_for_selector("#confirm-modal:not([hidden])", timeout=5_000)
+    title = page.evaluate("() => document.getElementById('cf-title').textContent")
+    check(f"{width}px: R7-03 Ctrl+Q opens the Shut down? confirm", title == "Shut down?")
+    page.keyboard.press("Escape")
+    page.wait_for_selector("#confirm-modal[hidden]", state="attached", timeout=5_000)
+    alive = page.evaluate(
+        "async () => { const r = await get('/api/health'); return r.ok === true; }")
+    check(f"{width}px: R7-03 Escape cancels the quit (bridge stays up)", alive)
+
+
+def flows_r7(page, client, width: int) -> None:
+    """R7 UX regression flows (task 110) — run at EVERY width."""
+    for name, fn in [
+        ("r7-voice-status", lambda: f_r7_voice_status(page, client, width)),
+        ("r7-approval-voice", lambda: f_r7_approval_voice(page, client, width)),
+        ("r7-help-ctrlq", lambda: f_r7_help_ctrlq(page, client, width)),
+    ]:
+        dismiss_stray_modals(page)
+        flow(f"{name}-{width}", fn)
+
+
 def flows_responsive(page, width: int) -> None:
     def f():
         wait_boot(page)
@@ -3161,6 +3361,8 @@ def main() -> int:
                         flows_responsive(page, width)
                     # R5 UX regressions (task #92) run at EVERY width.
                     flows_r5(page, client, width)
+                    # R7 UX regressions (task 110) run at EVERY width.
+                    flows_r7(page, client, width)
                     dismiss_stray_modals(page)
                     # capture hygiene: let entrance animations settle (view
                     # switches replay them) and drop transient test toasts so

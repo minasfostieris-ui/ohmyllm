@@ -1760,7 +1760,9 @@ async function pollState() {
       }
       // R5-F3: partial outage — /api/status can fail (dot off, "Disconnected")
       // while /api/state still answers; never repaint over the honest outage.
-      if (!state.streaming && state.connected) $("#run-state").textContent = s.state === "blocked" ? "Waiting for approval" : s.state === "working" ? "Working" : "Ready";
+      // R7-01: never repaint over live voice either — "Listening…" while the
+      // mic is hot, "Transcribing…" until the stop POST settles.
+      if (!state.streaming && state.connected && !talking && !transcribing) $("#run-state").textContent = s.state === "blocked" ? "Waiting for approval" : s.state === "working" ? "Working" : "Ready";
     } else if (state.session) {
       // fallback until /api/state lands: derive from status + approval queue
       const busy = (state.status && state.status.busy) || state.streaming;
@@ -1918,7 +1920,8 @@ async function refreshStatus() {
     syncBackendSelect(s.backend);
     if (!$("#sel-effort").contains(document.activeElement)) $("#sel-effort").value = s.effort || "off";
     await loadModels(s.backend, s.model);
-    if (!state.streaming && !state.approvalQueue.length) $("#run-state").textContent = "Ready";
+    // R7-01: the 5s tick must not repaint over live "Listening…"/"Transcribing…"
+    if (!state.streaming && !state.approvalQueue.length && !talking && !transcribing) $("#run-state").textContent = "Ready";
     try { state.config = await get("/api/config"); } catch (e) { /* keep last config */ }
   } catch (e) {
     state.connected = false;
@@ -2756,6 +2759,7 @@ function renderHelp() {
     ["Ctrl+G", "settings"],
     ["Ctrl+H", "this help"],
     ["Ctrl+O", "open chats sidebar & focus search"],
+    ["Ctrl+Q", "shut down the console (with confirm)"],
     ["Ctrl+E (hold)", "voice input — release to transcribe"],
     ["Ctrl+Enter", "save soul.md (Memory view)"],
     ["Tab / ↑ ↓", "complete slash & @ hints"],
@@ -2865,7 +2869,9 @@ $("#palette-input").addEventListener("keydown", (e) => {
 });
 
 /* ----------------------------------------------------------------- voice */
-let talking = false, talkTimer = null;
+// R7-01: transcribing covers the stop POST await — talking is already false
+// there, but the status must stay "Transcribing…" until the stop settles.
+let talking = false, transcribing = false, talkTimer = null;
 async function talkStart() {
   if (talking) return;
   talking = true;
@@ -2875,7 +2881,8 @@ async function talkStart() {
   catch (e) {
     talking = false; input.classList.remove("mic-live");
     toast(e.message, "err");
-    $("#run-state").textContent = state.streaming ? "Working" : "Ready";
+    // R7-02: a failed start must not clobber a pending consent status either
+    $("#run-state").textContent = state.approvalQueue.length ? "Waiting for approval" : state.streaming ? "Working" : "Ready";
     return;
   }
   talkTimer = setTimeout(() => { if (talking) talkStop(); }, 30000);
@@ -2884,6 +2891,7 @@ async function talkStop() {
   if (!talking) return;
   talking = false; clearTimeout(talkTimer);
   input.classList.remove("mic-live");
+  transcribing = true; // R7-01: hold "Transcribing…" against the status ticks
   $("#run-state").textContent = "Transcribing…";
   try {
     const r = await post("/api/voice/record", { action: "stop" });
@@ -2893,7 +2901,10 @@ async function talkStop() {
       state.drafts.set(state.session, input.value);
     } else if (r.note) toast(r.note, "warn");
   } catch (e) { toast(e.message, "err"); }
-  $("#run-state").textContent = state.streaming ? "Working" : "Ready";
+  transcribing = false;
+  // R7-02: never clobber "Waiting for approval" — the 30s cap / window blur
+  // can settle the mic while a consent decision is still pending.
+  $("#run-state").textContent = state.approvalQueue.length ? "Waiting for approval" : state.streaming ? "Working" : "Ready";
 }
 
 /* K23: GUI parity toggles for the TUI's Ctrl+T / Ctrl+J */
@@ -2951,6 +2962,10 @@ document.addEventListener("keydown", (e) => {
   else if (k === "enter" && state.view === "memory") { e.preventDefault(); $("#soul-save").click(); }
 });
 document.addEventListener("keyup", (e) => {
+  // R7-02: modal-gated like keydown — releasing Ctrl+E behind a consent modal
+  // must not repaint "Waiting for approval". The 30s cap / blur still stop the
+  // mic, and talkStop's settle repaint preserves the pending consent status.
+  if (modalStack.length) return;
   if (talking && (e.key === "Control" || e.key === "Meta" || e.key.toLowerCase() === "e")) talkStop();
 });
 window.addEventListener("blur", () => { if (talking) talkStop(); });

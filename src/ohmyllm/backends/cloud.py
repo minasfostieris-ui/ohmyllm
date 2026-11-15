@@ -317,6 +317,19 @@ class CloudBackend(BaseBackend):
                             # ALL non-empty SSE lines count — comments included.
                             post_lines += 1
                             if post_lines >= 64:
+                                # R7-T12: parse-before-cap — the boundary (64th)
+                                # line may itself BE the usage trailer; capture
+                                # it before breaking so usage on EXACTLY line 64
+                                # lands on the terminal chunk.
+                                if line.startswith("data:"):
+                                    try:
+                                        bobj = json.loads(line[5:].strip())
+                                    except json.JSONDecodeError:
+                                        bobj = {}
+                                    if isinstance(bobj, dict):
+                                        bu = bobj.get("usage")
+                                        if isinstance(bu, dict) and bu:
+                                            usage = bu
                                 break
                         if not line.startswith("data:"):
                             continue

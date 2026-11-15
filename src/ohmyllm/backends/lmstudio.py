@@ -544,6 +544,19 @@ class LMStudioBackend(BaseBackend):
                                 # the trailer cap — comment keepalives included.
                                 trailer_lines += 1
                                 if trailer_lines >= 64:
+                                    # R7-T5: parse-before-cap — the boundary
+                                    # (64th) line may itself BE the usage
+                                    # trailer; stash it before delivering so a
+                                    # usage on EXACTLY line 64 is not dropped.
+                                    if line.startswith("data:"):
+                                        try:
+                                            bdata = json.loads(line[5:].strip())
+                                        except json.JSONDecodeError:
+                                            bdata = {}
+                                        if isinstance(bdata, dict):
+                                            bu = bdata.get("usage")
+                                            if isinstance(bu, dict) and bu:
+                                                usage_stash = bu
                                     terminal.usage = terminal.usage or usage_stash
                                     yield terminal
                                     return

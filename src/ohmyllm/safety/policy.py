@@ -37,7 +37,14 @@ from .risk import RiskScorer, _basename, level_for
 #: In-place write verbs whose destinations bypass redirect detection (S2/S2g).
 #: R5 A28-A29: perl -i and sponge join the family — they edit/soak files
 #: without a redirect operator.
-_WRITE_VERBS = frozenset({"sed", "tee", "cp", "mv", "ln", "install", "dd", "perl", "sponge"})
+#: R7 S7: truncate/chmod/chown join too — a destructive system-file write
+#: must get the SAME system-location approval an equivalent redirect gets.
+_WRITE_VERBS = frozenset({"sed", "tee", "cp", "mv", "ln", "install", "dd", "perl", "sponge",
+                          "truncate", "chmod", "chown"})
+
+#: R7 S7: chmod mode operand (octal 0777/777 or symbolic u+x,go-w) — the mode
+#: is not a destination; chown's OWNER[:GROUP] first operand is skipped too.
+_MODE_RX = re.compile(r"^(?:[0-7]{3,4}|[ugoa]*[-+=][rwxXstugo,]+)$")
 
 #: Redirect operators (R4-S2): ``>>`` append, ``>&`` stdout+stderr, ``>|``
 #: clobber, plain ``>``. Pure-digit ``>&N`` targets are fd duplicates, not
@@ -734,7 +741,10 @@ class PolicyEngine:
             for tgt in sensitive_targets:
                 try:
                     sensitive = self.is_sensitive(tgt)
-                except (OSError, ValueError, UnsafePathError):
+                except (OSError, ValueError, UnsafePathError, RuntimeError):
+                    # R7: unknown ~user raises RuntimeError from expanduser —
+                    # an unresolvable target is skipped here; destructive
+                    # ~user operands still fail closed upstream.
                     continue
                 if sensitive:
                     return Decision(False, False, max(risk, 8),
@@ -753,7 +763,7 @@ class PolicyEngine:
                 try:
                     resolved = str(resolve_path(tgt, base=Path(cwd), reject_symlinks=False))
                     system = self.is_system(resolved)
-                except (OSError, ValueError, UnsafePathError):
+                except (OSError, ValueError, UnsafePathError, RuntimeError):
                     continue
                 if system and not self._explicitly_allows(resolved):
                     return Decision(True, True, max(risk, 9),
@@ -952,6 +962,48 @@ class PolicyEngine:
             return PolicyEngine._copy_dest_args(tokens[1:], dirs_only=base == "install")
         if base == "dd":
             return [t[3:] for t in tokens[1:] if t.startswith("of=") and len(t) > 3]
+        if base == "truncate":
+            # R7 S7: every file operand is truncated; separated -s/--size and
+            # -r/--reference values are NOT destinations (attached -s0/
+            # --size=0 forms are flags and already excluded).
+            files = []
+            skip = False
+            for t in tokens[1:]:
+                if skip:
+                    skip = False
+                    continue
+                if t in ("-s", "--size", "-r", "--reference"):
+                    skip = True
+                    continue
+                if t.startswith("-"):
+                    continue
+                files.append(t)
+            return files
+        if base in ("chmod", "chown"):
+            # R7 S7: skip the mode (chmod) / OWNER[:GROUP] (chown) operand;
+            # --reference=FILE supplies the mode/owner, so every operand is
+            # a destination then.
+            files = []
+            skip = False
+            mode_seen = False
+            for t in tokens[1:]:
+                if skip:
+                    skip = False
+                    continue
+                if t == "--reference":
+                    skip = True
+                    mode_seen = True
+                    continue
+                if t.startswith("--reference="):
+                    mode_seen = True
+                    continue
+                if t.startswith("-"):
+                    continue
+                if not mode_seen and (base == "chown" or _MODE_RX.match(t)):
+                    mode_seen = True
+                    continue
+                files.append(t)
+            return files
         return []
 
     def _raw_write_targets(self, cmd: str) -> list[str] | None:
@@ -1076,7 +1128,7 @@ class PolicyEngine:
                 return tok
             try:
                 return str(resolve_path(tok, base=base, reject_symlinks=False))
-            except (OSError, ValueError, UnsafePathError):
+            except (OSError, ValueError, UnsafePathError, RuntimeError):
                 return None
 
         targets: list[str] = []

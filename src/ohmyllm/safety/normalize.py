@@ -43,6 +43,11 @@ _ANSI_ESCAPES = {
     "e": "\x1b", "E": "\x1b", "0": "\x00",
 }
 _ASSIGN_RX = re.compile(r"(?:^|[\s;|&])([A-Za-z_][A-Za-z0-9_]*)=([^\s;|&]*)")
+# R7 S6: assignment-prefix keywords — `export X="rm -rf /"` leads the segment
+# with the keyword, so the quote-aware extractor must skip it (and its flags)
+# before reading assignments. EXTENDS the R6 E4 extractor (Terry R7 verdict:
+# uncovered variant, not a regression — the pristine E4 baseline stays).
+_ASSIGN_PREFIXES = frozenset({"export", "declare", "typeset", "local", "readonly"})
 _VAR_REF_RX = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 # R2 C3: dynamic-target resolution — default-value braces, positional params,
 # pure-literal command substitution, and xargs stdin synthesis.
@@ -147,18 +152,37 @@ def _assignment_values(text: str) -> dict[str, str]:
     return values
 
 
-def _assignment_values_raw(text: str) -> dict[str, str]:
+def _assignment_values_raw(text: str, *, posix: bool = False) -> dict[str, str]:
     """Quote-aware ``VAR=value`` extraction on RAW text (R6 E4 family): a
     quoted multi-word value (``X="rm -rf /"``) resolves FULLY instead of
     truncating at the first space after quote removal. LAST wins. Only
     command-position assignments (segment start / after a separator) are
     read; _read_word honors single/double quotes and backslash escapes so the
-    whole quoted value is ONE word. Never executes."""
+    whole quoted value is ONE word. Never executes.
+
+    R7 gate-fix (#119): ``posix=True`` is the PRODUCT-shell (/bin/sh)
+    fail-closed interpretation — inside "..." a backslash before a non-special
+    char stays LITERAL (POSIX content rule), and an odd backslash run before a
+    quote whose preceding char is non-special is read as a string terminator
+    so the hidden tail segments surface (Alex H1: echo "a\"; X="rm -rf /"; $X
+    — the unclosed tail desyncs bash parity; stub-proven executable sibling).
+    The bash-parity default is unchanged; callers union both interpretations."""
     values: dict[str, str] = {}
-    for _sep, seg in _raw_segments(text):
+    for _sep, seg in _raw_segments(text, posix=posix):
         pos = 0
+        # R7 S6: skip a leading export/declare/typeset/local/readonly word and
+        # its flag tokens so the assignments that follow are still read with
+        # their FULL quoted values.
+        word, end, _closed = _read_word(seg, 0, posix=posix)
+        if word in _ASSIGN_PREFIXES:
+            pos = end
+            while pos < len(seg):
+                flag, fend, _fclosed = _read_word(seg, pos, posix=posix)
+                if fend <= pos or not flag.startswith("-"):
+                    break
+                pos = fend
         while pos < len(seg):
-            word, end, closed = _read_word(seg, pos)
+            word, end, closed = _read_word(seg, pos, posix=posix)
             if end <= pos:
                 break
             m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", word, re.DOTALL)
@@ -175,21 +199,39 @@ def _merged_assignments(raw: str, norm: str) -> dict[str, str]:
     """Legacy normalized extraction UNION quote-aware raw extraction (R6 E4):
     the raw quote-aware value wins per key so multi-word values are not
     truncated, while the legacy pass still catches assignments exposed only
-    after deobfuscation (e.g. ``export X=…``)."""
+    after deobfuscation (e.g. ``export X=…``).
+
+    R7 gate-fix (#119): the UNION also covers the POSIX (/bin/sh) double-quote
+    interpretation — bash parity and POSIX disagree on backslash runs before
+    a closing quote (Alex H1), and the product shell executes the POSIX read.
+    POSIX values win per key; the bash-parity pass is kept intact (Terry R7
+    verdict: extend, don't revert)."""
     values = _assignment_values(norm)
     values.update(_assignment_values_raw(raw))
+    values.update(_assignment_values_raw(raw, posix=True))
     return values
 
 
 def _sub_refs(text: str, values: dict[str, str]) -> str:
     """Bounded substitution of ``$VAR``/``${VAR}`` from *values* (3 passes so
-    chained indirection terminates). Unassigned references are left as-is."""
+    chained indirection terminates). Unassigned references are left as-is.
+    R7 S3: a custom non-empty IFS splits UNQUOTED substituted values at
+    runtime (``IFS=,; X=rm,-rf,/; $X`` runs ``rm -rf /``) — translate the
+    assigned IFS characters to spaces inside substituted values so the
+    downstream gates see the real words. Empty IFS means NO splitting."""
     if not values:
         return text
+    ifs = values.get("IFS") or ""
+    split_chars = [ch for ch in ifs if not ch.isspace()]
 
     def _sub(m: re.Match[str]) -> str:
         name = m.group(1) or m.group(2)
-        return values.get(name, m.group(0))
+        val = values.get(name)
+        if val is None:
+            return m.group(0)
+        for ch in split_chars:
+            val = val.replace(ch, " ")
+        return val
 
     out = text
     for _ in range(3):
@@ -209,6 +251,61 @@ def _expand_vars(text: str) -> str:
     left as-is.
     """
     return _sub_refs(text, _assignment_values(text))
+
+
+# R7 S1 (FAMILY): bash comma-list brace expansion. /bin/sh -> bash KEEPS brace
+# expansion (Alex R7 env fact), so `rm -rf /{home,usr}` and `{rm,-rf,/}` are
+# real execution paths, not theoretical spellings.
+_BRACE_MAX_WORDS = 64
+_BRACE_MAX_PASSES = 64
+
+
+def _expand_braces(text: str) -> str | None:
+    """Bounded, NON-executing bash brace-list expansion (R7 S1 family).
+    Expansion is WORD-LOCAL (bash distributes prefix/suffix within ONE word:
+    ``rm -rf /{a,b}`` -> ``rm -rf /a /b``, never a duplicated verb). Innermost
+    lists first; ``${VAR}`` parameter braces ($-prefixed) and comma-less
+    braces (``{}``, ``{x}``) stay literal. Returns None when a word is
+    UNRESOLVABLE within budget — ``{a..b}`` range syntax, word explosion
+    (>64 words) or pass exhaustion — so destructive verbs can fail closed.
+    Over-inclusive even inside quotes (module philosophy): harmless for
+    non-destructive commands, which never fail closed on braces."""
+    if "{" not in text:
+        return text
+    words: list[str] = []
+    for word in text.split():
+        if "{" not in word:
+            words.append(word)
+            continue
+        out = word
+        for _ in range(_BRACE_MAX_PASSES):
+            pos = 0
+            expanded = False
+            while not expanded:
+                close = out.find("}", pos)
+                if close < 0:
+                    break
+                open_ = out.rfind("{", 0, close)
+                if open_ < 0 or (open_ > 0 and out[open_ - 1] == "$"):
+                    pos = close + 1
+                    continue
+                body = out[open_ + 1:close]
+                if "," not in body:
+                    if ".." in body:
+                        return None  # {a..b} range: not statically expanded
+                    pos = close + 1
+                    continue
+                prefix, suffix = out[:open_], out[close + 1:]
+                out = " ".join(prefix + part + suffix for part in body.split(","))
+                if len(out.split()) > _BRACE_MAX_WORDS:
+                    return None
+                expanded = True
+            if not expanded:
+                break
+        else:
+            return None  # pass budget exhausted: unresolvable
+        words.append(out)
+    return " ".join(words)
 
 
 _RM_LONG_FLAGS = {
@@ -261,6 +358,16 @@ def _raw_remainder(seg: str) -> str:
     """Segment text after the first token, preserving internal whitespace."""
     m = re.match(r"\S+\s+", seg)
     return seg[m.end():] if m else ""
+
+
+def _unquote_outer(tok: str) -> str:
+    """Strip ONE layer of matching outer quotes from a wrapper payload token
+    (R7 gate-fix #119): ``sh -c 'echo "a\"; X="rm -rf /"; $X'`` hands the
+    recursion a single-quoted blob whose interior quoting the assignment
+    extractor needs. Unquoted tokens pass through unchanged."""
+    if len(tok) >= 2 and tok[0] in "'\"" and tok[-1] == tok[0]:
+        return tok[1:-1]
+    return tok
 
 
 # Wrapper flags that consume a SEPARATED argument (``xargs -n 1``, ``-I {}``,
@@ -324,12 +431,19 @@ def _drop_token(text: str) -> str:
     return text[m.end():] if m else ""
 
 
-def _read_word(text: str, start: int = 0) -> tuple[str, int, bool]:
+def _read_word(text: str, start: int = 0, *, posix: bool = False) -> tuple[str, int, bool]:
     """One shell word from *start* (R4-S1): single quotes are literal, double
     quotes and backslash escapes are honored, so a quoted multi-word flag
     argument (``sudo -p 'x y'``) is consumed as ONE token instead of desyncing
     the wrapper-skip. Returns (word, end_offset, closed); an unclosed quote
-    yields the remainder with closed=False so callers can fail closed."""
+    yields the remainder with closed=False so callers can fail closed.
+
+    R7 gate-fix (#119): ``posix=True`` applies the PRODUCT-shell (/bin/sh)
+    fail-closed reading — inside "..." a backslash escapes ONLY $ ` " \\ newline
+    (POSIX content rule); before any other char it stays LITERAL. Quote
+    closure additionally treats an odd backslash run preceded by a non-special
+    char as a terminator (conservative: the unclosed-tail family Alex H1
+    exploited desyncs bash parity). The default bash-parity path is unchanged."""
     buf: list[str] = []
     quote: str | None = None
     escaped = False
@@ -349,6 +463,12 @@ def _read_word(text: str, start: int = 0) -> tuple[str, int, bool]:
             i += 1
             continue
         if ch == "\\":
+            if quote == '"' and posix and (
+                    i + 1 >= len(text) or text[i + 1] not in "$`\"\\\n"):
+                # POSIX: backslash before a non-special char is literal.
+                buf.append(ch)
+                i += 1
+                continue
             if i + 1 < len(text):
                 buf.append(text[i + 1])
                 i += 2
@@ -600,14 +720,48 @@ def nesting_exceeds_budget(command: str) -> bool:
 # (/home/user, /home/user/.) is NOT root-equivalent — the trailing dot group
 # only consumes "." / ".." components, never a real name.
 _ROOT_BARE_RX = r"/+(?:\.{1,2}/+)*\.{0,2}"
-_ROOT_DIRS_RX = r"/+(?:\.{1,2}/+)*(?:home|usr|etc|var|boot|opt|srv)(?:/+\.{1,2})*/*"
-_ROOT_HOME_RX = r"(?:~|\$HOME)(?:/+\.{1,2})*/*"
+# R7 S4: EVERY top-level system directory is root-equivalent (deleting /bin,
+# /lib, /root, /proc … bricks the OS). lib64 precedes lib for a clean match;
+# the boundary lookahead keeps subpaths (/dev/null, /proc/self, /home/user)
+# NON-root.
+_ROOT_DIRS_RX = (r"/+(?:\.{1,2}/+)*(?:home|usr|etc|var|boot|opt|srv"
+                 r"|bin|sbin|lib64|lib|root|sys|proc|dev|run)(?:/+\.{1,2})*/*")
+# R7 S5: ~root folds to /root (root-equivalent via _ROOT_DIRS_RX). Other
+# ~user homes are unresolvable -> fail closed for destructive verbs below.
+_ROOT_HOME_RX = r"(?:~(?:root)?|\$HOME)(?:/+\.{1,2})*/*"
+# R7 S2 (FAMILY): a pathname glob in the FIRST component of an absolute path
+# can expand to any top-level dir (/hom* /?ome /[h]ome /us* -> /home /usr),
+# with or without a trailing subpath (/[h]ome/. still denotes /home/.).
+# The glob char cannot cross '/' — /tmp/* and /home/user/* (component 2+)
+# and relative globs (*.bak) are NOT root-equivalent.
+_ROOT_GLOB_RX = r"/+(?:\.{1,2}/+)*[^/\s'\"]*[*?\[][^/\s'\"]*(?:/[^\s'\"]*)?(?=[\s'\"*]|$)"
 #: Shared operand body (no anchors) — policy/risk compose their rules from it.
-ROOT_OPERAND_RX = rf"(?:{_ROOT_BARE_RX}|{_ROOT_DIRS_RX}|{_ROOT_HOME_RX})"
+ROOT_OPERAND_RX = rf"(?:{_ROOT_BARE_RX}|{_ROOT_DIRS_RX}|{_ROOT_HOME_RX}|{_ROOT_GLOB_RX})"
 _RM_ROOT_OPERAND_RX = re.compile(rf"^{ROOT_OPERAND_RX}$")
 #: Bare filesystem root only (/, /., /.., //, /./) — the sensitive-target scan
 #: skips these for non-write verbs (echo "rm -rf /" stays inert).
 BARE_ROOT_OPERAND_RX = re.compile(rf"^(?:{_ROOT_BARE_RX})$")
+_ROOT_GLOB_OPERAND_RX = re.compile(rf"^(?:{_ROOT_GLOB_RX})$")
+# R7 S5: a WHOLE ~user home (no real subpath) — the user's home directory is
+# unknowable to static analysis, so destructive verbs fail closed on it.
+_TILDE_USER_HOME_RX = re.compile(r"^~[A-Za-z0-9_.-]+(?:/+\.{1,2})*/*$")
+
+
+def _unresolvable_operand(tok: str) -> bool:
+    """R7 fail-closed family: True when a destructive verb's operand carries
+    an expansion static resolution cannot prove safe — an unexpanded
+    ``$…``/backtick (R2 C3), a first-component absolute glob (S2), a whole
+    ~user home (S5), or an unresolvable brace list (S1). Non-destructive
+    verbs never fail closed on these (over-block guard)."""
+    if "$" in tok or "`" in tok:
+        return True
+    if _ROOT_GLOB_OPERAND_RX.match(tok) or _TILDE_USER_HOME_RX.match(tok):
+        return True
+    # Unbalanced brace fragments are expansion debris (e.g. IFS splitting a
+    # value that contained a brace list) — the real operand is unknowable.
+    if ("{" in tok) != ("}" in tok):
+        return True
+    return "{" in tok and _expand_braces(tok) is None
 
 
 def _rm_root_order_free(tokens: list[str]) -> bool:
@@ -716,10 +870,17 @@ def _xargs_has_arg_file(text: str) -> bool:
 # the EFFECTIVE operand, not the spelling: ${UNSET:-/}, $(echo /), backticks,
 # "$@"/"$N" positionals and xargs stdin payloads all denote real targets.
 
-def _raw_segments(text: str) -> list[tuple[str, str]]:
+def _raw_segments(text: str, *, posix: bool = False) -> list[tuple[str, str]]:
     """Split *text* into (preceding_separator, segment) pairs on unquoted
     ``&&``/``||``/``;``/``|``/``&``/newline. Quote-aware so payload boundaries
-    (``bash -c '...'``) survive for positional-argument extraction."""
+    (``bash -c '...'``) survive for positional-argument extraction.
+
+    R7 gate-fix (#119): ``posix=True`` is the PRODUCT-shell (/bin/sh) fail-closed
+    interpretation — an odd backslash run before a quote whose preceding char
+    is non-special closes the string, exposing tail segments that the bash
+    parity read merges into an inert lead (Alex H1 unclosed-tail family).
+    Bash parity (default) is unchanged; the pass is over-inclusive by design
+    and harmless for non-destructive commands, which never fail closed."""
     out: list[tuple[str, str]] = []
     buf: list[str] = []
     quote: str | None = None
@@ -729,8 +890,29 @@ def _raw_segments(text: str) -> list[tuple[str, str]]:
         ch = text[i]
         if quote is not None:
             buf.append(ch)
-            if ch == quote and (quote == "'" or text[i - 1:i] != "\\"):
-                quote = None
+            if ch == quote:
+                if quote == "'":
+                    quote = None
+                else:
+                    # R7 S6: backslash PARITY — a quote closes only after an
+                    # EVEN run of backslashes ("a\\" ends the string; the old
+                    # single-char lookbehind desynced on escaped backslashes).
+                    j = i - 1
+                    n = 0
+                    while j >= 0 and text[j] == "\\":
+                        n += 1
+                        j -= 1
+                    closes = n % 2 == 0
+                    if posix and not closes and j >= 0 and text[j] not in "$`\"\\\n":
+                        # R7 gate-fix (#119): product-shell fail-closed read —
+                        # an odd backslash run preceded by a NON-special char
+                        # is a potential string terminator (Alex H1 unclosed-
+                        # tail family): close it so the tail segments surface
+                        # and destructive verbs fail closed. Non-destructive
+                        # commands are unaffected (over-inclusive by design).
+                        closes = True
+                    if closes:
+                        quote = None
             i += 1
             continue
         if ch in "'\"":
@@ -898,14 +1080,22 @@ def unresolved_destructive_operands(command: str) -> bool:
     destructive executable (rm/shred/dd/find -delete) carries an operand the
     normalizer cannot resolve — an unexpanded ``$…``/backtick after full
     resolution, or an xargs payload fed by non-literal piped stdin. Such
-    commands must never be silent-allowed in full_access."""
-    return _scan_unresolved(str(command), [], 0)
+    commands must never be silent-allowed in full_access.
+
+    R7 gate-fix (#119): the scan runs under BOTH shell interpretations — bash
+    parity AND the product-shell (/bin/sh) POSIX double-quote read. When the
+    two disagree on quote closure (Alex H1), a destructive verb exposed only
+    by the POSIX pass still fails closed. Non-destructive commands never fail
+    closed on either pass."""
+    cmd = str(command)
+    return _scan_unresolved(cmd, [], 0) or _scan_unresolved(cmd, [], 0, posix=True)
 
 
-def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
+def _scan_unresolved(text: str, positionals: list[str], depth: int,
+                     *, posix: bool = False) -> bool:
     if depth > 3:
         return False
-    segs = _raw_segments(text)
+    segs = _raw_segments(text, posix=posix)
     pos = list(positionals)
     for _sep, seg in segs:
         stripped = [_strip_tricks(t) for t in _tokens_raw(seg)]
@@ -924,17 +1114,21 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
             ci = rtoks.index("-c")
             if ci + 1 < len(rtoks):
                 pargs = [_strip_tricks(t) for t in rtoks[ci + 2:]]
-                if _scan_unresolved(rtoks[ci + 1], pargs[1:], depth + 1):
+                if _scan_unresolved(_unquote_outer(rtoks[ci + 1]), pargs[1:],
+                                    depth + 1, posix=posix):
                     return True
             continue
         norm = _strip_tricks(seg)
         if base == "eval":
-            if _scan_unresolved(_raw_remainder(norm), pos, depth + 1):
+            # R7 gate-fix (#119): recurse on the RAW remainder (outer quotes
+            # stripped) so the interior assignment quoting survives.
+            if _scan_unresolved(_unquote_outer(_raw_remainder(seg)), pos,
+                                depth + 1, posix=posix):
                 return True
             continue
         if base == "env":
             payload = _skip_env_flags(_raw_remainder(norm))
-            if _scan_unresolved(payload, pos, depth + 1):
+            if _scan_unresolved(payload, pos, depth + 1, posix=posix):
                 return True
             continue
         norm = _expand_vars(norm)
@@ -945,6 +1139,17 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
         # $HOME is always assigned in a real shell — it is resolvable, not
         # an unknown operand (R2 W6 balance: `rm $HOME/notes.txt` is benign).
         norm = norm.replace("$HOME", "~")
+        # R7 S1: expand brace lists so a brace-built verb/operand is visible
+        # ({rm,-rf,/} IS rm). An UNRESOLVABLE brace list plus a destructive
+        # verb anywhere in the segment fails closed — the brace word may BE
+        # the verb, so operand-only checks cannot see it.
+        braced = _expand_braces(norm)
+        if braced is None:
+            if re.search(r"\b(?:rm|shred|dd)\b", norm) or (
+                    re.search(r"\bfind\b", norm) and "-delete" in norm):
+                return True
+        else:
+            norm = braced
         toks = norm.split()
         i = 0
         while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
@@ -983,6 +1188,13 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
             ptoks = payload.split()
             if not ptoks:
                 continue
+            # R7 S1: a brace-built xargs payload verb is the real verb.
+            pbraced = _expand_braces(payload)
+            if pbraced is None:
+                if re.search(r"\b(?:rm|shred|dd)\b", payload):
+                    return True
+                continue
+            ptoks = pbraced.split()
             lit: str | None = None
             if "|" in sep and "||" not in sep:
                 upstream = segs[idx - 1][1] if idx > 0 else ""
@@ -1005,12 +1217,14 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
                 return True
             if "|" in sep and "||" not in sep and lit is None:
                 return True
-            if any("$" in t or "`" in t for t in ptoks[1:] if not t.startswith("-")):
+            if any(_unresolvable_operand(t) for t in ptoks[1:] if not t.startswith("-")):
                 return True
             continue
         if base in _DESTRUCTIVE_EXES or (base == "find" and _is_find_delete(args)):
             operands = [t for t in args if not t.startswith("-")]
-            if any("$" in t or "`" in t for t in operands):
+            # R7 fail-closed family: $…/backtick (R2 C3) + first-component
+            # glob (S2) + whole ~user home (S5) + unresolvable braces (S1).
+            if any(_unresolvable_operand(t) for t in operands):
                 return True
     return False
 
@@ -1042,14 +1256,21 @@ def command_variants(command: str) -> list[str]:
         add(norm)
         add(_compact(norm))
         expanded = _sub_refs(norm, _merged_assignments(text, norm))
-        if expanded != norm:
-            add(expanded)
-            add(_compact(expanded))
+        # R7 S1: brace expansion is part of the shared grammar — the deny
+        # floor and the catastrophic gate must see the expanded words. Runs
+        # AFTER substitution so braces inside assigned values expand too
+        # (IFS=,; X=rm,-rf,/{home,usr}; $X).
+        braced = _expand_braces(expanded)
+        if braced is None:
+            braced = expanded  # unresolvable: _scan_unresolved fails closed
+        if braced != norm:
+            add(braced)
+            add(_compact(braced))
             if depth < 1:
                 # re-walk the expanded form (fixpoint: re-expansion is a
                 # no-op, so this terminates after one extra level)
-                walk(expanded, depth + 1, positionals)
-        resolved = _resolve_dynamic(expanded, positionals)
+                walk(braced, depth + 1, positionals)
+        resolved = _resolve_dynamic(braced, positionals)
         if resolved != expanded:
             add(resolved)
             add(_compact(resolved))
@@ -1061,6 +1282,13 @@ def command_variants(command: str) -> list[str]:
                 if inner.strip():
                     walk(inner, depth + 1)
         segments = [s.strip() for s in _SPLIT_RX.split(norm) if s.strip()]
+        # R7 gate-fix (#119): the EXPANDED form's segments must surface at
+        # every depth — wrapper recursion (depth >= 1) does not re-walk the
+        # expanded text, so a resolved payload segment (Alex H1 inside
+        # sh -c '…': …; rm -rf /) would otherwise stay hidden from the
+        # anchored deny globs and the catastrophic gate.
+        if braced != norm:
+            segments += [s.strip() for s in _SPLIT_RX.split(braced) if s.strip()]
         for seg in segments:
             add(seg)
             add(_compact(seg))
@@ -1127,7 +1355,13 @@ def command_variants(command: str) -> list[str]:
                     ci = rtoks.index("-c")
                     if ci + 1 < len(rtoks):
                         pargs = [_strip_tricks(t) for t in rtoks[ci + 2:]]
-                        walk(rtoks[ci + 1], depth + 1, pargs[1:])
+                        walk(_unquote_outer(rtoks[ci + 1]), depth + 1, pargs[1:])
+                elif rbase == "eval":
+                    # R7 gate-fix (#119): raw eval payload keeps its interior
+                    # quoting for the assignment extractor (Alex H1 family).
+                    payload = _unquote_outer(_raw_remainder(rseg))
+                    if payload.strip():
+                        walk(payload, depth + 1, positionals)
                 elif rbase == "xargs":
                     # R4-S3: the RAW remainder keeps quoted flag arguments
                     # (``-a 'my file'``) intact for the quote-aware skip, and
@@ -1195,4 +1429,9 @@ def normalize_command(command: str) -> str:
     raw = str(command)
     norm = _strip_tricks(raw)
     text = _sub_refs(norm, _merged_assignments(raw, norm))
+    # R7 S1: expand brace lists in the canonical form too (risk scoring) —
+    # after substitution so braces inside assigned values expand as well.
+    braced = _expand_braces(text)
+    if braced is not None:
+        text = braced
     return _semantic_flags(_resolve_dynamic(text))
