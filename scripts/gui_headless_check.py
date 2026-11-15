@@ -2718,6 +2718,251 @@ def f_r4_action_map(page, client) -> None:
           and glyphs["unknown"][0] == "tool")
 
 
+# --------------------------------------------------------------------------
+# R5 UX regression flows (task #92) — exercised at EVERY width.
+# --------------------------------------------------------------------------
+def f_r5_successor_deny(page, client, width: int) -> None:
+    """R5-F1 (Med): a queued successor must re-focus the SAME safe default
+    (#ap-deny) as the first approval — never focusables()[0] (= Allow once),
+    which turned a reflex Enter after a deny into an APPROVE of the next
+    request. ID-aware stub (R3 U8 discipline) records every decision."""
+    decided: list[dict] = []
+    live = {"ids": []}
+
+    def stub(route):
+        aid = route.request.url.rsplit("/", 1)[-1].split("?")[0]
+        try:
+            body = json.loads(route.request.post_data or "{}")
+        except ValueError:
+            body = {}
+        decided.append({"id": aid, "decision": body.get("decision")})
+        if aid in live["ids"]:
+            route.fulfill(status=200, content_type="application/json", body="{}")
+        else:
+            route.fulfill(status=404, content_type="application/json",
+                          body=json.dumps({"error": "no such approval"}))
+
+    page.route("**/api/approval/*", stub)
+    try:
+        page.evaluate("""() => {
+            state.streaming = true;
+            state.approvalQueue = [];
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            queueApproval({id: 'r5a', tool: 'write_file', level: 'medium', risk: 4,
+                           mode: 'sandboxed', args: {path: 'r5a.txt'}, reasons: []});
+            queueApproval({id: 'r5b', tool: 'write_file', level: 'medium', risk: 4,
+                           mode: 'sandboxed', args: {path: 'r5b.txt'}, reasons: []});
+        }""")
+        live["ids"] = page.evaluate("() => state.approvalQueue.map(x => x.id)")
+        page.wait_for_selector("#approval-modal:not([hidden])", timeout=5_000)
+        ae0 = page.evaluate("() => document.activeElement.id")
+        check(f"{width}px: R5-F1 first approval defaults to Deny", ae0 == "ap-deny")
+        page.click("#ap-deny")
+        page.wait_for_function("() => state.approvalQueue.length === 1", timeout=5_000)
+        page.wait_for_timeout(200)  # let the answerApproval finally land
+        ae1 = page.evaluate("() => document.activeElement.id")
+        print(f"PROBE R5-F1 {width}px successor focus: {ae1}", flush=True)
+        check(f"{width}px: R5-F1 queued successor re-focuses Deny (not Allow once)",
+              ae1 == "ap-deny")
+        page.keyboard.press("Enter")  # the reflex Enter that used to APPROVE
+        page.wait_for_function("() => state.approvalQueue.length === 0", timeout=5_000)
+        page.wait_for_timeout(150)
+        check(f"{width}px: R5-F1 reflex Enter after deny DENIES the successor",
+              decided == [{"id": "r5a", "decision": "deny"},
+                          {"id": "r5b", "decision": "deny"}])
+    finally:
+        page.unroute("**/api/approval/*")
+        page.evaluate("""() => {
+            state.approvalQueue = []; state.streaming = false;
+            document.querySelectorAll('.app-card').forEach(c => c.remove());
+            closeModal('#approval-modal');
+            document.getElementById('run-state').textContent = 'Ready';
+        }""")
+
+
+def f_r5_roving_scroll(page, client, width: int) -> None:
+    """R5-F2 (Med): arrow-roving must keep the focused tab onscreen when the
+    strip overflows (320px). instant scroll — smooth gets clobbered by the
+    keepScroll restore in renderTabs. 14 long-title tabs overflow every width;
+    the 2.3s settle spans a natural 2s poll so keepScroll is exercised."""
+    page.evaluate("""() => {
+        window.__r5tabs = {tabs: state.openTabs.slice(), chats: state.chats.slice()};
+        const ids = [];
+        for (let i = 0; i < 14; i++) {
+            const id = 'r5tab' + String(i).padStart(2, '0');
+            ids.push(id);
+            state.chats.push({id, title: 'R5 roving overflow probe tab ' + i});
+        }
+        state.openTabs = ids;
+        renderTabs();
+    }""")
+    try:
+        page.evaluate("() => document.querySelector('#tabs .tab').focus()")
+        for _ in range(6):
+            page.keyboard.press("ArrowRight")
+        page.wait_for_timeout(2_300)
+        probe = page.evaluate("""() => {
+            const ae = document.activeElement;
+            const t = document.getElementById('tabs');
+            const r = ae.getBoundingClientRect(), s = t.getBoundingClientRect();
+            // nearest alignment: a tab that FITS must be fully contained; a tab
+            // WIDER than the scrollport (320/420px) can only be start- or
+            // end-aligned — that is the correct scrollIntoView(nearest) result.
+            const vis = (r.width <= s.width + 1)
+                ? (r.left >= s.left - 1 && r.right <= s.right + 1)
+                : (Math.abs(r.left - s.left) <= 1 || Math.abs(r.right - s.right) <= 1);
+            return {isTab: !!(ae.classList && ae.classList.contains('tab')),
+                    vis, ti: ae.tabIndex, sw: t.scrollWidth, cw: t.clientWidth,
+                    rl: Math.round(r.left), sl: Math.round(s.left),
+                    rr: Math.round(r.right), sr: Math.round(s.right)};
+        }""")
+        print(f"PROBE R5-F2 {width}px roving: " + json.dumps(probe), flush=True)
+        check(f"{width}px: R5-F2 arrow-focused tab stays onscreen in the strip",
+              probe["isTab"] and probe["vis"])
+        check(f"{width}px: R5-F2 roving tabindex follows the arrow focus",
+              probe["isTab"] and probe["ti"] == 0)
+    finally:
+        page.evaluate("""() => {
+            if (window.__r5tabs) {
+                state.openTabs = window.__r5tabs.tabs;
+                state.chats = window.__r5tabs.chats;
+                delete window.__r5tabs;
+            }
+            renderTabs();
+        }""")
+
+
+def f_r5_partial_outage(page, client, width: int) -> None:
+    """R5-F3 (Low): partial outage — /api/status down while /api/state still
+    answers. pollState must never repaint 'Ready' over the honest
+    'Disconnected' while conn-dot is off; recovery must repaint again."""
+    page.route("**/api/status", lambda route: route.fulfill(
+        status=503, content_type="application/json",
+        body=json.dumps({"error": "r5 injected partial outage"})))
+    try:
+        page.evaluate("async () => { await refreshStatus(); }")
+        st = page.evaluate("""() => ({
+            off: document.getElementById('conn-dot').classList.contains('off'),
+            rs: document.getElementById('run-state').textContent})""")
+        check(f"{width}px: R5-F3 partial outage paints Disconnected + dot off",
+              st["off"] and st["rs"] == "Disconnected")
+        page.evaluate("async () => { await pollState(); }")
+        page.wait_for_timeout(2_300)  # let a natural 2s poll tick land too
+        st2 = page.evaluate("""() => ({
+            off: document.getElementById('conn-dot').classList.contains('off'),
+            rs: document.getElementById('run-state').textContent})""")
+        print(f"PROBE R5-F3 {width}px split-brain: " + json.dumps(st2), flush=True)
+        check(f"{width}px: R5-F3 state poll never repaints Ready while dot off",
+              st2["off"] and st2["rs"] == "Disconnected")
+    finally:
+        page.unroute("**/api/status")
+    page.evaluate("async () => { await refreshStatus(); }")
+    wait_boot(page)
+    rec = page.evaluate("""() => ({
+        off: document.getElementById('conn-dot').classList.contains('off'),
+        rs: document.getElementById('run-state').textContent})""")
+    check(f"{width}px: R5-F3 recovers to Ready + dot on when status returns",
+          not rec["off"] and rec["rs"] == "Ready")
+
+
+def f_r5_boot_error(page, client, width: int) -> None:
+    """R5-F4 (Low): the boot-error card must be announced (role=alert) and own
+    focus (#boot-retry) when the bridge is unreachable at boot; Retry must
+    recover and hand focus back to the composer. Fresh page in the SAME
+    sandboxed context, status blocked from the first byte (everConnected
+    stays false)."""
+    p2 = page.context.new_page()
+    p2.set_default_timeout(20_000)
+    p2.on("dialog", lambda d: d.accept())
+    p2.route("**/api/status", lambda route: route.fulfill(
+        status=503, content_type="application/json",
+        body=json.dumps({"error": "r5 injected boot outage"})))
+    try:
+        p2.goto(f"{client.base}/#token={client.token}", wait_until="domcontentloaded")
+        p2.wait_for_selector("#boot-error:not([hidden])", timeout=15_000)
+        p2.wait_for_timeout(400)  # let boot() finish past the focus guard
+        probe = p2.evaluate("""() => ({
+            role: document.getElementById('boot-error').getAttribute('role'),
+            live: document.getElementById('boot-error').getAttribute('aria-live'),
+            ae: document.activeElement.id || document.activeElement.tagName})""")
+        print(f"PROBE R5-F4 {width}px boot-error: " + json.dumps(probe), flush=True)
+        check(f"{width}px: R5-F4 boot error is announced (role=alert / aria-live)",
+              probe["role"] == "alert" or probe["live"] == "assertive")
+        check(f"{width}px: R5-F4 boot error moves focus to Retry",
+              probe["ae"] == "boot-retry")
+        p2.unroute("**/api/status")
+        p2.click("#boot-retry")
+        p2.wait_for_function(
+            "() => document.getElementById('boot-error').hidden"
+            " && !document.getElementById('conn-dot').classList.contains('off')",
+            timeout=15_000)
+        rec = p2.evaluate("""() => ({
+            hidden: document.getElementById('boot-error').hidden,
+            off: document.getElementById('conn-dot').classList.contains('off'),
+            ae: document.activeElement.id || document.activeElement.tagName})""")
+        check(f"{width}px: R5-F4 Retry recovers (card hidden, dot on, focus sane)",
+              rec["hidden"] and not rec["off"] and rec["ae"] != "boot-retry")
+    finally:
+        try:
+            p2.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def f_r5_cast_sysline(page, client, width: int) -> None:
+    """R5-F5 (Low): GUI /skill cast must leave a persistent in-stream sysline
+    with the SAME wording as the TUI (chat.py), not just a transient toast."""
+    skill_dir = HOME / "skills" / "r5-cast-probe"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: r5-cast-probe\ndescription: R5 cast parity probe.\n---\n\n"
+        "# Probe\n\nDo the probe.\n", encoding="utf-8")
+    sid = page.evaluate("() => state.session")
+    if not sid:
+        sid = client.post("/api/chats", {"first_message": ""})["id"]
+        page.evaluate("async (s) => { await openChat(s); }", sid)
+    try:
+        page.evaluate(
+            "async () => { await handleSlash('/skill:r5-cast-probe r5 parity probe'); }")
+        page.wait_for_timeout(400)
+        note = page.evaluate("""() => {
+            const els = Array.from(document.querySelectorAll('#stream .msg.systemish .content'));
+            const el = els.find(e => e.textContent.includes('skill cast'));
+            return el ? el.textContent.trim() : null;
+        }""")
+        print(f"PROBE R5-F5 {width}px sysline: {note!r}", flush=True)
+        check(f"{width}px: R5-F5 cast leaves a persistent sysline (TUI parity wording)",
+              note == "skill cast · r5-cast-probe — the agent will follow it from here")
+        page.evaluate("() => { document.getElementById('toasts').innerHTML = ''; }")
+        page.wait_for_timeout(300)
+        still = page.evaluate(
+            "() => Array.from(document.querySelectorAll('#stream .msg.systemish .content'))"
+            ".some(e => e.textContent.includes('skill cast · r5-cast-probe'))")
+        check(f"{width}px: R5-F5 sysline survives toast expiry (in-stream, not transient)",
+              still)
+    finally:
+        page.evaluate("""() => {
+            document.querySelectorAll('#stream .msg.systemish').forEach(e => {
+                if (e.textContent.includes('r5-cast-probe')) e.remove();
+            });
+            document.getElementById('toasts').innerHTML = '';
+            if (!document.querySelector('#stream .msg')) emptyState();
+        }""")
+
+
+def flows_r5(page, client, width: int) -> None:
+    """R5 UX regression flows (task #92) — run at EVERY width."""
+    for name, fn in [
+        ("r5-successor-deny", lambda: f_r5_successor_deny(page, client, width)),
+        ("r5-roving-scroll", lambda: f_r5_roving_scroll(page, client, width)),
+        ("r5-partial-outage", lambda: f_r5_partial_outage(page, client, width)),
+        ("r5-boot-error", lambda: f_r5_boot_error(page, client, width)),
+        ("r5-cast-sysline", lambda: f_r5_cast_sysline(page, client, width)),
+    ]:
+        dismiss_stray_modals(page)
+        flow(f"{name}-{width}", fn)
+
+
 def flows_responsive(page, width: int) -> None:
     def f():
         wait_boot(page)
@@ -2914,6 +3159,8 @@ def main() -> int:
                         flows_laptop(page, client)
                     else:
                         flows_responsive(page, width)
+                    # R5 UX regressions (task #92) run at EVERY width.
+                    flows_r5(page, client, width)
                     dismiss_stray_modals(page)
                     # capture hygiene: let entrance animations settle (view
                     # switches replay them) and drop transient test toasts so

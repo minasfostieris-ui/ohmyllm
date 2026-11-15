@@ -900,7 +900,11 @@ class Handler(BaseHTTPRequestHandler):
         headers = ({"x-api-key": key, "anthropic-version": "2023-06-01"}
                    if kind == "anthropic" else {"Authorization": f"Bearer {key}"})
         try:
-            r = httpx.get(f"{base}/models", headers=headers, timeout=10.0)
+            # R5 F2: key-bearing request — never inherit env proxies (a
+            # hostile HTTPS_PROXY would see the Authorization header) and
+            # never follow redirects off the provider endpoint.
+            r = httpx.get(f"{base}/models", headers=headers, timeout=10.0,
+                          trust_env=False, follow_redirects=False)
             if r.status_code != 200:
                 return False
             j = r.json()
@@ -1062,6 +1066,10 @@ class Handler(BaseHTTPRequestHandler):
             with self.state.turn_lock:
                 if (self.state.talk is not None and self.state.talk["rec"].running) \
                         or self.state.talk_pending:
+                    # R5 F4: a new press supersedes any stop left pending by
+                    # an earlier timed-out release — otherwise the late start
+                    # tears the recorder down while the UI is told "already".
+                    self.state.voice_stop_pending = False
                     return 200, {"ok": True, "already": True}
                 self.state.talk_pending = True
                 # R4-3: a fresh start supersedes any stop left pending by an
@@ -1207,7 +1215,8 @@ class Handler(BaseHTTPRequestHandler):
         sid = str(body.get("session") or "")
         sess = svc.sessions.get(sid) if sid else None
         if sess is None:
-            return self._json(400, {"error": "unknown session"})
+            # L1: parity with /api/message — an unknown session is a 404
+            return self._json(404, {"error": "unknown session"})
         content = svc.skills.read(name)
         if content is None:
             return self._json(404, {"error": f"no skill {name!r}",
@@ -1274,12 +1283,33 @@ class Handler(BaseHTTPRequestHandler):
         svc = self.state.svc
         live = json.loads(svc.config.model_dump_json())
         live_agent = dict(live.get("agent") or {})
-        live_agent["yolo"] = bool(svc.config.agent.yolo)  # never in dumps
+        # pending-aware when the defer API is present (duck-typed fakes lack it)
+        effective = getattr(svc, "effective_yolo", None)
+        live_agent["yolo"] = (
+            effective() if effective is not None else bool(live_agent.get("yolo", False))
+        )
         incoming = {k: v for k, v in body.items() if k != "confirm"}
         sensitive = {"yolo", "op_mode", "tone", "custom_tones"}
         changed = sorted(k for k in sensitive if k in incoming and incoming[k] != live_agent.get(k))
         if changed and body.get("confirm") is not True:
             return self._json(403, {"error": "agent policy change requires confirm=true: " + ", ".join(changed)})
+        # R5 F1: a mid-turn yolo delta is DEFERRED to the next prompt — the
+        # running turn must not be retired/cancelled and must keep its entry
+        # policy. Strip it from the applied payload (the carry below keeps
+        # the live value ⇒ no security delta ⇒ no retire); work()'s finally
+        # settles it after the one-prompt disarm. /api/status reports the
+        # effective state, so the UI's armed/disarmed display stays truthful.
+        deferred = False
+        lock = getattr(self.state, "turn_lock", None)
+        busy = False
+        if lock is not None:
+            with lock:
+                busy = bool(self.state.busy)
+        request = getattr(svc, "request_yolo", None)
+        if busy and "yolo" in incoming and request is not None:
+            request(bool(incoming["yolo"]), busy=True)
+            incoming = {k: v for k, v in incoming.items() if k != "yolo"}
+            deferred = True
         merged = _carry_runtime_flags(svc.config, deep_merge(live, {"agent": incoming}))
         try:
             new = Config.model_validate(merged)
@@ -1291,7 +1321,10 @@ class Handler(BaseHTTPRequestHandler):
             args={"changed": sorted(incoming)}, approval="user", success=True,
             duration_ms=0, event="agent_config_changed",
         )
-        self._json(200, {"ok": True, "config": _safe_config(new)})
+        payload: dict[str, Any] = {"ok": True, "config": _safe_config(new)}
+        if deferred:
+            payload["yolo_deferred"] = True
+        self._json(200, payload)
 
     def _memory_config(self, body: dict[str, Any]) -> None:
         """Apply explicit memory-policy changes through a dedicated control."""
@@ -1520,6 +1553,10 @@ class Handler(BaseHTTPRequestHandler):
                         final_payload["error"] = f"Session save failed: {exc}"
                         final_payload["saved"] = False
                 with self.state.turn_lock:
+                    # R5 F1: settle a deferred yolo delta AFTER the runtime's
+                    # finally-disarm and BEFORE busy clears — the finished
+                    # turn never saw it, the next prompt must.
+                    self.state.svc.settle_yolo()
                     self.state.busy = False
                     self.state.active_turn = None
                     self.state.active_session = None

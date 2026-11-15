@@ -155,6 +155,9 @@ class PlainApp:
                 live.stop()
             self._live = None
             self.svc.sessions.save(self.sess)  # every path: crash/Ctrl+C included
+            # R5 F1: settle any deferred yolo delta after the one-prompt
+            # disarm (safety net — the sequential REPL has no mid-turn input)
+            self.svc.settle_yolo()
         if result is None:
             return
         self.tok_s = result.tokens_per_s or self.tok_s
@@ -255,7 +258,7 @@ class PlainApp:
                     "build": "full agent"}[cmd]
             c.print(f"[bold]mode → {cmd}[/bold] · {desc}")
         elif cmd == "yolo":
-            cur = bool(getattr(self.svc.config.agent, "yolo", False))
+            cur = self.svc.effective_yolo()
             if arg and arg.lower() not in ("on", "off"):
                 # R4-07: an invalid argument must REJECT, never silently arm
                 # (or disarm) — same semantics as the GUI control.
@@ -263,7 +266,9 @@ class PlainApp:
                         + ("armed" if cur else "off") + ")")
             else:
                 want = arg.lower() if arg else ("off" if cur else "on")
-                self.svc.config.agent.yolo = want == "on"
+                # R5 F1: shared choke point — plain is a sequential REPL, so
+                # requests always apply immediately (never mid-turn).
+                self.svc.request_yolo(want == "on", busy=False)
                 c.print("[bold red]⚡ YOLO armed — the NEXT prompt auto-approves routine tool calls; "
                         "shell/network/mail still ask; catastrophic commands "
                         "(rm -rf /, fork bombs) stay blocked[/bold red]"

@@ -508,6 +508,12 @@ class LMStudioBackend(BaseBackend):
                             detail = (await resp.aread()).decode(errors="replace")[:300]
                             raise BackendError(f"LM Studio chat: expected SSE, got {detail}")
                         event_name = ""
+                        # R5 F3: the include_usage trailer arrives AFTER the
+                        # finish chunk (OpenAI spec order: finish → trailer →
+                        # [DONE]). Stash the terminal chunk on finish and keep
+                        # reading (bounded) so usage is never dropped.
+                        terminal: ChatChunk | None = None
+                        trailer_lines = 0
                         async for line in resp.aiter_lines():
                             line = line.strip()
                             if line.startswith("event:"):
@@ -523,6 +529,10 @@ class LMStudioBackend(BaseBackend):
                                     msg = payload
                                 raise BackendError(f"LM Studio: {str(msg)[:200]}")
                             if payload == "[DONE]":
+                                if terminal is not None:
+                                    terminal.usage = terminal.usage or usage_stash
+                                    yield terminal
+                                    return
                                 for kind, text in sp.flush():
                                     if kind == "reasoning":
                                         reasoning_parts.append(text)
@@ -541,6 +551,16 @@ class LMStudioBackend(BaseBackend):
                                 continue
                             if isinstance(data.get("usage"), dict) and data["usage"]:
                                 usage_stash = data["usage"]
+                            if terminal is not None:
+                                # finish already seen — only the usage trailer
+                                # can still matter; never stall on a server
+                                # that omits [DONE] (bounded wait).
+                                trailer_lines += 1
+                                if trailer_lines >= 64:
+                                    terminal.usage = terminal.usage or usage_stash
+                                    yield terminal
+                                    return
+                                continue
                             if not data.get("choices"):
                                 # usage-only trailer (include_usage): nothing to
                                 # emit — keep it for the terminal chunk
@@ -625,9 +645,18 @@ class LMStudioBackend(BaseBackend):
                                     chunk.tool_calls = _finish_tools(pending_tools)
                                 elif not content_seen and reasoning_parts:
                                     chunk.content = "".join(reasoning_parts)
-                            yield chunk
                             if finish:
-                                return
+                                # R5 F3: do NOT return yet — wait for the
+                                # usage-only trailer / [DONE] / stream end.
+                                terminal = chunk
+                            else:
+                                yield chunk
+                        if terminal is not None:
+                            # stream ended without [DONE] — still deliver the
+                            # terminal chunk with whatever usage arrived
+                            terminal.usage = terminal.usage or usage_stash
+                            yield terminal
+                            return
             except httpx.HTTPError as exc:
                 raise BackendError(f"LM Studio request error: {exc}") from exc
             except BackendError as exc:
@@ -642,6 +671,8 @@ class LMStudioBackend(BaseBackend):
                     body.pop("reasoning", None)
                     sp = ThinkSplitter()
                     usage_stash = None
+                    terminal = None
+                    trailer_lines = 0
                     continue
                 if _attempt == 0 and not streamed \
                         and any(k in str(exc).lower() for k in ("image", "vision", "multimodal")) \
@@ -654,6 +685,8 @@ class LMStudioBackend(BaseBackend):
                         for m in body["messages"]]
                     sp = ThinkSplitter()
                     usage_stash = None
+                    terminal = None
+                    trailer_lines = 0
                     continue
                 raise
 

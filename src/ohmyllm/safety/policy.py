@@ -17,19 +17,24 @@ from ..config.models import Config, PermissionMode
 from ..secureio import UnsafePathError, file_identity, is_environment_file, is_within, resolve_path
 from .modes import SAFE_COMMANDS, SUBCOMMAND_ALLOWLIST
 from .normalize import (
-    _PRIV_REQ_LONG,
-    _PRIV_REQ_SHORT,
     _PRIV_WRAPPERS,
+    _SHELL_WRAPPERS,
+    _TRANSPARENT_WRAPPERS,
     _quotes_balanced,
-    _skip_wrapper_flags,
+    _rm_root_order_free,
+    _strip_transparent_prefixes,
+    _strip_tricks,
     command_variants,
+    nesting_exceeds_budget,
     normalize_command,
     unresolved_destructive_operands,
 )
 from .risk import RiskScorer, _basename, level_for
 
 #: In-place write verbs whose destinations bypass redirect detection (S2/S2g).
-_WRITE_VERBS = frozenset({"sed", "tee", "cp", "mv", "ln", "install", "dd"})
+#: R5 A28-A29: perl -i and sponge join the family — they edit/soak files
+#: without a redirect operator.
+_WRITE_VERBS = frozenset({"sed", "tee", "cp", "mv", "ln", "install", "dd", "perl", "sponge"})
 
 #: Redirect operators (R4-S2): ``>>`` append, ``>&`` stdout+stderr, ``>|``
 #: clobber, plain ``>``. Pure-digit ``>&N`` targets are fd duplicates, not
@@ -41,15 +46,87 @@ def _redirect_targets(cmd: str) -> list[str]:
     """Redirect destinations from the RAW spelling UNION the deobfuscated
     form (R4-S2): ANSI-C ``$'…'`` and backslash escapes are decoded by
     normalize_command, and ``>&``/``>|`` operators are honored. The raw pass
-    keeps quoted destinations with spaces intact."""
+    keeps quoted destinations with spaces intact. R5 A20: process
+    substitution interiors are nested command boundaries — their redirects
+    count too (``echo x > >(tee /etc/passwd)``)."""
     targets: list[str] = []
-    for text in (cmd, normalize_command(cmd)):
+    texts = [cmd, normalize_command(cmd)]
+    texts.extend(procsub_interiors(cmd))
+    for text in texts:
         for m in _REDIRECT_RX.finditer(text):
             op, tgt = m.group(1), m.group(2)
             if op == ">&" and tgt.isdigit():
                 continue  # fd duplicate (2>&1), not a file write
             targets.append(tgt)
     return targets
+
+
+def procsub_interiors(text: str) -> list[str]:
+    """Interior commands of process substitutions ``>(…)``/``<(…)`` (R5
+    A20-A21), quote-aware with balanced-paren scanning. ``$((…))`` arithmetic
+    is NOT a procsub (the preceding ``$`` disqualifies it). Interiors are
+    real command boundaries: their writers and verbs must be gated."""
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch in "<>" and i + 1 < n and text[i + 1] == "(" \
+                and (i == 0 or text[i - 1] != "$"):
+            depth = 1
+            j = i + 2
+            q2: str | None = None
+            esc2 = False
+            while j < n and depth:
+                c2 = text[j]
+                if esc2:
+                    esc2 = False
+                elif q2 == "'":
+                    if c2 == "'":
+                        q2 = None
+                elif c2 == "\\":
+                    esc2 = True
+                elif q2 == '"':
+                    if c2 == '"':
+                        q2 = None
+                elif c2 in "'\"":
+                    q2 = c2
+                elif c2 == "(":
+                    depth += 1
+                elif c2 == ")":
+                    depth -= 1
+                j += 1
+            inner = text[i + 2:j - 1] if depth == 0 else text[i + 2:]
+            if inner.strip():
+                out.append(inner)
+            i = j
+            continue
+        i += 1
+    return out
 
 
 def _quote_segments(text: str) -> list[str] | None:
@@ -238,6 +315,10 @@ def is_sensitive_path(
     workspace = Path(workspace).expanduser().resolve(strict=False)
     p = resolve_path(raw, base=workspace, reject_symlinks=False)
     lowered = str(p).lower()
+    if str(p) == "/":
+        # R5 A01-A03: the filesystem root is sensitive in its own right —
+        # no operand position or spelling may make it a silent target.
+        return True
     if is_within(p, paths.global_home()) or is_within(p, workspace / ".ohmyllm"):
         return True
     for configured in allow_sensitive_paths:
@@ -276,6 +357,11 @@ class PolicyEngine:
     def is_system(self, raw: str | Path) -> bool:
         """OS-owned locations: never writable by the agent, in any mode."""
         p = str(self._abs(raw)).lower()
+        if p == "/":
+            # R5 A01-A03: bare root is a system location regardless of
+            # operand position — the regex family below only matches
+            # root-prefixed subpaths.
+            return True
         rx = (
             r"^/etc(/|$)", r"^/usr(/|$)", r"^/bin(/|$)", r"^/sbin(/|$)", r"^/boot(/|$)",
             r"^/sys(/|$)", r"^/proc(/|$)", r"^/dev(/|$)", r"^/lib(/|$)", r"^/lib64(/|$)",
@@ -422,12 +508,23 @@ class PolicyEngine:
             # ANSI-C quoting, chains, wrappers, resolved dynamic targets) —
             # spelling must not dodge the catastrophic gate (C1/C2/H1/C3).
             cmd = str(args.get("command") or "")
+            # R5 A18-A19 fail-closed: wrapper nesting beyond the walk budget
+            # hides the innermost payload from every bounded analysis.
+            if nesting_exceeds_budget(cmd):
+                return True
             # R2 C3 fail-closed: a destructive executable whose operands the
             # normalizer cannot resolve is catastrophic, never silent-allow.
             if unresolved_destructive_operands(cmd):
                 return True
             for variant in command_variants(cmd):
                 low = variant.lower()
+                # R5 A44 (REFUTED, must stay inert): a control char spliced
+                # INTO the executable word is one nonexistent command name
+                # — bash never word-splits quoted-expansion results. Check
+                # BEFORE whitespace splitting (LF would fabricate operands).
+                first_word = re.split(r"[ \t]+", low.strip(), maxsplit=1)[0]
+                if any(ord(ch) < 0x20 for ch in first_word):
+                    continue
                 tokens = low.split()
                 # fork bomb is structural: its "executable" is `:(){`
                 if tokens and tokens[0].startswith(":(") and re.search(
@@ -438,21 +535,24 @@ class PolicyEngine:
                 if not tokens:
                     continue
                 exe = _basename(tokens[0])
-                # sudo/doas are transparent: position-match the real verb
-                if exe in _PRIV_WRAPPERS:
-                    if not _quotes_balanced(cmd):
-                        # R4-S1 fail-closed: an unclosed quote makes the
-                        # wrapper's flag boundaries unknowable — never
-                        # silent-allow a wrapper we cannot parse.
-                        return True
-                    payload = _skip_wrapper_flags(
-                        " ".join(tokens[1:]), req_short=_PRIV_REQ_SHORT,
-                        req_long=_PRIV_REQ_LONG,
-                    )
-                    tokens = payload.split()
-                    if not tokens:
-                        continue
-                    exe = _basename(tokens[0])
+                # sudo/doas/env/busybox/nice/… are transparent: position-match
+                # the real verb (R4-S1, R5 A04-A13).
+                if not _quotes_balanced(cmd) and (
+                        exe in _PRIV_WRAPPERS or exe in _TRANSPARENT_WRAPPERS
+                        or exe in _SHELL_WRAPPERS or exe == "env"):
+                    # R4-S1 fail-closed: an unclosed quote makes a WRAPPER's
+                    # flag boundaries unknowable — never silent-allow it.
+                    # Non-wrapper commands keep legacy behavior (R3 S2q:
+                    # ``echo it's fine`` is not a bypass).
+                    return True
+                payload = _strip_transparent_prefixes(" ".join(tokens))
+                tokens = payload.split()
+                if not tokens:
+                    continue
+                exe = _basename(tokens[0])
+                # R5 A01-A03: rf flags + root operand in ANY order.
+                if _rm_root_order_free(tokens):
+                    return True
                 for verbs, rx in self._CATASTROPHIC_RULES:
                     if (exe in verbs or any(exe.startswith(v + ".") for v in verbs)) \
                             and re.search(rx, low, re.IGNORECASE):
@@ -757,15 +857,19 @@ class PolicyEngine:
                 tokens = tokens[1:]
             if not tokens:
                 continue
-            if _basename(tokens[0]) in _PRIV_WRAPPERS:
-                payload = _skip_wrapper_flags(
-                    " ".join(tokens[1:]), req_short=_PRIV_REQ_SHORT,
-                    req_long=_PRIV_REQ_LONG,
-                )
-                tokens = payload.split()
-                if not tokens:
-                    continue
+            # R5 A04-A13: transparent prefixes (sudo/busybox/nice/…) must not
+            # hide the write verb from destination extraction.
+            tokens = _strip_transparent_prefixes(" ".join(tokens)).split()
+            if not tokens:
+                continue
             targets.extend(self._dests_for_verb(tokens))
+        # R5 A20: procsub interiors are nested command boundaries — their
+        # in-place writers are invisible to the segment split above.
+        for inner in procsub_interiors(cmd):
+            sub = self._inline_write_targets(inner)
+            if sub is None:
+                return None
+            targets.extend(sub)
         raw = self._raw_write_targets(cmd)
         if raw is None:
             return None
@@ -780,9 +884,67 @@ class PolicyEngine:
             return []
         base = _basename(tokens[0])
         args = [t for t in tokens[1:] if not t.startswith("-")]
-        if base == "sed" and any(t == "-i" or t.startswith("-i") for t in tokens[1:]):
-            # sed needs a script operand; everything after it is a file
-            return args[1:] if len(args) >= 2 else []
+        if base == "sed":
+            # R5 A26-A27: --in-place[=SUFFIX] is -i too, and attached -eSCRIPT/
+            # -fFILE (or separated -e/-f SCRIPT) must not swallow the file
+            # operand: consume the script, keep every file destination.
+            inplace = any(
+                t == "-i" or (t.startswith("-i") and not t.startswith("--"))
+                or t == "--in-place" or t.startswith("--in-place=")
+                for t in tokens[1:])
+            if not inplace:
+                return []
+            files: list[str] = []
+            skip = False
+            explicit_script = False
+            for t in tokens[1:]:
+                if skip:
+                    skip = False
+                    continue
+                if t in ("-e", "-f", "--expression", "--file"):
+                    skip = True
+                    explicit_script = True
+                    continue
+                if t.startswith(("-e", "-f")) and not t.startswith("--") and len(t) > 2:
+                    explicit_script = True
+                    continue  # attached script: -e's/x/y/'
+                if t.startswith("-"):
+                    continue
+                if not explicit_script:
+                    # No -e/-f: the FIRST operand is the script, not a file.
+                    explicit_script = True
+                    continue
+                files.append(t)
+            return files
+        if base == "perl":
+            # R5 A28: perl -i edits files in place (clustered flags too:
+            # -pi, -i.bak); -e/-E code operands are not destinations.
+            inplace = any(
+                (t.startswith("-") and not t.startswith("--") and "i" in t[1:])
+                for t in tokens[1:])
+            if not inplace:
+                return []
+            files = []
+            skip = False
+            for t in tokens[1:]:
+                if skip:
+                    skip = False
+                    continue
+                if t in ("-e", "-E"):
+                    skip = True
+                    continue
+                if t.startswith(("-e", "-E")) and len(t) > 2:
+                    continue
+                if t.startswith("-") and not t.startswith("--"):
+                    # Clustered flags: -pe means the NEXT operand is code.
+                    if "e" in t[1:] or "E" in t[1:]:
+                        skip = True
+                    continue
+                files.append(t)
+            return files
+        if base == "sponge":
+            # R5 A29: sponge soaks stdin into every file operand.
+            return args
         if base == "tee":
             return args
         if base in ("cp", "mv", "ln", "install"):
@@ -811,10 +973,7 @@ class PolicyEngine:
                     tokens = tokens[1:]
                 probe = tokens
                 if probe and _basename(probe[0]) in _PRIV_WRAPPERS:
-                    payload = _skip_wrapper_flags(
-                        " ".join(probe[1:]), req_short=_PRIV_REQ_SHORT,
-                        req_long=_PRIV_REQ_LONG,
-                    )
+                    payload = _strip_transparent_prefixes(" ".join(probe))
                     # R4-S1: an unclosed flag arg can swallow the payload —
                     # fall back to the naive remainder so the write verb
                     # stays visible to the fail-closed check.
@@ -831,11 +990,11 @@ class PolicyEngine:
                 continue
             if _basename(normalize_command(texts[k])) in _PRIV_WRAPPERS:
                 # Strip the wrapper from the RAW remainder so the payload's
-                # quoting survives (sudo cp x "/etc/my dir").
-                payload = _skip_wrapper_flags(
-                    seg[ends[k]:].strip(), req_short=_PRIV_REQ_SHORT,
-                    req_long=_PRIV_REQ_LONG,
-                )
+                # quoting survives (sudo cp x "/etc/my dir"). Re-prepend the
+                # wrapper word: the remainder starts at its FLAGS, and
+                # _strip_transparent_prefixes keys on the executable.
+                payload = _strip_transparent_prefixes(
+                    (texts[k] + " " + seg[ends[k]:]).strip())
                 sub = _quote_words(payload)
                 if sub is None:
                     tokens = payload.split() or seg[ends[k]:].split()
@@ -869,6 +1028,14 @@ class PolicyEngine:
                 continue
             if tok in ("-t", "--target-directory"):
                 target_dir = ""  # completed by the next token, if any
+                continue
+            # R5 A22-A25: attached values route the destination too —
+            # cp -t/etc x and mv --target-directory=/etc x write to /etc.
+            if tok.startswith("-t") and len(tok) > 2 and not tok.startswith("--"):
+                target_dir = tok[2:]
+                continue
+            if tok.startswith("--target-directory="):
+                target_dir = tok.partition("=")[2]
                 continue
             if target_dir == "":
                 target_dir = tok
@@ -911,11 +1078,31 @@ class PolicyEngine:
         if inline is None:
             return None
         targets.extend(inline)
+        # R5 A20-A21: procsub interiors carry their own operand paths.
+        for inner in procsub_interiors(cmd):
+            sub = self._shell_sensitive_targets(inner, base)
+            if sub is None:
+                return None
+            targets.extend(sub)
         norm = normalize_command(cmd)
+        # R5 A44: a control char spliced into the executable word is one
+        # nonexistent command — its fabricated operands are not real targets.
+        raw_first = re.split(r"[ \t]+", _strip_tricks(cmd).strip(), maxsplit=1)[0]
+        exe_spliced = any(ord(ch) < 0x20 for ch in raw_first)
         for seg in re.split(r"[;&|\n]+", norm):
-            for tok in seg.split()[1:]:
-                if not tok.startswith("-"):
-                    targets.append(tok)
+            toks = seg.split()
+            exe = _basename(toks[0]) if toks else ""
+            for tok in toks[1:]:
+                if tok.startswith("-"):
+                    continue
+                # R5 A01-A03 made "/" sensitive; a bare root operand is only
+                # a write/destruction target for write/destructive verbs —
+                # quoted literals (echo "rm -rf /") keep legacy silence.
+                if tok in ("/", "/.") and (exe_spliced or (
+                        exe not in _WRITE_VERBS and exe not in (
+                            "rm", "shred", "wipefs", "find", "chmod", "chown", "mkfs"))):
+                    continue
+                targets.append(tok)
         out: list[str] = []
         for t in targets:
             resolved = absolutize(t)

@@ -1088,11 +1088,18 @@ async function answerApproval(decision, aid) {
     $$("#approval-modal button").forEach((b) => (b.disabled = false));
     // R4-01: a queued successor (or a failed POST) keeps the dialog up — hand
     // focus back to a real control instead of leaving it parked on the shell.
+    // R5-F1: that control must be the SAME safe default as the first approval
+    // (#ap-deny) — the first DOM button is "Allow once", so a reflex Enter
+    // after a deny would approve the queued successor. Deny first, fallback only.
     const am = $("#approval-modal");
     if (!am.hidden) {
-      const first = focusables(am)[0];
-      if (first && !am.contains(document.activeElement)) first.focus();
-      else holdModalFocus(am);
+      const ae = document.activeElement;
+      const onControl = ae && ae !== am && am.contains(ae) && focusables(am).includes(ae);
+      if (!onControl) {
+        const safe = $("#ap-deny");
+        const target = (safe && !safe.disabled && !safe.hidden) ? safe : focusables(am)[0];
+        if (target) target.focus(); else holdModalFocus(am);
+      }
     }
     // U4: the next queued approval owns the status — never clobber its
     // "Waiting for approval" (pollState skips run-state while streaming).
@@ -1518,6 +1525,9 @@ async function handleSlash(text) {
           clear();
           // R3 U4: the trailing instruction travels with the cast (additive args)
           await post("/api/skills/cast", { name, session: state.session, args: arg });
+          // R5-F5: TUI parity (chat.py sysline) — a cast leaves a persistent
+          // in-stream note, not just a toast that vanishes before the reply.
+          addMsg("systemish", `skill cast · ${name} — the agent will follow it from here`, "systemish");
           toast(`cast skill: ${name}`); renderSidebar(); return;
         }
         toast(`unknown command ${cmd} — try /help`, "err"); keep();
@@ -1584,7 +1594,13 @@ function renderTabs() {
           const sib = e.key === "ArrowLeft" ? b.previousElementSibling : b.nextElementSibling;
           // U21: roving tabindex follows the arrow focus, so Shift+Tab
           // re-entry lands on the tab the user actually moved to.
-          if (sib) { b.tabIndex = -1; sib.tabIndex = 0; sib.focus(); }
+          if (sib) {
+            b.tabIndex = -1; sib.tabIndex = 0; sib.focus();
+            // R5-F2: at 320px the strip overflows — keep the arrow-focused tab
+            // onscreen. instant, not smooth: the keepScroll restore in
+            // renderTabs would clobber a smooth scroll mid-flight.
+            sib.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+          }
         }
       };
       // middle-click closes, matching editor tab conventions
@@ -1742,7 +1758,9 @@ async function pollState() {
           }
         } else if (s.state === "idle" && state.tabStates[sid] !== "done") delete state.tabStates[sid];
       }
-      if (!state.streaming) $("#run-state").textContent = s.state === "blocked" ? "Waiting for approval" : s.state === "working" ? "Working" : "Ready";
+      // R5-F3: partial outage — /api/status can fail (dot off, "Disconnected")
+      // while /api/state still answers; never repaint over the honest outage.
+      if (!state.streaming && state.connected) $("#run-state").textContent = s.state === "blocked" ? "Waiting for approval" : s.state === "working" ? "Working" : "Ready";
     } else if (state.session) {
       // fallback until /api/state lands: derive from status + approval queue
       const busy = (state.status && state.status.busy) || state.streaming;
@@ -1905,7 +1923,16 @@ async function refreshStatus() {
   } catch (e) {
     state.connected = false;
     $("#conn-dot").classList.add("off");
-    if (!state.everConnected) { $("#boot-error").hidden = false; $("#boot-error-msg").textContent = e.message || "Cannot reach the local bridge."; }
+    if (!state.everConnected) {
+      const be = $("#boot-error");
+      const wasHidden = be.hidden;
+      be.hidden = false;
+      $("#boot-error-msg").textContent = e.message || "Cannot reach the local bridge.";
+      // R5-F4: the card is role=alert (announced); move focus to Retry on SHOW
+      // so a keyboard user can act at once — not on every 5s re-tick, which
+      // would steal focus from wherever the user moved during a long outage.
+      if (wasHidden) $("#boot-retry").focus();
+    }
     $("#run-state").textContent = "Disconnected";
   }
 }
@@ -3032,7 +3059,9 @@ $("#boot-retry").onclick = async () => {
   $("#boot-error").hidden = true;
   $("#run-state").textContent = "Connecting…";
   await refreshStatus();
-  if (state.connected) renderSidebar();
+  // R5-F4: Retry just went hidden with focus on it — hand focus to the
+  // composer on a successful reconnect instead of dropping it on <body>.
+  if (state.connected) { renderSidebar(); input.focus(); }
 };
 
 /* ------------------------------------------------------------------ boot */
@@ -3054,6 +3083,8 @@ async function boot() {
   setInterval(refreshStatus, 5000);
   setInterval(pollState, 2000);
   pollState();
-  input.focus();
+  // R5-F4: when the bridge is unreachable the boot-error card owns focus
+  // (#boot-retry) — do not steal it back into the composer.
+  if ($("#boot-error").hidden) input.focus();
 }
 boot();

@@ -31,6 +31,9 @@ class Services:
     registry: ToolRegistry = field(default_factory=build_default_registry)
     _backend_cache: dict[str, BaseBackend] = field(default_factory=dict, repr=False)
     _runtimes: weakref.WeakSet[AgentRuntime] = field(default_factory=weakref.WeakSet, repr=False)
+    # R5 F1: a yolo arm/disarm requested mid-turn is deferred to the NEXT
+    # prompt — never applied to the running turn, never retires it.
+    _yolo_pending: bool | None = field(default=None, repr=False)
 
     # ------------------------------------------------------------- factory
     @classmethod
@@ -318,6 +321,35 @@ class Services:
                 async with be._client(url, timeout=10.0) as client:
                     await client.post("/api/generate", json={"model": model, "keep_alive": 0})
 
+    # ------------------------------------------------- yolo (R5 F1 contract)
+    def effective_yolo(self) -> bool:
+        """The NEXT prompt's yolo state: a deferred mid-turn delta if one is
+        pending, else the live flag. This is what every UI must show."""
+        if self._yolo_pending is not None:
+            return self._yolo_pending
+        return bool(getattr(self.config.agent, "yolo", False))
+
+    def request_yolo(self, want: bool, *, busy: bool) -> bool:
+        """Arm/disarm yolo. While a turn is busy the delta is DEFERRED: the
+        live config stays untouched, so the running turn keeps its entry
+        policy and no security retire/cancel can hit it. Returns True when
+        the request was deferred (apply it with settle_yolo at turn end)."""
+        if busy:
+            self._yolo_pending = bool(want)
+            return True
+        self._yolo_pending = None
+        self.config.agent.yolo = bool(want)
+        return False
+
+    def settle_yolo(self) -> None:
+        """Turn end: apply a deferred delta AFTER the runtime's one-prompt
+        finally-disarm (so a fresh mid-turn arm is never eaten by it) and
+        BEFORE the leg clears its busy flag (so it can never leak into a
+        turn that starts next). Idempotent; a no-op without a pending delta."""
+        if self._yolo_pending is not None:
+            self.config.agent.yolo = self._yolo_pending
+            self._yolo_pending = None
+
     def status_snapshot(self, tok_s: float = 0.0, ctx_used: int = 0) -> dict[str, Any]:
         gen = self.config.settings_for(self.config.default_backend, self.current_model())
         ctx_total = gen.num_ctx
@@ -341,5 +373,6 @@ class Services:
             "audit": self.audit.health(),
             "updated": time.time(),
             "op_mode": self.config.agent.op_mode,
-            "yolo": bool(getattr(self.config.agent, "yolo", False)),
+            # R5 F1: truthful next-prompt state (a mid-turn delta is deferred)
+            "yolo": self.effective_yolo(),
         }

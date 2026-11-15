@@ -700,6 +700,9 @@ class ChatScreen(Screen):
             self._finalize()
             self._sysline(f"unexpected error: {type(exc).__name__}: {exc}", "error")
         finally:
+            # R5 F1: apply a deferred yolo delta AFTER the runtime's
+            # finally-disarm and before busy clears (next-prompt contract).
+            app.svc.settle_yolo()
             app.busy = False
             # D11: the runtime's backend-error path returns without a turn_end
             # event — clear the flag here so the UI never strands mid-turn.
@@ -1227,7 +1230,7 @@ class ChatScreen(Screen):
                     "build": "full agent — tools, writes and shell enabled"}[cmd]
             self._sysline(f"mode → {cmd} · {desc}", "system")
         elif cmd == "yolo":
-            cur = bool(getattr(app.svc.config.agent, "yolo", False))
+            cur = app.svc.effective_yolo()
             a = arg.lower().strip()
             # R4-07: an unknown argument must NEVER arm YOLO — a typo used to
             # fall through to the toggle, so `/yolo banana` armed it silently.
@@ -1236,12 +1239,19 @@ class ChatScreen(Screen):
                 app.notify("usage: /yolo [on|off]", severity="warning")
             else:
                 want = a if a in ("on", "off") else ("off" if cur else "on")
-                app.svc.config.agent.yolo = want == "on"
+                # R5 F1: mid-turn deltas are DEFERRED to the next prompt —
+                # the running turn keeps its entry policy and is never
+                # retired; _run_turn's finally settles the pending value.
+                deferred = app.svc.request_yolo(want == "on", busy=app.busy)
                 self._push_status()
-                app.notify(
-                    "⚡ YOLO armed — the NEXT prompt auto-approves routine tool calls; "
-                    "shell/network/mail still ask; catastrophic commands stay blocked"
-                    if want == "on" else "yolo off — approvals restored")
+                if want == "on":
+                    app.notify(
+                        "⚡ YOLO armed — the NEXT prompt auto-approves routine tool calls; "
+                        "shell/network/mail still ask; catastrophic commands stay blocked"
+                        + (" (applies after the running turn)" if deferred else ""))
+                else:
+                    app.notify("yolo off — approvals restored"
+                               + (" after the running turn" if deferred else ""))
         elif cmd.startswith("skill:"):
             name = cmd.split(":", 1)[1]
             body = app.svc.skills.read(name)

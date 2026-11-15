@@ -90,6 +90,15 @@ def _decode_ansi_c(text: str) -> str:
                     out.append(chr(int(body[i + 1:j], 8)))
                     i = j
                     continue
+                elif nxt == "c" and i + 2 < len(body):
+                    # R5 A15-A17: bash decodes \cX as the control character
+                    # ord(X) & 0x1f — \cI is TAB, \cJ is LF, \c? is DEL.
+                    # Leaving it as a literal "cX" fabricates phantom operands
+                    # and hides separators from the catastrophic gate.
+                    cx = body[i + 2]
+                    out.append("\x7f" if cx == "?" else chr(ord(cx) & 0x1F))
+                    i += 3
+                    continue
                 out.append(_ANSI_ESCAPES.get(nxt, nxt))
                 i += 2
             else:
@@ -113,6 +122,14 @@ def _strip_tricks(text: str) -> str:
         out = nxt
     out = _decode_ansi_c(out)
     out = _BRACE_VAR_RX.sub(r"$\1", out)
+    # R5 A15-A17: decode \cX control escapes in ANY quoting context (the
+    # conservative security view — a wrapper may re-parse the payload with
+    # ANSI-C semantics). \c? is DEL, otherwise ord(X) & 0x1f.
+    out = re.sub(
+        r"\\c(.)",
+        lambda m: "\x7f" if m.group(1) == "?" else chr(ord(m.group(1)) & 0x1F),
+        out,
+    )
     out = _ESCAPE_RX.sub(r"\1", out)
     out = out.replace("'", "").replace('"', "")
     # Tabs/VT/FF surviving quote removal (e.g. a literal tab inside "...")
@@ -235,6 +252,31 @@ _PRIV_REQ_LONG = frozenset({
     "--user", "--group", "--host", "--prompt", "--close-from",
     "--other-user", "--role", "--type",
 })
+# R5 A04-A13/B8: transparent exec prefixes — they run the following command
+# unchanged, so the deny floor, catastrophic gate and scorer must see through
+# them exactly like sudo/doas. busybox/toybox multiplex an applet name; the
+# rest are pure exec wrappers with their own (quote-aware) flag grammar.
+_TRANSPARENT_WRAPPERS = frozenset({
+    "busybox", "toybox", "exec", "command", "nice", "nohup", "time",
+    "timeout", "stdbuf", "ionice",
+})
+_TRANSPARENT_REQ_SHORT: dict[str, frozenset[str]] = {
+    "nice": frozenset("n"),
+    "timeout": frozenset("ks"),
+    "stdbuf": frozenset("ioe"),
+    "ionice": frozenset("cn"),
+}
+_TRANSPARENT_REQ_LONG: dict[str, frozenset[str]] = {
+    "nice": frozenset({"--adjustment"}),
+    "timeout": frozenset({"--signal", "--kill-after"}),
+    "stdbuf": frozenset({"--input", "--output", "--error"}),
+    "ionice": frozenset({"--class", "--classdata"}),
+}
+_TIMEOUT_DURATION_RX = re.compile(r"[0-9]+(?:\.[0-9]+)?[smhd]?")
+# R5 A18/A19: wrapper-nesting budget. The variant walk exposes two wrapper
+# levels and the scorer recurses three; anything deeper is unanalyzable and
+# must fail closed instead of silent-allowing the hidden innermost payload.
+_NESTING_BUDGET = 3
 
 
 def _drop_token(text: str) -> str:
@@ -376,6 +418,123 @@ def _skip_wrapper_flags(
             # imbalance itself).
             break
     return payload
+
+
+def _strip_transparent_prefixes(text: str) -> str:
+    """Consume transparent exec prefixes (R5 A04-A13) plus sudo/doas/env so
+    the real payload command is exposed: ``busybox rm -rf /``,
+    ``timeout 5 rm …``, ``stdbuf -oL rm …``, ``sudo busybox rm …``. Flag
+    consumption is quote-aware (_read_word); ``timeout`` also consumes its
+    positional DURATION. Assignments are consumed for env. Never executes."""
+    payload = text
+    for _ in range(16):
+        tok, end, _closed = _read_word(payload)
+        if not tok:
+            break
+        base = tok.rsplit("/", 1)[-1].lower()
+        rest = payload[end:]
+        if base in _PRIV_WRAPPERS:
+            payload = _skip_wrapper_flags(
+                rest, req_short=_PRIV_REQ_SHORT, req_long=_PRIV_REQ_LONG)
+        elif base == "env":
+            payload = _skip_wrapper_flags(
+                rest, req_short=_ENV_REQ_SHORT, req_long=_ENV_REQ_LONG,
+                assignments=True)
+        elif base in _TRANSPARENT_WRAPPERS:
+            payload = _skip_wrapper_flags(
+                rest,
+                req_short=_TRANSPARENT_REQ_SHORT.get(base, frozenset()),
+                req_long=_TRANSPARENT_REQ_LONG.get(base, frozenset()),
+            )
+            if base == "timeout":
+                dur, dend, _dc = _read_word(payload)
+                if dur and _TIMEOUT_DURATION_RX.fullmatch(dur):
+                    payload = payload[dend:]
+        else:
+            break
+    return payload
+
+
+def nesting_exceeds_budget(command: str) -> bool:
+    """True when wrapper nesting (sh -c / eval / env / xargs / sudo /
+    transparent prefixes) exceeds the analysis budget (R5 A18/A19). The
+    bounded variant walk and scorer cannot see the innermost payload beyond
+    that depth, so callers must fail closed rather than silent-allow."""
+
+    def walk(text: str, depth: int) -> bool:
+        if depth > _NESTING_BUDGET:
+            return True
+        norm = _strip_tricks(text)
+        for seg in _SPLIT_RX.split(norm):
+            seg = seg.strip()
+            if not seg:
+                continue
+            payload = _strip_transparent_prefixes(seg)
+            if payload != seg:
+                if walk(payload, depth + 1):
+                    return True
+                continue
+            tokens = seg.split()
+            i = 0
+            while i < len(tokens) and _ASSIGN_TOK_RX.match(tokens[i]):
+                i += 1
+            if i >= len(tokens):
+                continue
+            base = tokens[i].rsplit("/", 1)[-1]
+            rest = tokens[i + 1:]
+            if base in _SHELL_WRAPPERS and "-c" in rest[:2]:
+                m = re.search(r"(?:^|\s)-c\s+", seg)
+                if m and walk(seg[m.end():], depth + 1):
+                    return True
+            elif base == "eval":
+                if walk(" ".join(rest), depth + 1):
+                    return True
+            elif base == "env":
+                p = _skip_wrapper_flags(
+                    " ".join(rest), req_short=_ENV_REQ_SHORT,
+                    req_long=_ENV_REQ_LONG, assignments=True)
+                if p.strip() and walk(p, depth + 1):
+                    return True
+            elif base == "xargs":
+                p = _skip_wrapper_flags(
+                    " ".join(rest), req_short=_XARGS_REQ_SHORT,
+                    opt_short=_XARGS_OPT_SHORT, req_long=_XARGS_REQ_LONG)
+                if p.strip() and walk(p, depth + 1):
+                    return True
+        return False
+
+    return walk(str(command), 0)
+
+
+# R5 A01-A03: root-equivalent rm operands (the catastrophic gate's operand
+# set, matched order-free). Dot components are consumed: /, /., /./, /..
+# but NOT /home/user; top-level system dirs and $HOME/~ count as root.
+_RM_ROOT_OPERAND_RX = re.compile(
+    r"^(?:/(?:\.{1,2}/)*\.{0,2}|/(?:home|usr|etc|var|boot|opt|srv)/?"
+    r"|\$HOME/?|~/?)$")
+
+
+def _rm_root_order_free(tokens: list[str]) -> bool:
+    """True when *tokens* (executable first, normalized spelling) are an rm
+    with BOTH recursive and force flags AND a root-equivalent operand in ANY
+    position (R5 A01-A03): ``rm -rf zzz /`` and ``rm zzz -rf /`` are the same
+    catastrophe as ``rm -rf /``."""
+    if not tokens or tokens[0].rsplit("/", 1)[-1].lower() != "rm":
+        return False
+    recursive = force = False
+    root = False
+    for tok in tokens[1:]:
+        if tok == "--recursive":
+            recursive = True
+        elif tok == "--force":
+            force = True
+        elif tok.startswith("-") and tok != "-":
+            if not tok.startswith("--"):
+                recursive = recursive or "r" in tok[1:] or "R" in tok[1:]
+                force = force or "f" in tok[1:]
+        elif _RM_ROOT_OPERAND_RX.match(tok):
+            root = True
+    return recursive and force and root
 
 
 def _xargs_repl(text: str) -> str | None:
@@ -674,6 +833,15 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
                 continue
             base = toks[0].rsplit("/", 1)[-1]
             args = toks[1:]
+        if base in _TRANSPARENT_WRAPPERS:
+            # R5 A04-A13: busybox/toybox/exec/nice/… are transparent too —
+            # an unresolved operand behind them is still unresolved.
+            payload = _strip_transparent_prefixes(" ".join([base] + args))
+            toks = payload.split()
+            if not toks:
+                continue
+            base = toks[0].rsplit("/", 1)[-1]
+            args = toks[1:]
         if base == "xargs":
             argtext = " ".join(args)
             repl = _xargs_repl(argtext)
@@ -805,6 +973,13 @@ def command_variants(command: str) -> list[str]:
                 )
                 if payload.strip():
                     walk(payload, depth + 1, positionals)
+            elif base in _TRANSPARENT_WRAPPERS:
+                # R5 A04-A13/B8: transparent exec prefixes must expose the
+                # real payload to anchored deny globs and the catastrophic
+                # gate (busybox rm -rf / denotes rm -rf /).
+                payload = _strip_transparent_prefixes(seg)
+                if payload.strip() and payload != seg:
+                    walk(payload, depth + 1, positionals)
         if depth < 2:
             # Quote-aware pass (R2 C3): precise `sh -c` payload boundaries
             # expose trailing positional arguments ($0, $1, …), and xargs
@@ -856,6 +1031,12 @@ def command_variants(command: str) -> list[str]:
                         _raw_remainder(rseg),
                         req_short=_PRIV_REQ_SHORT, req_long=_PRIV_REQ_LONG,
                     )
+                    if payload.strip():
+                        walk(payload, depth + 1, positionals)
+                elif rbase in _TRANSPARENT_WRAPPERS:
+                    # R5 A04-A13: quote-aware raw pass — ``nice -n '5' rm …``
+                    # keeps its quoted flag arg intact for the skip.
+                    payload = _strip_transparent_prefixes(_raw_remainder(rseg))
                     if payload.strip():
                         walk(payload, depth + 1, positionals)
 

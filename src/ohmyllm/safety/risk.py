@@ -6,16 +6,16 @@ import re
 from dataclasses import dataclass
 
 from .normalize import (
-    _ENV_REQ_LONG,
-    _ENV_REQ_SHORT,
-    _PRIV_REQ_LONG,
-    _PRIV_REQ_SHORT,
-    _PRIV_WRAPPERS,
     _SHELL_WRAPPERS,
     _XARGS_OPT_SHORT,
     _XARGS_REQ_LONG,
     _XARGS_REQ_SHORT,
+    _literal_output,
+    _rm_root_order_free,
     _skip_wrapper_flags,
+    _strip_transparent_prefixes,
+    _strip_tricks,
+    nesting_exceeds_budget,
     normalize_command,
 )
 
@@ -71,7 +71,8 @@ _RULES: list[tuple[str, int, str, frozenset[str] | None]] = [
     (r"\b(pip|pip3|uv)\s+install\b", 5, "package install", frozenset({"pip", "pip3", "uv"})),
     (r"\bnpm\s+(install|i)\b", 4, "node package install", frozenset({"npm"})),
     # in-place editors / arbitrary interpreter payloads (M1)
-    (r"\bsed\b[^|;]*\s-i\b", 5, "sed in-place file edit", frozenset({"sed"})),
+    # R5 A26: --in-place[=SUFFIX] is the long spelling of -i.
+    (r"\bsed\b[^|;]*(\s-i\b|--in-place(=[^\s]*)?)", 5, "sed in-place file edit", frozenset({"sed"})),
     # R3 S4: __import__ indirection, node fs.rmSync/unlink and perl unlink
     # glob are the same destructive payloads in a different spelling.
     (r"shutil\.rmtree|os\.system\s*\(|subprocess\.(call|run|Popen)\s*\(|os\.exec\w*\s*\(|child_process"
@@ -138,6 +139,7 @@ class RiskScorer:
         # Deobfuscate first (quotes/escapes/ANSI-C/${VAR}/semantic flags) so
         # spelling tricks cannot dodge the rules (C1/C2/H1). One canonical
         # string — NOT command_variants — so stray tokens cannot inflate it.
+        raw_command = command
         command = normalize_command(command)
         if command.strip():
             lowered = command.lower()
@@ -148,9 +150,17 @@ class RiskScorer:
             # a segment's command position — argument literals (echo/grep/
             # git-commit mentioning "rm -rf /") must not score as destruction.
             verbs = self._positional_verbs(command)
+            # R5 A44 (REFUTED, must stay inert): a control char spliced INTO
+            # the executable word is one nonexistent command name — bash
+            # never word-splits quoted expansions, so destructive-verb rules
+            # must not fire on it (wrapper payloads are still walked below).
+            # Detect on the _strip_tricks form: normalize_command folds LF
+            # into spaces and would erase the splice evidence.
+            first_word = re.split(r"[ \t]+", _strip_tricks(raw_command).strip(), maxsplit=1)[0]
+            exe_spliced = any(ord(ch) < 0x20 for ch in first_word)
             matched: list[tuple[int, str]] = []
             for pattern, pat_score, reason, need in _COMPILED:
-                if need is not None and not (need & verbs):
+                if need is not None and (exe_spliced or not (need & verbs)):
                     continue
                 if pattern.search(command):
                     matched.append((pat_score, reason))
@@ -159,6 +169,19 @@ class RiskScorer:
                     score = m_score
                 if m_reason not in reasons:
                     reasons.append(m_reason)
+            # R5 A01-A03: rf flags + root operand in ANY order is the same
+            # catastrophe as `rm -rf /` (structural, order-free). Transparent
+            # prefixes (busybox/nice/…) must not hide the rm verb.
+            first_seg = _strip_transparent_prefixes(re.split(r"[;&|\n]+", command)[0])
+            if not exe_spliced and _rm_root_order_free(first_seg.split()):
+                score = max(score, 10)
+                if "rm of root filesystem" not in reasons:
+                    reasons.append("rm of root filesystem")
+            # R5 A18-A19: nesting beyond the analysis budget fails closed.
+            if nesting_exceeds_budget(command):
+                score = max(score, 10)
+                if "wrapper nesting beyond analysis budget (fail-closed)" not in reasons:
+                    reasons.append("wrapper nesting beyond analysis budget (fail-closed)")
             # interpreter -c/-e payloads are scored recursively (M1): the
             # inline code is the real command, not the interpreter wrapper.
             if base in _INTERPRETERS:
@@ -174,6 +197,23 @@ class RiskScorer:
                 if sub.score > score:
                     score = sub.score
                     reasons.extend(r for r in sub.reasons if r not in reasons)
+            # R5 A20-A21: process-substitution interiors are real command
+            # boundaries — score them, and when a shell consumes the procsub
+            # output as code (bash <(echo 'rm -rf /')), score that literal
+            # output as the executed command too.
+            from .policy import procsub_interiors
+            for inner in procsub_interiors(command):
+                sub = self.score_command(inner)
+                if sub.score > score:
+                    score = sub.score
+                reasons.extend(r for r in sub.reasons if r not in reasons)
+                if base in _SHELL_WRAPPERS or base == "eval":
+                    lit = _literal_output(inner)
+                    if lit:
+                        sub2 = self.score_command(lit)
+                        if sub2.score > score:
+                            score = sub2.score
+                        reasons.extend(r for r in sub2.reasons if r not in reasons)
         return CommandRisk(score=score, reasons=tuple(reasons), catastrophic=score >= 9)
 
     def _positional_verbs(self, command: str, depth: int = 0) -> set[str]:
@@ -198,24 +238,18 @@ class RiskScorer:
             if "." in base:
                 verbs.add(base.split(".", 1)[0])
             rest = tokens[i + 1:]
-            if base in _PRIV_WRAPPERS:
-                payload = _skip_wrapper_flags(
-                    " ".join(rest), req_short=_PRIV_REQ_SHORT,
-                    req_long=_PRIV_REQ_LONG,
-                )
-                verbs |= self._positional_verbs(payload, depth + 1)
-            elif base in _SHELL_WRAPPERS and "-c" in rest[:2]:
+            # R5 A04-A13: sudo/doas/env/busybox/toybox/exec/command/nice/
+            # nohup/time/timeout/stdbuf/ionice are all transparent — the
+            # payload verb must reach the destructive rules.
+            stripped = _strip_transparent_prefixes(" ".join(tokens[i:]))
+            if stripped != " ".join(tokens[i:]):
+                verbs |= self._positional_verbs(stripped, depth + 1)
+            if base in _SHELL_WRAPPERS and "-c" in rest[:2]:
                 m = re.search(r"(?:^|\s)-c\s+", seg)
                 if m:
                     verbs |= self._positional_verbs(seg[m.end():], depth + 1)
             elif base == "eval":
                 verbs |= self._positional_verbs(" ".join(rest), depth + 1)
-            elif base == "env":
-                payload = _skip_wrapper_flags(
-                    " ".join(rest), req_short=_ENV_REQ_SHORT,
-                    req_long=_ENV_REQ_LONG, assignments=True,
-                )
-                verbs |= self._positional_verbs(payload, depth + 1)
             elif base == "xargs":
                 payload = _skip_wrapper_flags(
                     " ".join(rest), req_short=_XARGS_REQ_SHORT,

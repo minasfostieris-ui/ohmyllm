@@ -134,7 +134,15 @@ def test_full_access_phrase_gated_and_catastrophic(cfg):
     c, ws = cfg
     c.safety.catastrophic_override = True
     pe2 = PolicyEngine(c, ws)
-    assert pe2.evaluate("run_command", {"command": "rm -rf /"}).allowed
+    # R5 A01-A03 pin update: "/" is now a SENSITIVE location in its own
+    # right, so root destruction stays denied in every mode even with the
+    # catastrophic override flipped (the override only lifts the catastrophic
+    # gate, never the sensitive-path deny). Pre-R5 this asserted allow.
+    d_root = pe2.evaluate("run_command", {"command": "rm -rf /"})
+    assert not d_root.allowed
+    assert any("sensitive path '/'" in r for r in d_root.reasons)
+    # the override itself still works for non-root catastrophes
+    assert pe2.evaluate("run_command", {"command": "mkfs.ext4 /dev/sda"}).allowed
     # sensitive ssh keys still denied even in full_access unless explicitly allowed
     assert not pe.evaluate("read_file", {"path": "~/.ssh/id_rsa"}).allowed
     c.safety.allow_sensitive_paths = [str(ws / "safe-ssh")]

@@ -69,8 +69,10 @@ def _validate_url(url: str, allowlist: list[str]) -> tuple[str, str, int]:
             "DNS hostnames are denied because the current transport cannot pin "
             "the validated address; use an explicit allowlisted public IP literal"
         ) from exc
-    if not address.is_global:
-        raise ValueError(f"private, local, metadata, or reserved address is blocked: {address}")
+    # R5 F17: multicast (224.0.0.0/4, ff00::/8) reports is_global=True but
+    # is never a unicast destination — reject explicitly (SSRF hardening).
+    if not address.is_global or address.is_multicast:
+        raise ValueError(f"private, local, metadata, multicast, or reserved address is blocked: {address}")
     # R2 S7: an IPv6 literal may embed a non-global IPv4 (NAT64, mapped,
     # 6to4, teredo) even when the top-level address reports is_global.
     for embedded in _embedded_ipv4(address):
