@@ -6,6 +6,9 @@ import re
 from dataclasses import dataclass
 
 from .normalize import (
+    _ROOT_BARE_RX,
+    _ROOT_DIRS_RX,
+    _ROOT_HOME_RX,
     _SHELL_WRAPPERS,
     _XARGS_OPT_SHORT,
     _XARGS_REQ_LONG,
@@ -26,12 +29,13 @@ from .normalize import (
 #: ``echo "rm -rf /"`` are not scored as destruction. None = anywhere.
 _RULES: list[tuple[str, int, str, frozenset[str] | None]] = [
     # filesystem destruction
-    (r"\brm\s+(-[a-zA-Z]+\s+)*(-[rRf]\S*\s+)*(-[fRr]\S*\s+)*['\"]?/(?:\.{1,2}/)*\.{0,2}(?=[\s'\"*]|$)", 10, "rm of root filesystem", frozenset({"rm"})),
+    (r"\brm\s+(-[a-zA-Z]+\s+)*(-[rRf]\S*\s+)*(-[fRr]\S*\s+)*['\"]?" + _ROOT_BARE_RX + r"(?=[\s'\"*]|$)", 10, "rm of root filesystem", frozenset({"rm"})),
     # R3 S3: top-level system directories are root-equivalent operands
     # (/home itself, NOT /home/user — the boundary lookahead keeps subpaths).
-    (r"\brm\s+(-[a-zA-Z]+\s+)*(-[rRf]\S*\s+)*(-[fRr]\S*\s+)*['\"]?/(?:home|usr|etc|var|boot|opt|srv)/?(?=[\s'\"*]|$)", 10, "rm of top-level system directory", frozenset({"rm"})),
+    # R6 E1: dot-suffix spellings (/home/., /etc/./) share the same grammar.
+    (r"\brm\s+(-[a-zA-Z]+\s+)*(-[rRf]\S*\s+)*(-[fRr]\S*\s+)*['\"]?" + _ROOT_DIRS_RX + r"(?=[\s'\"*]|$)", 10, "rm of top-level system directory", frozenset({"rm"})),
     (r"\brm\s+-[rRf]{1,3}\b", 6, "recursive/forced rm", frozenset({"rm"})),
-    (r"\brm\s+(-[a-zA-Z]+\s+)*['\"]?(~/?(?=\s|$)|\$HOME/?(?=\s|$))", 10, "rm of home directory", frozenset({"rm"})),
+    (r"\brm\s+(-[a-zA-Z]+\s+)*['\"]?" + _ROOT_HOME_RX + r"(?=[\s'\"*]|$)", 10, "rm of home directory", frozenset({"rm"})),
     (r"\bshred\b|\bwipefs\b", 9, "secure erase", frozenset({"shred", "wipefs"})),
     (r"\btruncate\s+-s\s*0\b", 7, "file truncation to zero", frozenset({"truncate"})),
     # raw devices / disks
@@ -72,7 +76,9 @@ _RULES: list[tuple[str, int, str, frozenset[str] | None]] = [
     (r"\bnpm\s+(install|i)\b", 4, "node package install", frozenset({"npm"})),
     # in-place editors / arbitrary interpreter payloads (M1)
     # R5 A26: --in-place[=SUFFIX] is the long spelling of -i.
-    (r"\bsed\b[^|;]*(\s-i\b|--in-place(=[^\s]*)?)", 5, "sed in-place file edit", frozenset({"sed"})),
+    # R6 E5: clustered -i (-ni/-Ei) is in-place too; the prefix class excludes
+    # e/f (script-taking) so -e's/i/x/' is NOT scored as an in-place edit.
+    (r"\bsed\b[^|;]*(\s-[a-dg-zA-Z]*i[a-zA-Z]*\b|--in-place(=[^\s]*)?)", 5, "sed in-place file edit", frozenset({"sed"})),
     # R3 S4: __import__ indirection, node fs.rmSync/unlink and perl unlink
     # glob are the same destructive payloads in a different spelling.
     (r"shutil\.rmtree|os\.system\s*\(|subprocess\.(call|run|Popen)\s*\(|os\.exec\w*\s*\(|child_process"

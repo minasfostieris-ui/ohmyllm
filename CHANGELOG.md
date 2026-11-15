@@ -4,6 +4,26 @@ All notable changes to OhMyLLM are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/). Newest first.
 
+## [Unreleased] — R6 quality loop
+
+### Security
+- **E1–E8 family fix (shared grammars)**: root-operand, env-flag-skip, clustered-flag-value, and assignment-value parsing now live in one shared grammar in `safety/normalize.py` (`ROOT_OPERAND_RX`, `_skip_env_flags`, `_cluster_flag_value`, `_assignment_values_raw`) composed by both `policy` and `risk` — dot-suffix root operands, `exec -a` verb hiding, `env -S` quote-splice clusters, `sed`/`cp`/`mv`/`ln`/`install` clustered `-t` misroutes, and wrapper/assignment spellings can no longer desync the gates from each other. Pinned by 277 new guarded regressions (`tests/test_r6sec_regressions.py`) including a fuzz battery of 126 root permutations plus cluster/wrapper/assignment spellings; pre-fix controls captured 201 FAIL / 76 PASS at pristine 2dbd215 → 277/277 post-fix.
+
+### Fixed
+- **C1 voice stop-grace swallow**: a second voice start inside the stop grace window is no longer swallowed with a false `already=True` — `bridge.py` adds a `voice_stop_gen` counter the grace loop re-checks.
+- **C2/C2b bounded post-finish trailer**: `lmstudio` and `cloud` post-finish reads are bounded (64-line cap counting ALL SSE lines incl. comment keepalives, 2 s deadline, `wait_for` per read); late `event:error` after a stashed terminal is non-fatal — no indefinite TUI-uncancellable hang, no destroyed complete answer.
+- **C3 deferred-yolo TOCTOU**: busy-check + `request_yolo` now atomic under one `turn_lock` acquisition — no orphaned pending arm delaying the bypass one prompt.
+- **C4 stale active_turn overwrite**: atomic defer + `active_turn` identity re-check — a completed future can no longer replace the live turn handle; GUI cancel stops a no-chunk hang.
+- **E9 non-ASCII bridge token**: rejected with a clean fail-closed 401 (`isascii` check).
+- **R6-01 wording**: README doctor line and `docs/TROUBLESHOOTING.md` port wording reconciled.
+- C1–C4 + E9 + R6-01 pinned by 10 new guarded regressions (`tests/test_r6cor_regressions.py`); pre-fix 8 FAIL / 2 PASS → 10/10.
+
+### Verified
+- R6 combined gate (fresh runs at 2dbd215 + uncommitted R6 waves): integration gate **1749 passed / 0 failed / 5 deselected** (1754 collected; the same 5 standing subprocess exclusions). GUI headless check **404/404** at 320/420/768/1280/1720/2560 px, Chromium sandbox retained. mypy: 83 files clean. ruff clean. cargo fmt/check/test offline green (7/7). TUI smoke green at 80x24, 100x30, 140x46. e2e check OK.
+- Batteries: Jason R5 re-run **0 CONFIRMED / 101 HELD / 31 REFUTED** (his report sha256 unchanged); Ethan E1–E8 repros **56/56 REFUTED**; SSRF **27 HELD / 5 INFO**; bridge auth **26 HELD** (B23/E9 now clean 401; B24 = known safe 403-no-ACAO probe artifact). Cindy C1/C2/C2b/C3 **NOT-REPRODUCED**; C4 **NOT-REPRODUCED** via Taylor's documented derivative (her original C4 probe hard-asserts the bug precondition — its PROBE-ERROR on the fixed tree is an expected artifact).
+- Family-fix legitimacy: all prior controls green — Mark R3 probes, Ben R4 (8/8 REFUTED + controls 15/15), R1–R6 security regression stack 672/672, r5cor 15, r4cor 10; no existing test pins modified this round.
+- Terry R6 audit: **7/7 REAL** (`.validation/terry-r6audit-report.md`).
+
 ## [0.1.1] - 2026-11-13
 
 ### Added
@@ -45,7 +65,7 @@ All notable changes to OhMyLLM are documented here. Format follows
 - **Corrupt-trash restore safety**: restoring a session with corrupt trash no longer destroys data.
 
 ### Verified
-- Integration gate: 1462 passed / 0 failed / 5 deselected under guarded isolation (`scripts/verify_isolated.py`). The 5 standing subprocess exclusions: `test_run_command_output_and_timeout`, `test_shell_uses_resolved_cwd_sanitized_environment_and_output_cap`, `test_shell_timeout_terminates_descendants`, `test_shell_cleans_descendants_after_leader_exits`, `test_recorder_stop_is_fast`.
+- Integration gate: 1749 passed / 0 failed / 5 deselected under guarded isolation (`scripts/verify_isolated.py`). The 5 standing subprocess exclusions: `test_run_command_output_and_timeout`, `test_shell_uses_resolved_cwd_sanitized_environment_and_output_cap`, `test_shell_timeout_terminates_descendants`, `test_shell_cleans_descendants_after_leader_exits`, `test_recorder_stop_is_fast`.
 - GUI headless check: 404/404 at 320/420/768/1280/1720/2560 px, Chromium sandbox retained at every width (R1 regression flows, hidden tab-strip scrollbar assertions, and the R3 flows included: id-aware approval routing with an inert consent background, live-surface WCAG AA contrast on bg3/acc-dim, `/skill` instruction cast, case-insensitive `/mode` `/tone` `/yolo`, rejected-send hero restore, and narrow sidebar focus restore; the R4 flows included: approval focus held through the decision POST, close-tab orphan recovery, poll-stable roving tabindex, sidebar focus restore, `/skill` draft preservation, instant mode-chip repaint, market error state with retry, sidebar row ARIA, the Esc-deny help row, and the ACTION icon map against the tool registry; the R5 flows included: successor Deny safe-default with a reflex-Enter proof, arrow-roving instant scroll into the strip, partial-outage run-state honesty, boot-error alert + Retry focus, and the persistent cast sysline). Width coverage: deep interaction flows run at laptop width (1280 px) only; the other five widths run the responsive flow set; the R5 regression set (13 checks) runs at every width. Every check is a real assertion — no hardcoded passes — and the closing banner reports the numeric pass/fail/total. mypy: 83 files clean. ruff clean. e2e check OK. TUI smoke green at 80x24, 100x30, 140x46. cargo fmt/check/test green. L3 deep pre-push security review: 0 findings.
 
 ### Earlier in this cycle

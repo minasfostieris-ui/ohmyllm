@@ -7,8 +7,10 @@ this class so the rest of the app never learns about wire formats.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -289,8 +291,33 @@ class CloudBackend(BaseBackend):
                     detail = (await resp.aread()).decode(errors="replace")[:300]
                     raise BackendError(f"{model}: expected SSE, got {detail}")
                 try:
-                    async for line in resp.aiter_lines():
+                    ended_at = 0.0
+                    post_lines = 0
+                    lines = resp.aiter_lines().__aiter__()
+                    while True:
+                        if ended:
+                            # R6 C2 fold-in: bounded post-finish read (same
+                            # 64-line / 2s bounds as lmstudio) — keepalives or
+                            # silence after finish must not hang the turn on
+                            # the 300s read floor.
+                            remaining = ended_at - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            try:
+                                line = await asyncio.wait_for(lines.__anext__(), remaining)
+                            except (TimeoutError, StopAsyncIteration):
+                                break
+                        else:
+                            try:
+                                line = await lines.__anext__()
+                            except StopAsyncIteration:
+                                break
                         line = line.strip()
+                        if ended and line:
+                            # ALL non-empty SSE lines count — comments included.
+                            post_lines += 1
+                            if post_lines >= 64:
+                                break
                         if not line.startswith("data:"):
                             continue
                         payload = line[5:].strip()
@@ -303,6 +330,10 @@ class CloudBackend(BaseBackend):
                         if not isinstance(obj, dict):
                             continue
                         if obj.get("error"):
+                            if ended:
+                                # R6 C2b: a late error after finish must not
+                                # discard the completed answer.
+                                break
                             raise BackendError(f"{model}: {str(obj['error'])[:200]}")
                         if isinstance(obj.get("usage"), dict) and obj["usage"]:
                             usage = obj["usage"]
@@ -367,6 +398,7 @@ class CloudBackend(BaseBackend):
                             if fin:
                                 ended = True
                                 end_reason = str(fin)
+                                ended_at = time.monotonic() + 2.0
                 except BackendError:
                     raise
                 except (httpx.HTTPError, UnicodeDecodeError) as exc:

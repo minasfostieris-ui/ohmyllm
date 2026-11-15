@@ -20,6 +20,9 @@ from .normalize import (
     _PRIV_WRAPPERS,
     _SHELL_WRAPPERS,
     _TRANSPARENT_WRAPPERS,
+    BARE_ROOT_OPERAND_RX,
+    ROOT_OPERAND_RX,
+    _cluster_flag_value,
     _quotes_balanced,
     _rm_root_order_free,
     _strip_transparent_prefixes,
@@ -479,9 +482,7 @@ class PolicyEngine:
     _CATASTROPHIC_RULES: tuple[tuple[frozenset[str], str], ...] = (
         (frozenset({"rm"}),
          r"\brm\s+(-[a-z]*\s+)*-?[a-z]*[rf][a-z]*\s+"
-         r"(/(?:\.{1,2}/)*\.{0,2}(?=[\s'\"*]|$)"
-         r"|/(?:home|usr|etc|var|boot|opt|srv)/?(?=[\s'\"*]|$)"
-         r"|\$HOME/?(?=[\s'\"*]|$)|\*(?=[\s'\"*]|$))"),
+         r"(" + ROOT_OPERAND_RX + r"(?=[\s'\"*]|$)|\*(?=[\s'\"*]|$))"),
         (frozenset({"rm"}), r"--no-preserve-root"),
         (frozenset({":"}), r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;"),
         (frozenset({"mkfs"}), r"\bmkfs(\.\w+)?\b"),
@@ -889,7 +890,7 @@ class PolicyEngine:
             # -fFILE (or separated -e/-f SCRIPT) must not swallow the file
             # operand: consume the script, keep every file destination.
             inplace = any(
-                t == "-i" or (t.startswith("-i") and not t.startswith("--"))
+                _cluster_flag_value(t, "i", "ef")[0]
                 or t == "--in-place" or t.startswith("--in-place=")
                 for t in tokens[1:])
             if not inplace:
@@ -1022,29 +1023,35 @@ class PolicyEngine:
         target_dir: str | None = None
         make_dirs = False
         skip = 0
+        # R6 E6/E7: install's -m/-o/-g take attached values too; cp/mv/ln only
+        # -S. The cluster parser stops at these so a later "t" is not a flag.
+        arg_takers = "Smog" if dirs_only else "S"
         for tok in flags:
             if skip:
                 skip -= 1
                 continue
-            if tok in ("-t", "--target-directory"):
+            if tok == "--target-directory":
                 target_dir = ""  # completed by the next token, if any
-                continue
-            # R5 A22-A25: attached values route the destination too —
-            # cp -t/etc x and mv --target-directory=/etc x write to /etc.
-            if tok.startswith("-t") and len(tok) > 2 and not tok.startswith("--"):
-                target_dir = tok[2:]
                 continue
             if tok.startswith("--target-directory="):
                 target_dir = tok.partition("=")[2]
+                continue
+            # R6 E6: clustered -t (-rt/-vt/-st/-at) and attached -tDIR route
+            # the destination. Uppercase -T is boolean (NOT a target).
+            present, val = _cluster_flag_value(tok, "t", arg_takers)
+            if present:
+                target_dir = val  # "" -> completed by the next token
                 continue
             if target_dir == "":
                 target_dir = tok
                 continue
             if tok.startswith("-"):
-                if tok in ("-m", "-o", "-g", "-S", "-D", "--mode", "--owner",
-                           "--group", "--suffix", "--directory"):
+                # R6 E7: install -D and --directory are BOOLEAN (create dirs),
+                # not argument-taking — they must not swallow the next token.
+                if tok in ("-m", "-o", "-g", "-S", "--mode", "--owner",
+                           "--group", "--suffix"):
                     skip = 1
-                elif dirs_only and tok == "-d":
+                elif dirs_only and tok in ("-d", "--directory"):
                     make_dirs = True
                 continue
             operands.append(tok)
@@ -1098,7 +1105,7 @@ class PolicyEngine:
                 # R5 A01-A03 made "/" sensitive; a bare root operand is only
                 # a write/destruction target for write/destructive verbs —
                 # quoted literals (echo "rm -rf /") keep legacy silence.
-                if tok in ("/", "/.") and (exe_spliced or (
+                if BARE_ROOT_OPERAND_RX.match(tok) and (exe_spliced or (
                         exe not in _WRITE_VERBS and exe not in (
                             "rm", "shred", "wipefs", "find", "chmod", "chown", "mkfs"))):
                     continue

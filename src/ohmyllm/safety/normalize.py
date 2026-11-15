@@ -147,6 +147,40 @@ def _assignment_values(text: str) -> dict[str, str]:
     return values
 
 
+def _assignment_values_raw(text: str) -> dict[str, str]:
+    """Quote-aware ``VAR=value`` extraction on RAW text (R6 E4 family): a
+    quoted multi-word value (``X="rm -rf /"``) resolves FULLY instead of
+    truncating at the first space after quote removal. LAST wins. Only
+    command-position assignments (segment start / after a separator) are
+    read; _read_word honors single/double quotes and backslash escapes so the
+    whole quoted value is ONE word. Never executes."""
+    values: dict[str, str] = {}
+    for _sep, seg in _raw_segments(text):
+        pos = 0
+        while pos < len(seg):
+            word, end, closed = _read_word(seg, pos)
+            if end <= pos:
+                break
+            m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", word, re.DOTALL)
+            if not m:
+                break
+            values[m.group(1)] = m.group(2)
+            pos = end
+            if not closed:
+                break
+    return values
+
+
+def _merged_assignments(raw: str, norm: str) -> dict[str, str]:
+    """Legacy normalized extraction UNION quote-aware raw extraction (R6 E4):
+    the raw quote-aware value wins per key so multi-word values are not
+    truncated, while the legacy pass still catches assignments exposed only
+    after deobfuscation (e.g. ``export X=…``)."""
+    values = _assignment_values(norm)
+    values.update(_assignment_values_raw(raw))
+    return values
+
+
 def _sub_refs(text: str, values: dict[str, str]) -> str:
     """Bounded substitution of ``$VAR``/``${VAR}`` from *values* (3 passes so
     chained indirection terminates). Unassigned references are left as-is."""
@@ -242,8 +276,12 @@ _XARGS_REQ_LONG = frozenset({
     "--arg-file", "--delimiter", "--max-args", "--max-lines",
     "--max-chars", "--max-procs", "--process-slot-var",
 })
-_ENV_REQ_SHORT = frozenset("uC")
-_ENV_REQ_LONG = frozenset({"--unset", "--chdir"})
+# R6 E3: env -S/--split-string takes a COMMAND STRING (split into words and
+# executed) — its value is a nested payload, not an ordinary flag argument.
+_ENV_REQ_SHORT = frozenset("uCS")
+_ENV_REQ_LONG = frozenset({"--unset", "--chdir", "--split-string"})
+_ENV_NESTED_SHORT = frozenset("S")
+_ENV_NESTED_LONG = frozenset({"--split-string"})
 # sudo/doas are transparent prefixes: the real executable follows their own
 # flags (R2 W5 — `sudo rm -rf $HOME` must still position-match as rm).
 _PRIV_WRAPPERS = frozenset({"sudo", "doas"})
@@ -261,6 +299,7 @@ _TRANSPARENT_WRAPPERS = frozenset({
     "timeout", "stdbuf", "ionice",
 })
 _TRANSPARENT_REQ_SHORT: dict[str, frozenset[str]] = {
+    "exec": frozenset("a"),  # R6 E2: exec -a NAME sets argv[0], then runs NAME's command
     "nice": frozenset("n"),
     "timeout": frozenset("ks"),
     "stdbuf": frozenset("ioe"),
@@ -337,6 +376,25 @@ def _read_word(text: str, start: int = 0) -> tuple[str, int, bool]:
     return "".join(buf), i, quote is None and not escaped
 
 
+def _cluster_flag_value(tok: str, flag: str, arg_takers: str) -> tuple[bool, str]:
+    """Parse a short-flag cluster for *flag* (R6 E5/E6/E7/E8 family): returns
+    (present, attached_value). Scans left-to-right and STOPS at any char in
+    *arg_takers* — that char consumes the rest as its attached value, so a
+    later *flag* char is part of the value, not a flag (``sed -e's/i/x/'`` is
+    NOT in-place; ``cp -St`` is suffix "t", not target). *flag* itself may
+    take an attached value (everything after it). Long tokens (``--…``) and
+    bare ``-`` return (False, ""). ONE parser shared by every clustered-flag
+    gate so the grammars cannot desync."""
+    if not tok.startswith("-") or tok.startswith("--") or tok == "-":
+        return False, ""
+    for idx, ch in enumerate(tok[1:], start=1):
+        if ch == flag:
+            return True, tok[idx + 1:]
+        if ch in arg_takers:
+            return False, ""
+    return False, ""
+
+
 def _quotes_balanced(text: str) -> bool:
     """shlex-style quote-state scan (R4-S1): False when a quote or trailing
     escape is left unclosed — wrapper-flag boundaries are then unknowable
@@ -370,6 +428,8 @@ def _skip_wrapper_flags(
     opt_short: frozenset[str] = frozenset(),
     req_long: frozenset[str] = frozenset(),
     assignments: bool = False,
+    nested_short: frozenset[str] = frozenset(),
+    nested_long: frozenset[str] = frozenset(),
 ) -> str:
     """Consume a wrapper's own leading flags so *payload* starts at the real
     command. Required-argument flags also consume their SEPARATED argument;
@@ -391,6 +451,14 @@ def _skip_wrapper_flags(
             break  # first non-flag token: the payload command starts here
         if tok.startswith("--"):
             name, eq, _val = tok.partition("=")
+            # R6 E3: a nested-command long flag (--split-string=) yields its
+            # value AS the payload (a command string to walk), plus any
+            # trailing words — never swallow it as an ordinary flag arg.
+            if name in nested_long:
+                if eq:
+                    return (_val + " " + rest).strip()
+                _arg, arg_end, _closed = _read_word(rest)
+                return (_arg + " " + rest[arg_end:]).strip()
             # attached (--flag=v), optional and no-arg longs consume only the
             # token; required-arg longs also drop their separated argument.
             if not eq and name in req_long:
@@ -402,6 +470,16 @@ def _skip_wrapper_flags(
         take_next = False
         chars = tok[1:]
         for idx, ch in enumerate(chars):
+            if ch in nested_short:
+                # R6 E3: attached -SVALUE (or separated -S VALUE) is a nested
+                # command string. Quote removal may have fabricated this
+                # cluster (-S'rm -rf /' -> -Srm -rf /); the attached value is
+                # everything after S, and the rest follows as further words.
+                attached = chars[idx + 1:]
+                if attached:
+                    return (attached + " " + rest).strip()
+                _arg, arg_end, _closed = _read_word(rest)
+                return (_arg + " " + rest[arg_end:]).strip()
             if ch in req_short:
                 take_next = idx == len(chars) - 1  # no attached value follows
                 break
@@ -418,6 +496,18 @@ def _skip_wrapper_flags(
             # imbalance itself).
             break
     return payload
+
+
+def _skip_env_flags(payload: str) -> str:
+    """Consume env's own flags (R6 E3 family): ONE grammar shared by every
+    gate (variants, nesting, unresolved scan, catastrophic gate, scorer) so
+    the -S/--split-string nested command is always exposed. env assignments
+    (VAR=val) are consumed; -S's value is returned as the payload (a nested
+    command string) rather than swallowed."""
+    return _skip_wrapper_flags(
+        payload, req_short=_ENV_REQ_SHORT, req_long=_ENV_REQ_LONG,
+        assignments=True, nested_short=_ENV_NESTED_SHORT,
+        nested_long=_ENV_NESTED_LONG)
 
 
 def _strip_transparent_prefixes(text: str) -> str:
@@ -437,9 +527,7 @@ def _strip_transparent_prefixes(text: str) -> str:
             payload = _skip_wrapper_flags(
                 rest, req_short=_PRIV_REQ_SHORT, req_long=_PRIV_REQ_LONG)
         elif base == "env":
-            payload = _skip_wrapper_flags(
-                rest, req_short=_ENV_REQ_SHORT, req_long=_ENV_REQ_LONG,
-                assignments=True)
+            payload = _skip_env_flags(rest)
         elif base in _TRANSPARENT_WRAPPERS:
             payload = _skip_wrapper_flags(
                 rest,
@@ -490,9 +578,7 @@ def nesting_exceeds_budget(command: str) -> bool:
                 if walk(" ".join(rest), depth + 1):
                     return True
             elif base == "env":
-                p = _skip_wrapper_flags(
-                    " ".join(rest), req_short=_ENV_REQ_SHORT,
-                    req_long=_ENV_REQ_LONG, assignments=True)
+                p = _skip_env_flags(" ".join(rest))
                 if p.strip() and walk(p, depth + 1):
                     return True
             elif base == "xargs":
@@ -506,12 +592,22 @@ def nesting_exceeds_budget(command: str) -> bool:
     return walk(str(command), 0)
 
 
-# R5 A01-A03: root-equivalent rm operands (the catastrophic gate's operand
-# set, matched order-free). Dot components are consumed: /, /., /./, /..
-# but NOT /home/user; top-level system dirs and $HOME/~ count as root.
-_RM_ROOT_OPERAND_RX = re.compile(
-    r"^(?:/(?:\.{1,2}/)*\.{0,2}|/(?:home|usr|etc|var|boot|opt|srv)/?"
-    r"|\$HOME/?|~/?)$")
+# R6 E1 (FAMILY): ONE root-operand grammar shared by the structural order-free
+# check (_rm_root_order_free), the catastrophic gate (policy._CATASTROPHIC_RULES)
+# and the risk rules (risk._RULES). Dot components are consumed in EVERY
+# position and duplicate slashes tolerated: /home/. == /home, /etc/./ == /etc,
+# /./home == /home, ~/. == ~, $HOME/. == $HOME, //home/. == /home. A SUBPATH
+# (/home/user, /home/user/.) is NOT root-equivalent — the trailing dot group
+# only consumes "." / ".." components, never a real name.
+_ROOT_BARE_RX = r"/+(?:\.{1,2}/+)*\.{0,2}"
+_ROOT_DIRS_RX = r"/+(?:\.{1,2}/+)*(?:home|usr|etc|var|boot|opt|srv)(?:/+\.{1,2})*/*"
+_ROOT_HOME_RX = r"(?:~|\$HOME)(?:/+\.{1,2})*/*"
+#: Shared operand body (no anchors) — policy/risk compose their rules from it.
+ROOT_OPERAND_RX = rf"(?:{_ROOT_BARE_RX}|{_ROOT_DIRS_RX}|{_ROOT_HOME_RX})"
+_RM_ROOT_OPERAND_RX = re.compile(rf"^{ROOT_OPERAND_RX}$")
+#: Bare filesystem root only (/, /., /.., //, /./) — the sensitive-target scan
+#: skips these for non-write verbs (echo "rm -rf /" stays inert).
+BARE_ROOT_OPERAND_RX = re.compile(rf"^(?:{_ROOT_BARE_RX})$")
 
 
 def _rm_root_order_free(tokens: list[str]) -> bool:
@@ -576,6 +672,43 @@ def _xargs_repl(text: str) -> str | None:
                 break
         i += step
     return None
+
+
+def _xargs_has_arg_file(text: str) -> bool:
+    """True when xargs' OWN leading flags include -a/--arg-file (R6 E8): the
+    operands then come from a file the normalizer cannot read, so a destructive
+    payload must fail closed. Cluster-aware (-ra) and quote-aware; stops at the
+    first non-flag token (the payload command) so payload flags are not
+    mistaken for xargs' own."""
+    toks: list[str] = []
+    pos = 0
+    while pos < len(text):
+        word, pos, _closed = _read_word(text, pos)
+        if word:
+            toks.append(word)
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if not tok.startswith("-") or tok == "-":
+            break
+        if tok.startswith("--"):
+            name, eq, _val = tok.partition("=")
+            if name == "--arg-file":
+                return True
+            i += 2 if (not eq and name in _XARGS_REQ_LONG) else 1
+            continue
+        if _cluster_flag_value(tok, "a", "dEILnPs")[0]:
+            return True
+        step = 1
+        chars = tok[1:]
+        for idx, ch in enumerate(chars):
+            if ch in _XARGS_REQ_SHORT:
+                step = 2 if idx == len(chars) - 1 else 1
+                break
+            if ch in _XARGS_OPT_SHORT:
+                break
+        i += step
+    return False
 
 
 # ---------------------------------------------------------------- R2 C3
@@ -780,7 +913,8 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
             pos = stripped[stripped.index("--") + 1:]
     # assignments may live in an EARLIER segment than the reference
     # (``X=/tmp/f; rm -rf $X``) — collect them across the whole text.
-    values = _assignment_values(" ".join(_strip_tricks(seg) for _sep, seg in segs))
+    norm_all = " ".join(_strip_tricks(seg) for _sep, seg in segs)
+    values = _merged_assignments(text, norm_all)
     for idx, (sep, seg) in enumerate(segs):
         rtoks = _tokens_raw(seg)
         if not rtoks:
@@ -799,10 +933,7 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
                 return True
             continue
         if base == "env":
-            payload = _skip_wrapper_flags(
-                _raw_remainder(norm), req_short=_ENV_REQ_SHORT,
-                req_long=_ENV_REQ_LONG, assignments=True,
-            )
+            payload = _skip_env_flags(_raw_remainder(norm))
             if _scan_unresolved(payload, pos, depth + 1):
                 return True
             continue
@@ -868,6 +999,10 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int) -> bool:
                 pbase == "find" and _is_find_delete(ptoks[1:]))
             if not destructive:
                 continue
+            # R6 E8: -a/--arg-file feeds operands from a file the normalizer
+            # cannot read — a destructive payload is unresolvable, fail closed.
+            if _xargs_has_arg_file(argtext):
+                return True
             if "|" in sep and "||" not in sep and lit is None:
                 return True
             if any("$" in t or "`" in t for t in ptoks[1:] if not t.startswith("-")):
@@ -906,7 +1041,7 @@ def command_variants(command: str) -> list[str]:
             return
         add(norm)
         add(_compact(norm))
-        expanded = _expand_vars(norm)
+        expanded = _sub_refs(norm, _merged_assignments(text, norm))
         if expanded != norm:
             add(expanded)
             add(_compact(expanded))
@@ -955,11 +1090,7 @@ def command_variants(command: str) -> list[str]:
                 if payload.strip():
                     walk(payload, depth + 1)
             elif base == "env":
-                payload = _skip_wrapper_flags(
-                    _raw_remainder(seg),
-                    req_short=_ENV_REQ_SHORT, req_long=_ENV_REQ_LONG,
-                    assignments=True,
-                )
+                payload = _skip_env_flags(_raw_remainder(seg))
                 if payload.strip():
                     walk(payload, depth + 1)
             elif base == "xargs":
@@ -1022,6 +1153,12 @@ def command_variants(command: str) -> list[str]:
                                 walk(payload + " " + lit, depth + 1, positionals)
                     else:
                         walk(payload, depth + 1, positionals)
+                elif rbase == "env":
+                    # R6 E3: quote-aware raw pass — the -S nested command keeps
+                    # its word boundaries (-S'rm -rf /' is ONE quoted value).
+                    payload = _skip_env_flags(_raw_remainder(rseg))
+                    if payload.strip():
+                        walk(payload, depth + 1, positionals)
                 elif rbase in _PRIV_WRAPPERS:
                     # R4-S1: sudo/doas are transparent — walk the real payload
                     # from the RAW remainder so quoted multi-word flag args
@@ -1034,9 +1171,13 @@ def command_variants(command: str) -> list[str]:
                     if payload.strip():
                         walk(payload, depth + 1, positionals)
                 elif rbase in _TRANSPARENT_WRAPPERS:
-                    # R5 A04-A13: quote-aware raw pass — ``nice -n '5' rm …``
-                    # keeps its quoted flag arg intact for the skip.
-                    payload = _strip_transparent_prefixes(_raw_remainder(rseg))
+                    # R5 A04-A13 / R6 E2: quote-aware raw pass — re-prepend the
+                    # wrapper word (the remainder starts at its FLAGS, and
+                    # _strip_transparent_prefixes keys on the executable) so a
+                    # quoted multi-word flag arg (exec -a 'my name' rm …) is
+                    # consumed as ONE word and the real payload stays visible.
+                    payload = _strip_transparent_prefixes(
+                        (_strip_tricks(rtoks[0]) + " " + _raw_remainder(rseg)).strip())
                     if payload.strip():
                         walk(payload, depth + 1, positionals)
 
@@ -1051,5 +1192,7 @@ def normalize_command(command: str) -> str:
     semantic flags. Unlike :func:`command_variants` this returns ONE string
     (no bare-executable variants) so scoring cannot be inflated by stray
     tokens."""
-    text = _expand_vars(_strip_tricks(str(command)))
+    raw = str(command)
+    norm = _strip_tricks(raw)
+    text = _sub_refs(norm, _merged_assignments(raw, norm))
     return _semantic_flags(_resolve_dynamic(text))

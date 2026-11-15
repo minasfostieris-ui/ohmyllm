@@ -107,6 +107,7 @@ class BridgeState:
         self.talk: Any = None  # server-side hold-to-talk recorder
         self.talk_pending = False  # start() still spawning the recorder
         self.voice_stop_pending = False  # R4-3: stop timed out while a start was spawning
+        self.voice_stop_gen = 0  # R6 C1: bumped by a re-press to supersede a grace-looping stop
         self.shutdown_hook = lambda: None
         self.active_turn: Any = None
         self.active_runtime: Any = None  # live AgentRuntime while a turn runs (D4/D6)
@@ -283,6 +284,11 @@ class Handler(BaseHTTPRequestHandler):
         if path in _PUBLIC_PATHS:
             return True
         token = self.headers.get("X-OMLLM-Token", "")
+        # E9: hmac.compare_digest raises TypeError on non-ASCII str — a
+        # malformed header must fail closed with a clean 401, never drop
+        # the connection mid-request.
+        if not token.isascii():
+            return False
         return bool(token) and hmac.compare_digest(token, self.state.token)
 
     def _sync_disk_config(self) -> None:
@@ -1070,6 +1076,10 @@ class Handler(BaseHTTPRequestHandler):
                     # an earlier timed-out release — otherwise the late start
                     # tears the recorder down while the UI is told "already".
                     self.state.voice_stop_pending = False
+                    # R6 C1: also supersede a stop that is GRACE-LOOPING right
+                    # now (its pending flag is not set yet) — the generation
+                    # counter is re-checked by the stop before it tears down.
+                    self.state.voice_stop_gen += 1
                     return 200, {"ok": True, "already": True}
                 self.state.talk_pending = True
                 # R4-3: a fresh start supersedes any stop left pending by an
@@ -1097,16 +1107,24 @@ class Handler(BaseHTTPRequestHandler):
         if action == "stop":
             # a quick tap can release before the recorder finished spawning —
             # give a pending start up to 3s to land, then stop what exists
+            gen = self.state.voice_stop_gen
             for _ in range(30):
                 if self.state.talk is not None or not self.state.talk_pending:
                     break
+                if self.state.voice_stop_gen != gen:
+                    break  # R6 C1: a re-press superseded this release
                 await asyncio.sleep(0.1)
-            talk, self.state.talk = self.state.talk, None
-            if talk is None:
-                if self.state.talk_pending:
+            with self.state.turn_lock:
+                if self.state.voice_stop_gen != gen:
+                    # R6 C1: a re-press inside the grace window owns the mic
+                    # now — never tear down what the UI believes is recording.
+                    return 200, {"ok": True, "note": "superseded"}
+                talk, self.state.talk = self.state.talk, None
+                if talk is None and self.state.talk_pending:
                     # R4-3: the start is still spawning past the cap — mark
                     # the stop so the late start tears its recorder down.
                     self.state.voice_stop_pending = True
+            if talk is None:
                 return 200, {"text": "", "note": "not recording"}
             await asyncio.to_thread(talk["rec"].stop)
             wav = talk["path"]
@@ -1301,21 +1319,25 @@ class Handler(BaseHTTPRequestHandler):
         # effective state, so the UI's armed/disarmed display stays truthful.
         deferred = False
         lock = getattr(self.state, "turn_lock", None)
-        busy = False
-        if lock is not None:
-            with lock:
-                busy = bool(self.state.busy)
         request = getattr(svc, "request_yolo", None)
-        if busy and "yolo" in incoming and request is not None:
-            request(bool(incoming["yolo"]), busy=True)
-            incoming = {k: v for k, v in incoming.items() if k != "yolo"}
-            deferred = True
-        merged = _carry_runtime_flags(svc.config, deep_merge(live, {"agent": incoming}))
-        try:
-            new = Config.model_validate(merged)
-        except Exception as exc:  # noqa: BLE001
-            return self._json(400, {"error": _validation_sentence(exc)})
-        svc.apply_config(new)
+        # R6 C3: busy-check, the defer request AND the config apply share ONE
+        # turn_lock acquisition — work()'s finally settles under this same
+        # lock, so a turn can neither settle between check and arm (orphaned
+        # pending) nor have its settled arm wiped by the in-place agent swap.
+        # apply_config is safe under the lock: retire() only sets a flag.
+        with lock if lock is not None else contextlib.nullcontext():
+            if lock is not None:
+                live = json.loads(svc.config.model_dump_json())
+                if self.state.busy and "yolo" in incoming and request is not None:
+                    request(bool(incoming["yolo"]), busy=True)
+                    incoming = {k: v for k, v in incoming.items() if k != "yolo"}
+                    deferred = True
+            merged = _carry_runtime_flags(svc.config, deep_merge(live, {"agent": incoming}))
+            try:
+                new = Config.model_validate(merged)
+            except Exception as exc:  # noqa: BLE001
+                return self._json(400, {"error": _validation_sentence(exc)})
+            svc.apply_config(new)
         svc.audit.log(
             mode=svc.config.permission_mode.value, tool="__agent_config__",
             args={"changed": sorted(incoming)}, approval="user", success=True,
@@ -1453,6 +1475,7 @@ class Handler(BaseHTTPRequestHandler):
             # can only enqueue bounded interjections after this point.
             self.state.busy = True
             self.state.cancel = asyncio.Event()
+            turn_cancel = self.state.cancel  # R6 C4: identity captured at claim
             if body.get("new") or body.get("session"):
                 self.state.interjections.clear()
         try:
@@ -1571,7 +1594,12 @@ class Handler(BaseHTTPRequestHandler):
             assert self.state.loop is not None
             active = asyncio.run_coroutine_threadsafe(work(), self.state.loop)
             with self.state.turn_lock:
-                self.state.active_turn = active
+                # R6 C4: identity re-check — a thread preempted between
+                # scheduling and this assignment must never overwrite a
+                # newer turn's live handle with its (possibly DONE) future,
+                # nor resurrect a turn that already finished.
+                if self.state.busy and self.state.cancel is turn_cancel:
+                    self.state.active_turn = active
         except BaseException:
             with self.state.turn_lock:
                 self.state.busy = False

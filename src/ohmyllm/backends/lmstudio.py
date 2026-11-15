@@ -514,8 +514,39 @@ class LMStudioBackend(BaseBackend):
                         # reading (bounded) so usage is never dropped.
                         terminal: ChatChunk | None = None
                         trailer_lines = 0
-                        async for line in resp.aiter_lines():
+                        trailer_deadline = 0.0
+                        lines = resp.aiter_lines().__aiter__()
+                        while True:
+                            if terminal is not None:
+                                # R6 C2: bounded post-finish delivery — cap the
+                                # wall clock and wrap every read so a silent or
+                                # keepalive-dripping server can never ride the
+                                # 300s read floor into an uncancellable hang.
+                                remaining = trailer_deadline - time.monotonic()
+                                if remaining <= 0:
+                                    terminal.usage = terminal.usage or usage_stash
+                                    yield terminal
+                                    return
+                                try:
+                                    line = await asyncio.wait_for(lines.__anext__(), remaining)
+                                except (TimeoutError, StopAsyncIteration):
+                                    terminal.usage = terminal.usage or usage_stash
+                                    yield terminal
+                                    return
+                            else:
+                                try:
+                                    line = await lines.__anext__()
+                                except StopAsyncIteration:
+                                    break
                             line = line.strip()
+                            if line and terminal is not None:
+                                # R6 C2: ALL non-empty SSE lines count toward
+                                # the trailer cap — comment keepalives included.
+                                trailer_lines += 1
+                                if trailer_lines >= 64:
+                                    terminal.usage = terminal.usage or usage_stash
+                                    yield terminal
+                                    return
                             if line.startswith("event:"):
                                 event_name = line[6:].strip()
                                 continue
@@ -523,6 +554,13 @@ class LMStudioBackend(BaseBackend):
                                 continue
                             payload = line[5:].strip()
                             if event_name == "error":
+                                if terminal is not None:
+                                    # R6 C2b: a late error after the finish
+                                    # chunk must not discard the completed
+                                    # answer — deliver the stashed terminal.
+                                    terminal.usage = terminal.usage or usage_stash
+                                    yield terminal
+                                    return
                                 try:
                                     msg = (json.loads(payload).get("error") or {}).get("message") or payload
                                 except json.JSONDecodeError:
@@ -553,13 +591,8 @@ class LMStudioBackend(BaseBackend):
                                 usage_stash = data["usage"]
                             if terminal is not None:
                                 # finish already seen — only the usage trailer
-                                # can still matter; never stall on a server
-                                # that omits [DONE] (bounded wait).
-                                trailer_lines += 1
-                                if trailer_lines >= 64:
-                                    terminal.usage = terminal.usage or usage_stash
-                                    yield terminal
-                                    return
+                                # can still matter; the line cap + wall-clock
+                                # deadline above bound the wait (R6 C2).
                                 continue
                             if not data.get("choices"):
                                 # usage-only trailer (include_usage): nothing to
@@ -649,6 +682,7 @@ class LMStudioBackend(BaseBackend):
                                 # R5 F3: do NOT return yet — wait for the
                                 # usage-only trailer / [DONE] / stream end.
                                 terminal = chunk
+                                trailer_deadline = time.monotonic() + 2.0
                             else:
                                 yield chunk
                         if terminal is not None:

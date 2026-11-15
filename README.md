@@ -91,7 +91,7 @@ ohmyllm cli             # no-frills chat in any terminal (`oml tui` = the TUI)
 ohmyllm run "list files here and summarise"   # one-shot agent task
 ohmyllm models          # list models with VRAM fit
 ohmyllm backend ollama --start
-ohmyllm doctor          # 20 health checks with fixes
+ohmyllm doctor          # 20+ health checks with fixes (config-dependent)
 ohmyllm gui             # native window (or a printed loopback URL)
 ohmyllm update          # pull the newest build from GitHub
 ```
@@ -247,7 +247,7 @@ danger_threshold = 0.55
 
 ```bash
 uv sync --extra dev            # or pip install -e ".[dev]"
-pytest tests/ -q               # 1467 tests (1462 run under the guarded gate + 5 standing exclusions), no network, no model required
+pytest tests/ -q               # 1754 tests (1749 run under the guarded gate + 5 standing exclusions), no network, no model required
 ruff check src tests scripts
 mypy src/ohmyllm
 python scripts/e2e_check.py    # scripted agent: memory + tools + audit
