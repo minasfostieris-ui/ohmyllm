@@ -750,6 +750,23 @@ class LMStudioBackend(BaseBackend):
                             terminal.usage = terminal.usage or usage_stash
                             yield terminal
                             return
+                        # R9 E6 (D7 parity): early stream end WITHOUT finish
+                        # or [DONE] is a TERMINAL event — flush the splitter,
+                        # deliver one done chunk and return. Falling through
+                        # to attempt 2 would silently re-request and duplicate
+                        # the answer ("hellohello") with zero done chunks.
+                        for kind, text in sp.flush():
+                            if kind == "reasoning":
+                                reasoning_parts.append(text)
+                            else:
+                                content_seen = True
+                                yield ChatChunk(content=text)
+                        if not content_seen and reasoning_parts and not pending_tools:
+                            yield ChatChunk(content="".join(reasoning_parts))
+                        yield ChatChunk(done=True, finish="stream_ended",
+                                        tool_calls=_finish_tools(pending_tools),
+                                        usage=usage_stash)
+                        return
             except httpx.HTTPError as exc:
                 raise BackendError(f"LM Studio request error: {exc}") from exc
             except BackendError as exc:

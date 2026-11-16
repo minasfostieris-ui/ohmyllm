@@ -758,6 +758,12 @@ def _unresolvable_operand(tok: str) -> bool:
         return True
     if _ROOT_GLOB_OPERAND_RX.match(tok) or _TILDE_USER_HOME_RX.match(tok):
         return True
+    # R9 E3: ~user/…/.. traversals kernel-resolve against an unknowable HOME
+    # (rm -rf ~root/../etc IS /etc, cd-pwd proof) — destructive verbs fail
+    # closed on them; plain ~user/subpath operands stay resolvable (R2 W6).
+    m = re.match(r"^~([A-Za-z0-9_.-]*)(/.*)?$", tok)
+    if m and _DOTDOT_COMPONENT_RX.search(m.group(2) or ""):
+        return True
     # Unbalanced brace fragments are expansion debris (e.g. IFS splitting a
     # value that contained a brace list) — the real operand is unknowable.
     if ("{" in tok) != ("}" in tok):
@@ -947,12 +953,66 @@ def _raw_segments(text: str, *, posix: bool = False) -> list[tuple[str, str]]:
 def _tokens_raw(seg: str) -> list[str]:
     """Quote-preserving tokenization (POSIX shell words, quotes kept) so a
     ``bash -c`` payload stays ONE token with its trailing positional args
-    visible. Falls back to whitespace splitting on unbalanced quotes."""
-    import shlex
-    try:
-        return shlex.split(seg, posix=False)
-    except ValueError:
+    visible.
+
+    R9: bash-parity quote scanner (the SAME grammar as _raw_segments) —
+    shlex.split(posix=False) closes a double quote at EVERY \" regardless
+    of backslash parity, shredding nested echo-pipe payloads
+    (echo "echo \"…\" | sh" | sh) into debris tokens. Inside double quotes
+    a backslash escapes only $, `, \", \\ and newline; $'…' keeps ANSI-C
+    semantics. Unbalanced quotes degrade to whitespace splitting (the
+    fail-closed lanes own the imbalance itself)."""
+    out: list[str] = []
+    buf: list[str] = []
+    quote: str | None = None
+    ansi = False
+    i = 0
+    while i < len(seg):
+        ch = seg[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == "\\" and i + 1 < len(seg) and (ansi
+                    or (quote == '"' and seg[i + 1] in "$`\"\\\n")):
+                buf.append(seg[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                if quote == "'" and not ansi:
+                    quote = None
+                else:
+                    j = i - 1
+                    n = 0
+                    while j >= 0 and seg[j] == "\\":
+                        n += 1
+                        j -= 1
+                    if n % 2 == 0:
+                        quote = None
+                        ansi = False
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            ansi = ch == "'" and i > 0 and seg[i - 1] == "$"
+            buf.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < len(seg):
+            buf.append(seg[i:i + 2])
+            i += 2
+            continue
+        if ch.isspace():
+            if buf:
+                out.append("".join(buf))
+                buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    if buf:
+        out.append("".join(buf))
+    if quote is not None:
         return seg.split()
+    return out
 
 
 # R8 J2/J3: shell interpreters that EXECUTE stdin as code when fed by a pipe
@@ -980,8 +1040,55 @@ def _shell_reads_stdin(rest: list[str]) -> bool:
 def _decode_shell_escapes(text: str) -> str:
     """Decode backslash escapes (\\n, \\t, \\\\, …) the way printf's FORMAT
     and echo -e do. Runs on RAW token content — _strip_tricks would have
-    already erased the backslash (R8 J2 printf-\\n leg)."""
-    return re.sub(r"\\(.)", lambda m: _ANSI_ESCAPES.get(m.group(1), m.group(1)), text)
+    already erased the backslash (R8 J2 printf-\\n leg).
+
+    R9 E5: octal ``\\NNN`` (incl. printf's ``\\0NNN``) and hex ``\\xHH`` are
+    decoded too — ``printf "rm -rf /\\057"`` and ``\\x2f`` both denote a real
+    ``/`` once the shell receives them (stub OUT1/OUT2 proofs)."""
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt == "x":
+                j = i + 2
+                while j < len(text) and j < i + 4 and text[j] in "0123456789abcdefABCDEF":
+                    j += 1
+                if j > i + 2:
+                    out.append(chr(int(text[i + 2:j], 16) & 0xFF))
+                    i = j
+                    continue
+            elif nxt in "01234567":
+                j = i + 1
+                while j < len(text) and j < i + 4 and text[j] in "01234567":
+                    j += 1
+                out.append(chr(int(text[i + 1:j], 8) & 0xFF))
+                i = j
+                continue
+            out.append(_ANSI_ESCAPES.get(nxt, nxt))
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
+
+
+def _dq_escape_decode(tok: str) -> str:
+    """R9: inside DOUBLE quotes the shell removes a backslash only before
+    $, `, \", \\ or newline (bash manual). Quote removal alone leaves \\\"
+    debris that desyncs nested echo-pipe synthesis (echo \"…\" | sh chains)."""
+    out: list[str] = []
+    i = 0
+    while i < len(tok):
+        ch = tok[i]
+        if ch == "\\" and i + 1 < len(tok) and tok[i + 1] in "$`\"\\\n":
+            out.append(tok[i + 1])
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
 
 
 def _literal_output(seg: str) -> str | None:
@@ -1004,18 +1111,25 @@ def _literal_output(seg: str) -> str | None:
             return None
         if "-e" in tokens[1:] and "-E" not in tokens[1:]:
             raw = _tokens_raw(seg)
-            rargs = [_unquote_outer(t) for t in raw[1:]
-                     if t not in ("-n", "-e", "-E")]
+            rargs = [_dq_escape_decode(_unquote_outer(t)) if t.startswith('"')
+                     else _unquote_outer(t)
+                     for t in raw[1:] if t not in ("-n", "-e", "-E")]
             if any("$" in t or "`" in t for t in rargs):
                 return None
             return _decode_shell_escapes(" ".join(rargs)).strip() or None
-        return " ".join(args) or None
+        raw = _tokens_raw(seg)
+        rargs = [_dq_escape_decode(_unquote_outer(t)) if t.startswith('"')
+                 else _unquote_outer(t)
+                 for t in raw[1:] if t not in ("-n", "-e", "-E")]
+        return " ".join(rargs) or None
     if exe == "printf":
         raw = _tokens_raw(seg)
         if len(raw) < 2:
             return None
-        fmt = _unquote_outer(raw[1])
-        args = [_unquote_outer(t) for t in raw[2:]]
+        fmt = _dq_escape_decode(_unquote_outer(raw[1])) if raw[1].startswith('"') \
+            else _unquote_outer(raw[1])
+        args = [_dq_escape_decode(_unquote_outer(t)) if t.startswith('"')
+                else _unquote_outer(t) for t in raw[2:]]
         if any("$" in t or "`" in t for t in [fmt, *args]):
             return None
         if "%" in fmt.replace("%s", ""):
@@ -1026,6 +1140,182 @@ def _literal_output(seg: str) -> str | None:
         out = _decode_shell_escapes(out).strip()
         return out or None
     return None
+
+
+# R9 structural rescan (task #130): E1-E5+B11 are ONE family — synthesized
+# stdin/literal-output payloads escaping re-analysis. Every synthesis site
+# routes through _rescan_payload (ONE entry point, bounded depth). These
+# helpers compute what a pipe stage's stdin/stdout statically IS.
+_RESCAN_MAX_DEPTH = 6
+
+
+def _herestring_content(seg: str) -> str | None:
+    """The (outer-unquoted) content of a ``<<<`` herestring, or None."""
+    toks = _tokens_raw(seg)
+    if "<<<" not in toks:
+        return None
+    hi = toks.index("<<<")
+    return _unquote_outer(" ".join(toks[hi + 1:]))
+
+
+def _is_passthrough(seg: str) -> bool:
+    """True when a pipe stage forwards its stdin to stdout UNCHANGED (R9 E1):
+    cat (no file operands), tee (stdout always mirrors stdin), head/tail (no
+    file operands, non-zero count), sed with an empty script, awk print.
+    Transparent/privilege prefixes are stripped first. Conservative: any
+    other shape is NOT a passthrough (its output is not the upstream stdin)."""
+    toks = _tokens_raw(seg)
+    if "<<<" in toks:
+        toks = toks[:toks.index("<<<")]
+    i = 0
+    while i < len(toks) and _ASSIGN_TOK_RX.match(_strip_tricks(toks[i])):
+        i += 1
+    if i >= len(toks):
+        return False
+    payload = _strip_transparent_prefixes(" ".join(toks[i:]))
+    ptoks = [_unquote_outer(_strip_tricks(t)) for t in _tokens_raw(payload)]
+    if not ptoks:
+        return False
+    base = ptoks[0].rsplit("/", 1)[-1].lower()
+    args = ptoks[1:]
+    if base == "cat":
+        return all(a.startswith("-") for a in args)
+    if base == "tee":
+        return True
+    if base in ("head", "tail"):
+        k = 0
+        while k < len(args):
+            a = args[k]
+            if a in ("-n", "-c", "--lines", "--bytes"):
+                if k + 1 >= len(args):
+                    return False
+                cnt = args[k + 1].lstrip("+-")
+                if cnt.isdigit() and int(cnt) == 0:
+                    return False
+                k += 2
+                continue
+            if a.startswith(("-n", "-c", "--lines=", "--bytes=")):
+                val = (a.split("=", 1)[1] if "=" in a else a[2:]).lstrip("+-")
+                if val.isdigit() and int(val) == 0:
+                    return False
+                k += 1
+                continue
+            if a.startswith("-"):
+                k += 1
+                continue
+            return False  # file operand: stdout is the FILE, not stdin
+        return True
+    if base == "sed":
+        return args == [""]
+    if base == "awk":
+        return len(args) == 1 and args[0].replace(" ", "") in ("{print}", "{print$0}")
+    return False
+
+
+def _pipe_producer(segs: list[tuple[str, str]], idx: int) -> str | None:
+    """The segment whose stdout reaches pipe stage *idx* (R9 E1): walk back
+    over passthrough stages (bounded 6 hops). A passthrough fed by a
+    herestring IS the producer (its content is its stdout)."""
+    j = idx - 1
+    for _ in range(6):
+        if j < 0:
+            return None
+        sep_j, seg_j = segs[j]
+        if not _is_passthrough(seg_j):
+            return seg_j
+        if _herestring_content(seg_j):
+            return seg_j
+        if j == 0 or "|" not in sep_j or "||" in sep_j:
+            return None
+        j -= 1
+    return None
+
+
+def _pipe_literal(segs: list[tuple[str, str]], idx: int) -> str | None:
+    """The statically-literal stdout reaching pipe stage *idx*, or None.
+    Replaces every single-hop ``_literal_output(segs[idx-1])`` read (R9 E1):
+    multi-hop passthrough chains, herestring-fed passthroughs, and upstream
+    variable assignments (R9 B30: X=/{a..z}; echo \"rm -rf $X\" | sh)."""
+    prod = _pipe_producer(segs, idx)
+    if prod is None:
+        return None
+    if _is_passthrough(prod):
+        hs = _herestring_content(prod)
+        return hs.strip() if hs and hs.strip() else None
+    raw = "".join(sep + s for sep, s in segs)
+    norm = " ".join(_strip_tricks(s) for _sep, s in segs)
+    expanded = _sub_refs(prod, _merged_assignments(raw, norm))
+    return _literal_output(expanded)
+
+
+def _pipe_remote_source(segs: list[tuple[str, str]], idx: int) -> bool:
+    """True when the producer feeding pipe stage *idx* is curl/wget (R9:
+    the curl|sh invariant must hold across intermediate passthrough pipes —
+    risk rule 68's ``[^|;]*`` cannot cross them)."""
+    prod = _pipe_producer(segs, idx)
+    if prod is None:
+        return False
+    toks = prod.split()
+    i = 0
+    while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
+        i += 1
+    payload = _strip_transparent_prefixes(" ".join(toks[i:]))
+    ptoks = payload.split()
+    return bool(ptoks) and ptoks[0].rsplit("/", 1)[-1].lower() in ("curl", "wget")
+
+
+def _c_payload(rest: list[str]) -> str:
+    """The -c command string of a shell's argument list (exact ``-c VALUE``
+    or attached ``-cVALUE``), outer-unquoted; \"\" when absent."""
+    for k, t in enumerate(rest):
+        if t == "-c":
+            return _unquote_outer(rest[k + 1]) if k + 1 < len(rest) else ""
+        if t.startswith("-c") and not t.startswith("--"):
+            return _unquote_outer(t[2:])
+    return ""
+
+
+def _inherits_stdin(payload: str) -> bool:
+    """R9 E4: True when a -c/eval payload SPAWNS a stdin-reading shell that
+    inherits the OUTER pipe/herestring (``sh -c sh``, ``eval sh``,
+    ``sh -c 'cat | sh'``). Every upstream segment inside the payload must be
+    a pure passthrough — a literal producer (echo …) feeds the inner shell
+    its OWN output instead, so the outer stdin is NOT executed."""
+    segs = _raw_segments(payload)
+    if not segs:
+        return False
+    _sep, last = segs[-1]
+    toks = last.split()
+    i = 0
+    while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
+        i += 1
+    stripped = _strip_transparent_prefixes(" ".join(toks[i:]))
+    ptoks = stripped.split()
+    if not ptoks:
+        return False
+    if ptoks[0].rsplit("/", 1)[-1].lower() not in _STDIN_SHELLS:
+        return False
+    rest = ptoks[1:]
+    if "<<<" in rest:
+        rest = rest[:rest.index("<<<")]
+    if not _shell_reads_stdin(rest):
+        return False
+    return all(_is_passthrough(segs[j][1]) for j in range(len(segs) - 1))
+
+
+def _seg_feeding(segs: list[tuple[str, str]], idx: int, sep: str, seg: str,
+                 stdin: str | None) -> str | None:
+    """The stdin content a segment's shell would EXECUTE: its own herestring
+    first, else the upstream pipe's literal output, else inherited stdin
+    (R9 E2/E4 — ONE feeding computation shared by every scan/walk site)."""
+    hs = _herestring_content(seg)
+    if hs is not None and hs.strip():
+        return hs
+    if "|" in sep and "||" not in sep and idx > 0:
+        pl = _pipe_literal(segs, idx)
+        if pl and pl.strip():
+            return pl
+    return stdin
 
 
 def _expand_positionals(text: str, positionals: list[str]) -> str:
@@ -1092,7 +1382,7 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
         toks = s.split()
         if (toks and toks[0].rsplit("/", 1)[-1] == "xargs"
                 and "|" in sep and "||" not in sep and idx > 0):
-            lit = _literal_output(segs[idx - 1][1])
+            lit = _pipe_literal(segs, idx)
             remainder = _raw_remainder(s)
             payload = _skip_wrapper_flags(
                 remainder, req_short=_XARGS_REQ_SHORT,
@@ -1110,13 +1400,14 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
                 else:
                     s = s + " " + lit
         elif toks:
-            # R8 J2/J3: stdin synthesis for ANY shell interpreter — a pipe
-            # RHS or herestring-fed sh/bash/dash/ash/zsh/ksh (incl. busybox/
-            # sudo prefixes) EXECUTES its stdin as code. The synthesized
+            # R8 J2/J3 + R9 E1/E4: stdin synthesis for ANY shell interpreter —
+            # a pipe RHS or herestring-fed sh/bash/dash/ash/zsh/ksh (incl.
+            # busybox/sudo prefixes) EXECUTES its stdin as code. The synthesized
             # content REPLACES the shell segment (it IS the command run);
             # transparent prefixes are preserved. -c payloads and script-file
-            # operands ignore stdin (no synthesis). curl|sh stays untouched:
-            # curl output is not statically literal, so the existing
+            # operands ignore stdin — UNLESS the payload spawns a stdin-reading
+            # shell (R9 E4: sh -c sh / eval sh inherit the pipe). curl|sh stays
+            # untouched: curl output is not statically literal, so the existing
             # remote-script rule keeps firing (cross-mode invariant).
             i = 0
             while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
@@ -1124,20 +1415,28 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
             payload = _strip_transparent_prefixes(" ".join(toks[i:]))
             ptoks = payload.split()
             pbase = ptoks[0].rsplit("/", 1)[-1].lower() if ptoks else ""
-            if pbase in _STDIN_SHELLS:
+            if pbase in _STDIN_SHELLS or pbase == "eval":
                 rest = ptoks[1:]
                 hs: str | None = None
                 if "<<<" in rest:
                     hi = rest.index("<<<")
                     hs = " ".join(rest[hi + 1:])
                     rest = rest[:hi]
-                if _shell_reads_stdin(rest):
+                reads = _shell_reads_stdin(rest)
+                if not reads:
+                    # R9 E4: the -c payload boundary is quote-aware — read it
+                    # from the RAW segment (deobfuscation splits multi-word
+                    # payloads: sh -c 'busybox sh' must inherit as ONE unit).
+                    inner = (_unquote_outer(" ".join(rest)) if pbase == "eval"
+                             else _c_payload(_tokens_raw(seg)))
+                    reads = _inherits_stdin(inner)
+                if reads:
                     head = s[:len(s) - len(payload)] if s.endswith(payload) else ""
                     if hs is not None:
                         if hs.strip():
                             s = head + hs
                     elif "|" in sep and "||" not in sep and idx > 0:
-                        lit = _literal_output(segs[idx - 1][1])
+                        lit = _pipe_literal(segs, idx)
                         if lit is not None and lit.strip():
                             s = head + lit
         out.append(sep + s)
@@ -1164,10 +1463,10 @@ def _collapse_destructive_seg(seg: str, cwd: str | None = None) -> str | None:
     """R8 J1: normpath-collapse the path operands of a filesystem-destructive
     verb segment (assignment prefixes and transparent wrappers preserved).
     Returns the collapsed segment, or None when the verb is not destructive
-    or nothing changed. Dynamic ``$…``/backtick, brace, ``~`` and ``key=value``
-    operands are left untouched (the fail-closed lane owns unresolvable ones);
-    relative operands collapse against *cwd* only when it is supplied.
-    Non-destructive verbs are NEVER collapsed (over-block guard)."""
+    or nothing changed. Dynamic ``$…``/backtick, brace, bare ``~``/unknown-user
+    and ``key=value`` operands are left untouched (the fail-closed lane owns
+    unresolvable ones); relative operands collapse against *cwd* only when it
+    is supplied. Non-destructive verbs are NEVER collapsed (over-block guard)."""
     toks = seg.split()
     i = 0
     while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
@@ -1184,13 +1483,30 @@ def _collapse_destructive_seg(seg: str, cwd: str | None = None) -> str | None:
     changed = False
     out: list[str] = []
     for tok in ptoks[1:]:
-        if (tok.startswith("-") or tok.startswith("~") or "=" in tok
+        if (tok.startswith("-") or "=" in tok
                 or "$" in tok or "`" in tok or "{" in tok
                 or not _DOT_COMPONENT_RX.search(tok)):
             out.append(tok)
             continue
         if tok.startswith("/"):
             new = posixpath.normpath(tok)
+        elif tok.startswith("~"):
+            # R9 E3: ~user/../… kernel-resolves against the user's HOME
+            # (cd ~root/../etc && pwd → /etc). Named-user homes resolve via
+            # pwd; bare ~ and unknown users stay untouched (fail-closed lane).
+            m = re.match(r"^~([A-Za-z0-9_.-]+)(/.*)?$", tok)
+            if m is None:
+                out.append(tok)
+                continue
+            try:
+                import pwd
+                home = pwd.getpwnam(m.group(1)).pw_dir
+            except (KeyError, ImportError):
+                home = ""
+            if not home.startswith("/"):
+                out.append(tok)
+                continue
+            new = posixpath.normpath(home + (m.group(2) or ""))
         elif cwd and cwd.startswith("/") and _DOTDOT_COMPONENT_RX.search(tok):
             new = posixpath.normpath(posixpath.join(cwd, tok))
         else:
@@ -1233,6 +1549,29 @@ def _destructive_brace_position(text: str) -> bool:
         base == "find" and "-delete" in ptoks[1:])
 
 
+def _destructive_shape(payload: str, *, posix: bool = False) -> bool:
+    """R9 depth-exhaustion backstop: True when a filesystem-destructive verb
+    sits at COMMAND position in the payload or its one-pass dynamic resolution
+    (synthesized stdin included). Non-destructive commands NEVER fail closed."""
+    for text in (payload, _resolve_dynamic(payload)):
+        for _sep, seg in _raw_segments(text, posix=posix):
+            if _destructive_brace_position(seg):
+                return True
+    return False
+
+
+def _rescan_payload(payload: str, positionals: list[str], depth: int,
+                    *, posix: bool = False, stdin: str | None = None) -> bool:
+    """R9 structural rescan — the ONE entry point every synthesis site routes
+    through (E2 meta-gap): a synthesized payload is re-analyzed as if it were
+    a fresh command line, recursively, bounded at _RESCAN_MAX_DEPTH. On depth
+    exhaustion only DESTRUCTIVE shapes fail closed (non-destructive commands
+    never do; full_access silent-ALLOW semantics preserved)."""
+    if depth > _RESCAN_MAX_DEPTH:
+        return _destructive_shape(payload, posix=posix)
+    return _scan_unresolved(payload, positionals, depth, posix=posix, stdin=stdin)
+
+
 def unresolved_destructive_operands(command: str) -> bool:
     """Fail-closed input for the catastrophic gate (R2 C3): True when a
     destructive executable (rm/shred/dd/find -delete) carries an operand the
@@ -1250,9 +1589,9 @@ def unresolved_destructive_operands(command: str) -> bool:
 
 
 def _scan_unresolved(text: str, positionals: list[str], depth: int,
-                     *, posix: bool = False) -> bool:
-    if depth > 3:
-        return False
+                     *, posix: bool = False, stdin: str | None = None) -> bool:
+    if depth > _RESCAN_MAX_DEPTH:
+        return _destructive_shape(text, posix=posix)
     segs = _raw_segments(text, posix=posix)
     pos = list(positionals)
     for _sep, seg in segs:
@@ -1267,26 +1606,29 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
         rtoks = _tokens_raw(seg)
         if not rtoks:
             continue
+        # R9 E2: the stdin this segment's shell would EXECUTE (herestring,
+        # upstream pipe literal through passthrough chains, or inherited).
+        feeding = _seg_feeding(segs, idx, sep, seg, stdin)
         base = _strip_tricks(rtoks[0]).rsplit("/", 1)[-1]
         if base in _SHELL_WRAPPERS and "-c" in rtoks[1:3]:
             ci = rtoks.index("-c")
             if ci + 1 < len(rtoks):
                 pargs = [_strip_tricks(t) for t in rtoks[ci + 2:]]
-                if _scan_unresolved(_unquote_outer(rtoks[ci + 1]), pargs[1:],
-                                    depth + 1, posix=posix):
+                if _rescan_payload(_unquote_outer(rtoks[ci + 1]), pargs[1:],
+                                   depth + 1, posix=posix, stdin=feeding):
                     return True
             continue
         norm = _strip_tricks(seg)
         if base == "eval":
             # R7 gate-fix (#119): recurse on the RAW remainder (outer quotes
             # stripped) so the interior assignment quoting survives.
-            if _scan_unresolved(_unquote_outer(_raw_remainder(seg)), pos,
-                                depth + 1, posix=posix):
+            if _rescan_payload(_unquote_outer(_raw_remainder(seg)), pos,
+                               depth + 1, posix=posix, stdin=feeding):
                 return True
             continue
         if base == "env":
             payload = _skip_env_flags(_raw_remainder(norm))
-            if _scan_unresolved(payload, pos, depth + 1, posix=posix):
+            if _rescan_payload(payload, pos, depth + 1, posix=posix, stdin=feeding):
                 return True
             continue
         norm = _expand_vars(norm)
@@ -1336,6 +1678,20 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
                 continue
             base = toks[0].rsplit("/", 1)[-1]
             args = toks[1:]
+        if base in _STDIN_SHELLS:
+            # R9 E2/E4: a stdin-reading shell EXECUTES its feeding content —
+            # rescan it as a fresh command line (the meta-gap fix). curl/wget
+            # producers fail closed across passthrough hops (curl|sh invariant
+            # extended; rule 68 cannot cross intermediate pipes).
+            sargs = args[:args.index("<<<")] if "<<<" in args else args
+            if _shell_reads_stdin(sargs):
+                if feeding and feeding.strip():
+                    if _rescan_payload(feeding, pos, depth + 1, posix=posix):
+                        return True
+                elif "|" in sep and "||" not in sep and idx > 0 \
+                        and _pipe_remote_source(segs, idx):
+                    return True
+            continue
         if base == "xargs":
             argtext = " ".join(args)
             repl = _xargs_repl(argtext)
@@ -1356,9 +1712,13 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
                 continue
             ptoks = pbraced.split()
             lit: str | None = None
-            if "|" in sep and "||" not in sep:
-                upstream = segs[idx - 1][1] if idx > 0 else ""
-                lit = _literal_output(upstream)
+            if "|" in sep and "||" not in sep and idx > 0:
+                lit = _pipe_literal(segs, idx)
+            if repl is None and lit is not None:
+                # R9 B11: append-lane parity with -I — the upstream literal
+                # becomes payload OPERANDS, so brace/glob/$ debris inside it
+                # fails closed exactly like the substituted form.
+                ptoks = ptoks + lit.split()
             if repl is not None:
                 if lit is not None:
                     ptoks = [t.replace(repl, lit) for t in ptoks]
@@ -1409,7 +1769,8 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
         if value and value not in seen:
             seen.append(value)
 
-    def walk(text: str, depth: int, positionals: list[str] | None = None) -> None:
+    def walk(text: str, depth: int, positionals: list[str] | None = None,
+             stdin: str | None = None) -> None:
         norm = _strip_tricks(text)
         if not norm:
             return
@@ -1507,29 +1868,33 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                 payload = _strip_transparent_prefixes(seg)
                 if payload.strip() and payload != seg:
                     walk(payload, depth + 1, positionals)
-        if depth < 2:
+        if depth < _RESCAN_MAX_DEPTH:
             # Quote-aware pass (R2 C3): precise `sh -c` payload boundaries
             # expose trailing positional arguments ($0, $1, …), and xargs
             # payloads gain the upstream pipe segment's literal output as
             # operands — the normalized whole-text pass above cannot see
             # either because quote removal erases the payload boundary.
+            # R9: the budget matches the rescan bound so nested synthesis
+            # fixpoints (echo "…" | sh chains) stay visible to the floor.
             raw_segs = _raw_segments(text)
             for idx, (sep, rseg) in enumerate(raw_segs):
                 rtoks = _tokens_raw(rseg)
                 if not rtoks:
                     continue
                 rbase = _strip_tricks(rtoks[0]).rsplit("/", 1)[-1]
+                feeding = _seg_feeding(raw_segs, idx, sep, rseg, stdin)
                 if rbase in _SHELL_WRAPPERS and "-c" in rtoks[1:3]:
                     ci = rtoks.index("-c")
                     if ci + 1 < len(rtoks):
                         pargs = [_strip_tricks(t) for t in rtoks[ci + 2:]]
-                        walk(_unquote_outer(rtoks[ci + 1]), depth + 1, pargs[1:])
+                        walk(_unquote_outer(rtoks[ci + 1]), depth + 1, pargs[1:],
+                             stdin=feeding)
                 elif rbase == "eval":
                     # R7 gate-fix (#119): raw eval payload keeps its interior
                     # quoting for the assignment extractor (Alex H1 family).
                     payload = _unquote_outer(_raw_remainder(rseg))
                     if payload.strip():
-                        walk(payload, depth + 1, positionals)
+                        walk(payload, depth + 1, positionals, stdin=feeding)
                 elif rbase == "xargs":
                     # R4-S3: the RAW remainder keeps quoted flag arguments
                     # (``-a 'my file'``) intact for the quote-aware skip, and
@@ -1544,7 +1909,7 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                     if not payload.strip():
                         continue
                     if "|" in sep and "||" not in sep and idx > 0:
-                        lit = _literal_output(raw_segs[idx - 1][1])
+                        lit = _pipe_literal(raw_segs, idx)
                         if lit is not None:
                             repl = _xargs_repl(remainder)
                             if repl is not None:
@@ -1556,8 +1921,9 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                     else:
                         walk(payload, depth + 1, positionals)
                 elif rbase in _STDIN_SHELLS:
-                    # R8 J2/J3: quote-aware raw pass — herestring content and
-                    # literal piped stdin are EXECUTED by the shell; walk them
+                    # R8 J2/J3 + R9 E1/E2/E4: quote-aware raw pass — herestring
+                    # content, literal piped stdin (through passthrough chains)
+                    # and INHERITED stdin are EXECUTED by the shell; walk them
                     # as command input so a quoted multi-command payload
                     # (sh <<< "rm -rf /; echo done") exposes its inner segments
                     # to the deny floor and the catastrophic gate.
@@ -1568,19 +1934,19 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                         hs_raw = _unquote_outer(" ".join(rest[hi + 1:]))
                         rest = rest[:hi]
                     if _shell_reads_stdin(rest):
-                        if hs_raw is not None:
-                            if hs_raw.strip():
-                                walk(hs_raw, depth + 1, positionals)
-                        elif "|" in sep and "||" not in sep and idx > 0:
-                            lit = _literal_output(raw_segs[idx - 1][1])
-                            if lit:
-                                walk(lit, depth + 1, positionals)
+                        content = hs_raw if hs_raw and hs_raw.strip() else None
+                        if content is None and "|" in sep and "||" not in sep and idx > 0:
+                            content = _pipe_literal(raw_segs, idx)
+                        if content is None:
+                            content = stdin
+                        if content and content.strip():
+                            walk(content, depth + 1, positionals)
                 elif rbase == "env":
                     # R6 E3: quote-aware raw pass — the -S nested command keeps
                     # its word boundaries (-S'rm -rf /' is ONE quoted value).
                     payload = _skip_env_flags(_raw_remainder(rseg))
                     if payload.strip():
-                        walk(payload, depth + 1, positionals)
+                        walk(payload, depth + 1, positionals, stdin=feeding)
                 elif rbase in _PRIV_WRAPPERS:
                     # R4-S1: sudo/doas are transparent — walk the real payload
                     # from the RAW remainder so quoted multi-word flag args
@@ -1591,7 +1957,7 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                         req_short=_PRIV_REQ_SHORT, req_long=_PRIV_REQ_LONG,
                     )
                     if payload.strip():
-                        walk(payload, depth + 1, positionals)
+                        walk(payload, depth + 1, positionals, stdin=feeding)
                 elif rbase in _TRANSPARENT_WRAPPERS:
                     # R5 A04-A13 / R6 E2: quote-aware raw pass — re-prepend the
                     # wrapper word (the remainder starts at its FLAGS, and
@@ -1601,7 +1967,7 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                     payload = _strip_transparent_prefixes(
                         (_strip_tricks(rtoks[0]) + " " + _raw_remainder(rseg)).strip())
                     if payload.strip():
-                        walk(payload, depth + 1, positionals)
+                        walk(payload, depth + 1, positionals, stdin=feeding)
 
     walk(str(command), 0)
     return seen

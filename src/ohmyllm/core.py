@@ -39,6 +39,15 @@ class Services:
     # — the apply itself stays OUTSIDE the lock (deadlock avoidance: never hold
     # turn_lock across a gated apply). None for TUI/plain/CLI (no turn loop).
     _runtime_lock: Any = field(default=None, repr=False)
+    # R9 N-R9-2a/2b: dedicated config-mutation mutex (the bridge wires its
+    # config_mutex here). Serializes the FULL merge->validate->apply echo
+    # window and disk reloads against each other so concurrent echoes can
+    # never merge from the same pre-apply live config (lost update / stale
+    # security revert). NEVER turn_lock — apply stays OUTSIDE turn_lock
+    # (deadlock law); lock order is config_mutex -> turn_lock. Re-entrant:
+    # an echo site already holds it when apply_config re-acquires it.
+    # None for TUI/plain/CLI (single-threaded config mutation).
+    _config_mutex: Any = field(default=None, repr=False)
 
     # ------------------------------------------------------------- factory
     @classmethod
@@ -215,6 +224,13 @@ class Services:
         calling apply_config positionally, so duck-typed fakes (lambda n: ...)
         keep working; direct callers may pass the kwarg instead.
         """
+        # R9 N-R9-2a/2b: serialize applies against concurrent echo windows
+        # (re-entrant when the calling site already holds the mutex).
+        mutex = getattr(self, "_config_mutex", None)
+        with mutex if mutex is not None else contextlib.nullcontext():
+            self._apply_config_inner(cfg, persist=persist, carry_runtime=carry_runtime)
+
+    def _apply_config_inner(self, cfg: Config, *, persist: bool, carry_runtime: bool) -> None:
         carry_runtime = carry_runtime or getattr(cfg, "_omllm_carry_runtime", False)
         if cfg.permission_mode is PermissionMode.FULL_ACCESS and self.config.permission_mode is not PermissionMode.FULL_ACCESS:
             cfg = cfg.model_copy(deep=True)
@@ -316,16 +332,21 @@ class Services:
         """Re-read config.toml from disk without writing anything back: the
         GUI bridge is a separate process, so keys/provider/model changes it
         saves are invisible to this TUI until now."""
-        cfg = self.config_store.load()
-        # R3 U3: runtime-only flags (Field exclude=True, e.g. agent.yolo)
-        # never reach config.toml — a wholesale replace on reload would
-        # silently reset them, so any out-of-band save disarm /yolo.
-        # R8 G3: carry through the UNIFIED atomic echo path at apply time
-        # (carry_runtime=True) instead of a private pre-carry loop here —
-        # that loop was a stale second live read (the same TOCTOU hole).
-        # Real disk edits still apply; a no-op reload produces no security
-        # delta (C5: nothing retires).
-        self.apply_config(cfg, persist=False, carry_runtime=True)
+        # R9 N-R9-2a: the disk LOAD + apply share the config-mutation mutex —
+        # a stale disk read must not interleave with an echo's merge->apply
+        # window either (re-entrant: apply_config re-acquires it).
+        mutex = getattr(self, "_config_mutex", None)
+        with mutex if mutex is not None else contextlib.nullcontext():
+            cfg = self.config_store.load()
+            # R3 U3: runtime-only flags (Field exclude=True, e.g. agent.yolo)
+            # never reach config.toml — a wholesale replace on reload would
+            # silently reset them, so any out-of-band save disarm /yolo.
+            # R8 G3: carry through the UNIFIED atomic echo path at apply time
+            # (carry_runtime=True) instead of a private pre-carry loop here —
+            # that loop was a stale second live read (the same TOCTOU hole).
+            # Real disk edits still apply; a no-op reload produces no security
+            # delta (C5: nothing retires).
+            self.apply_config(cfg, persist=False, carry_runtime=True)
         return self.config
 
     def set_mode(self, mode: PermissionMode, *, phrase: str | None = None) -> bool:

@@ -396,10 +396,13 @@ class CloudBackend(BaseBackend):
                                 elif tid and tid in by_id:
                                     slot = pending[by_id[tid]]
                                 elif tid:
-                                    last_key = max(pending, default=-1) + 1
+                                    # R9 E7: id-fallback keys live in a NEGATIVE
+                                    # namespace so a later index=0 delta with the
+                                    # same reused id can never clobber this slot.
+                                    last_key = min(pending, default=0) - 1
                                     by_id[tid] = last_key
                                     slot = pending[last_key] = {"id": tid, "name": "", "args": ""}
-                                elif last_key >= 0:
+                                elif last_key >= 0 or last_key in pending:
                                     slot = pending[last_key]  # continuation without id/index
                                 else:
                                     last_key = 0
@@ -428,7 +431,12 @@ class CloudBackend(BaseBackend):
         calls = [
             {"id": slot["id"] or f"call_{i}", "type": "function",
              "function": {"name": slot["name"], "arguments": slot["args"] or "{}"}}
-            for i, slot in sorted(pending.items()) if slot["name"]
+            # R9 E7: non-negative (indexed) slots first in index order, then
+            # negative id-fallback slots in allocation order (J5 parity).
+            for i, slot in sorted(pending.items(),
+                                  key=lambda kv: (kv[0] < 0,
+                                                  -kv[0] if kv[0] < 0 else kv[0]))
+            if slot["name"]
         ]
         yield ChatChunk(tool_calls=calls or None, done=True,
                         finish=end_reason or ("stream_ended" if not ended else None),

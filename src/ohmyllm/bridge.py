@@ -102,6 +102,15 @@ class BridgeState:
         # core.apply_config holds it only for the snapshot, never across the
         # gated apply itself.
         self.svc._runtime_lock = self.turn_lock
+        # R9 N-R9-2a/2b: DEDICATED config-mutation mutex serializing the FULL
+        # merge->validate->apply window at every echo site (and disk reloads)
+        # so concurrent echoes can never merge from the same pre-apply live
+        # config. NEVER turn_lock (deadlock law: apply stays OUTSIDE
+        # turn_lock); lock order is config_mutex -> turn_lock and no
+        # turn_lock holder ever takes config_mutex. RLock: the holder
+        # re-enters via core.apply_config / reload_config.
+        self.config_mutex = threading.RLock()
+        self.svc._config_mutex = self.config_mutex
         self.interjections: list[str] = []
         self.tok_s = 0.0
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -815,45 +824,54 @@ class Handler(BaseHTTPRequestHandler):
     def _set_model(self, body: dict) -> None:
         backend = body.get("backend") or self.state.svc.config.default_backend.value
         name = str(body.get("model", ""))
+        cm = getattr(self.state, "config_mutex", None)
         lock = getattr(self.state, "turn_lock", None)
         # R7: live re-read + mutation under ONE turn_lock (R6 C3 pattern) so the
         # snapshot is consistent with a settling turn. apply_config stays OUTSIDE
         # the lock — it carries the live runtime flags at apply time
         # (core.apply_config) and must never block work()'s under-lock settle.
-        with lock if lock is not None else contextlib.nullcontext():
-            updated = self.state.svc.config.model_copy(deep=True)
-            section = getattr(updated, backend, None)
-            if section is None or not hasattr(section, "default_model"):
-                # R3 C7: generation/safety/ui/... are config sections, not
-                # backends — a clean 400, not an AttributeError 500.
-                return self._json(400, {"error": f"unknown backend {backend!r}"})
-            if not name:
-                return self._json(400, {"error": "bad request"})
-            section.default_model = name
-            if backend != updated.default_backend.value:
-                # mirror TUI/plain semantics: choosing a model on another backend
-                # switches the default too, else the next turn silently runs on
-                # the old backend's model
-                try:
-                    updated.default_backend = BackendName(backend)
-                except ValueError:
+        # R9 N-R9-2a: the config mutex serializes the FULL merge->apply window
+        # against concurrent echoes (a late wholesale apply must not erase an
+        # edit that landed after this merge).
+        with cm if cm is not None else contextlib.nullcontext():
+            with lock if lock is not None else contextlib.nullcontext():
+                updated = self.state.svc.config.model_copy(deep=True)
+                section = getattr(updated, backend, None)
+                if section is None or not hasattr(section, "default_model"):
+                    # R3 C7: generation/safety/ui/... are config sections, not
+                    # backends — a clean 400, not an AttributeError 500.
                     return self._json(400, {"error": f"unknown backend {backend!r}"})
-        _apply_runtime_echo(self.state.svc, updated)
+                if not name:
+                    return self._json(400, {"error": "bad request"})
+                section.default_model = name
+                if backend != updated.default_backend.value:
+                    # mirror TUI/plain semantics: choosing a model on another backend
+                    # switches the default too, else the next turn silently runs on
+                    # the old backend's model
+                    try:
+                        updated.default_backend = BackendName(backend)
+                    except ValueError:
+                        return self._json(400, {"error": f"unknown backend {backend!r}"})
+            _apply_runtime_echo(self.state.svc, updated)
         self._json(200, {"ok": True, "backend": backend, "model": name})
 
     async def _backend(self, body: dict) -> tuple[int, dict]:
         name = body.get("name")
         if name:
+            cm = getattr(self.state, "config_mutex", None)
             lock = getattr(self.state, "turn_lock", None)
             # R7: live re-read under turn_lock (no await inside — safe on the
             # loop); apply outside the lock, runtime flags carried at apply time.
-            with lock if lock is not None else contextlib.nullcontext():
-                updated = self.state.svc.config.model_copy(deep=True)
-                try:
-                    updated.default_backend = BackendName(name)
-                except ValueError:
-                    return 400, {"error": f"unknown backend {name!r}"}
-            _apply_runtime_echo(self.state.svc, updated)
+            # R9 N-R9-2a: config mutex around the FULL merge->apply window; the
+            # await health/start below stays OUTSIDE it (never hold across await).
+            with cm if cm is not None else contextlib.nullcontext():
+                with lock if lock is not None else contextlib.nullcontext():
+                    updated = self.state.svc.config.model_copy(deep=True)
+                    try:
+                        updated.default_backend = BackendName(name)
+                    except ValueError:
+                        return 400, {"error": f"unknown backend {name!r}"}
+                _apply_runtime_echo(self.state.svc, updated)
         if body.get("start"):
             be = self.state.svc.backend(name or None)
             res = await be.ensure_running()
@@ -1290,34 +1308,39 @@ class Handler(BaseHTTPRequestHandler):
         # mail password is owned by `oml mail setup` — same echo-back trap
         if "mail" in body and isinstance(body["mail"], dict):
             body["mail"] = {k: v for k, v in body["mail"].items() if k != "password"}
+        cm = getattr(self.state, "config_mutex", None)
         lock = getattr(self.state, "turn_lock", None)
         # R7: live re-read + protected comparison + carry + validate under ONE
         # turn_lock; apply outside (runtime flags carried at apply time in core).
-        with lock if lock is not None else contextlib.nullcontext():
-            live = json.loads(cfg.model_dump_json())
-            # Security transitions have dedicated, confirmation-aware controls; the
-            # generic endpoint may echo these sections but must never alter them.
-            # agent/cloud/mail/default_backend joined the protected set (H2): they
-            # carry yolo/op_mode/tone injection, endpoint redirection and the mail
-            # exfiltration channel. Comparison runs on the MERGED result so masked
-            # echo-backs (stripped keys/passwords) still pass through untouched.
-            protected = {
-                "version", "policy_generation", "permission_mode", "workspace", "memory",
-                "safety", "guard", "logging", "ollama", "lmstudio",
-                "agent", "cloud", "mail", "default_backend",
-            }
-            merged = deep_merge(live, body)
-            changed = sorted(key for key in protected if merged.get(key) != live.get(key))
-            if changed:
-                return self._json(403, {"error": "security config requires a dedicated control: " + ", ".join(changed)})
-            # R4-1: carry runtime-only flags AFTER the protected comparison — the
-            # live dump lacks them, so injecting earlier would fake an agent delta.
-            merged = _carry_runtime_flags(cfg, merged)
-            try:
-                new = Config.model_validate(merged)
-            except Exception as exc:  # noqa: BLE001
-                return self._json(400, {"error": _validation_sentence(exc)})
-        _apply_runtime_echo(self.state.svc, new)
+        # R9 N-R9-2a/2b: the config mutex serializes the FULL merge->apply
+        # window — the protected comparison at merge time stays authoritative
+        # because no confirmed security change can land between merge and apply.
+        with cm if cm is not None else contextlib.nullcontext():
+            with lock if lock is not None else contextlib.nullcontext():
+                live = json.loads(cfg.model_dump_json())
+                # Security transitions have dedicated, confirmation-aware controls; the
+                # generic endpoint may echo these sections but must never alter them.
+                # agent/cloud/mail/default_backend joined the protected set (H2): they
+                # carry yolo/op_mode/tone injection, endpoint redirection and the mail
+                # exfiltration channel. Comparison runs on the MERGED result so masked
+                # echo-backs (stripped keys/passwords) still pass through untouched.
+                protected = {
+                    "version", "policy_generation", "permission_mode", "workspace", "memory",
+                    "safety", "guard", "logging", "ollama", "lmstudio",
+                    "agent", "cloud", "mail", "default_backend",
+                }
+                merged = deep_merge(live, body)
+                changed = sorted(key for key in protected if merged.get(key) != live.get(key))
+                if changed:
+                    return self._json(403, {"error": "security config requires a dedicated control: " + ", ".join(changed)})
+                # R4-1: carry runtime-only flags AFTER the protected comparison — the
+                # live dump lacks them, so injecting earlier would fake an agent delta.
+                merged = _carry_runtime_flags(cfg, merged)
+                try:
+                    new = Config.model_validate(merged)
+                except Exception as exc:  # noqa: BLE001
+                    return self._json(400, {"error": _validation_sentence(exc)})
+            _apply_runtime_echo(self.state.svc, new)
         self._json(200, {"ok": True, "config": _safe_config(new)})
 
     def _agent_config(self, body: dict[str, Any]) -> None:
@@ -1349,42 +1372,53 @@ class Handler(BaseHTTPRequestHandler):
         # settles it after the one-prompt disarm. /api/status reports the
         # effective state, so the UI's armed/disarmed display stays truthful.
         deferred = False
+        cm = getattr(self.state, "config_mutex", None)
         lock = getattr(self.state, "turn_lock", None)
         request = getattr(svc, "request_yolo", None)
         # R6 C3: busy-check and the defer request share ONE turn_lock
         # acquisition — work()'s finally settles under this same lock, so a
         # turn can neither settle between check and arm (orphaned pending)
         # nor have its settled arm wiped by the in-place agent swap.
-        with lock if lock is not None else contextlib.nullcontext():
-            if lock is not None:
-                live = json.loads(svc.config.model_dump_json())
-                # R7: route EVERY yolo delta through request_yolo so the LIVE
-                # flag is the single authoritative next-prompt state — an idle
-                # arm sets it now, a busy arm defers it to settle. Stripping it
-                # from the payload lets the carry (here + core.apply_config)
-                # preserve the live value, so no stale config copy can
-                # resurrect a consumed arm or wipe a settled/idle one
-                # (R7-Y1/Y2/Y3/Y5). request_yolo returns True only when deferred.
-                if "yolo" in incoming and request is not None:
-                    # R8 G2b: freshness RE-CHECK under the lock — the pre-lock
-                    # gate may have passed against a state that fully settled
-                    # while this request blocked on turn_lock; an idle re-arm
-                    # of a just-consumed grant must still require confirm.
-                    busy = bool(self.state.busy)
-                    if (bool(incoming["yolo"]) != _settled_yolo_baseline(svc, busy)
-                            and body.get("confirm") is not True):
-                        return self._json(403, {"error": "agent policy change requires confirm=true: yolo"})
-                    deferred = request(bool(incoming["yolo"]), busy=busy)
-                    incoming = {k: v for k, v in incoming.items() if k != "yolo"}
-            merged = _carry_runtime_flags(svc.config, deep_merge(live, {"agent": incoming}))
-            try:
-                new = Config.model_validate(merged)
-            except Exception as exc:  # noqa: BLE001
-                return self._json(400, {"error": _validation_sentence(exc)})
-        # R8 G3: apply OUTSIDE turn_lock (unified echo pattern) — core takes
-        # the lock itself for the atomic runtime snapshot; holding it across
-        # a gated apply would deadlock work()'s under-lock settle.
-        _apply_runtime_echo(svc, new)
+        # R9 N-R9-1/2a: the config mutex serializes the FULL merge->apply
+        # window; the under-lock re-gate below covers ALL sensitive keys.
+        with cm if cm is not None else contextlib.nullcontext():
+            with lock if lock is not None else contextlib.nullcontext():
+                if lock is not None:
+                    live = json.loads(svc.config.model_dump_json())
+                    # R9 N-R9-1: FULL sensitive-key freshness RE-GATE under the
+                    # lock — the pre-lock gate may have passed against a state
+                    # that changed while this request blocked (R8 G2b fixed
+                    # this TOCTOU for yolo only). Recompute the delta for EVERY
+                    # sensitive key against the re-read live agent (with the
+                    # settled yolo baseline) and refuse any unconfirmed delta —
+                    # a stale echo must never revert a confirmed tone/op_mode/
+                    # custom_tones change nor resurrect a consumed grant.
+                    live_agent = dict(live.get("agent") or {})
+                    busy = bool(getattr(self.state, "busy", False))
+                    live_agent["yolo"] = _settled_yolo_baseline(svc, busy)
+                    regated = sorted(k for k in sensitive
+                                     if k in incoming and incoming[k] != live_agent.get(k))
+                    if regated and body.get("confirm") is not True:
+                        return self._json(403, {"error": "agent policy change requires confirm=true: " + ", ".join(regated)})
+                    # R7: route EVERY yolo delta through request_yolo so the LIVE
+                    # flag is the single authoritative next-prompt state — an idle
+                    # arm sets it now, a busy arm defers it to settle. Stripping it
+                    # from the payload lets the carry (here + core.apply_config)
+                    # preserve the live value, so no stale config copy can
+                    # resurrect a consumed arm or wipe a settled/idle one
+                    # (R7-Y1/Y2/Y3/Y5). request_yolo returns True only when deferred.
+                    if "yolo" in incoming and request is not None:
+                        deferred = request(bool(incoming["yolo"]), busy=busy)
+                        incoming = {k: v for k, v in incoming.items() if k != "yolo"}
+                merged = _carry_runtime_flags(svc.config, deep_merge(live, {"agent": incoming}))
+                try:
+                    new = Config.model_validate(merged)
+                except Exception as exc:  # noqa: BLE001
+                    return self._json(400, {"error": _validation_sentence(exc)})
+            # R8 G3: apply OUTSIDE turn_lock (unified echo pattern) — core takes
+            # the lock itself for the atomic runtime snapshot; holding it across
+            # a gated apply would deadlock work()'s under-lock settle.
+            _apply_runtime_echo(svc, new)
         svc.audit.log(
             mode=svc.config.permission_mode.value, tool="__agent_config__",
             args={"changed": sorted(incoming)}, approval="user", success=True,
@@ -1397,17 +1431,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def _memory_config(self, body: dict[str, Any]) -> None:
         """Apply explicit memory-policy changes through a dedicated control."""
+        cm = getattr(self.state, "config_mutex", None)
         lock = getattr(self.state, "turn_lock", None)
         # R7: live re-read + carry + validate under ONE turn_lock; apply outside
         # (runtime flags carried at apply time in core.apply_config).
-        with lock if lock is not None else contextlib.nullcontext():
-            live = json.loads(self.state.svc.config.model_dump_json())
-            merged = _carry_runtime_flags(self.state.svc.config, deep_merge(live, {"memory": body}))
-            try:
-                new = Config.model_validate(merged)
-            except Exception as exc:  # noqa: BLE001
-                return self._json(400, {"error": _validation_sentence(exc)})
-        _apply_runtime_echo(self.state.svc, new)
+        # R9 N-R9-2a/2b: config mutex serializes the FULL merge->apply window.
+        with cm if cm is not None else contextlib.nullcontext():
+            with lock if lock is not None else contextlib.nullcontext():
+                live = json.loads(self.state.svc.config.model_dump_json())
+                merged = _carry_runtime_flags(self.state.svc.config, deep_merge(live, {"memory": body}))
+                try:
+                    new = Config.model_validate(merged)
+                except Exception as exc:  # noqa: BLE001
+                    return self._json(400, {"error": _validation_sentence(exc)})
+            _apply_runtime_echo(self.state.svc, new)
         self._json(200, {"ok": True, "config": _safe_config(new)})
 
     def _soul(self, body: dict) -> None:
