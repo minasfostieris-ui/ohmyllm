@@ -161,12 +161,25 @@ class OllamaBackend(BaseBackend):
             async with self._client(self.config.ollama.host, timeout=10.0) as c:
                 r = await c.get("/api/tags")
                 r.raise_for_status()
-                data = r.json()
+                try:
+                    payload = r.json()
+                except ValueError as exc:
+                    raise BackendError("Ollama: model list returned invalid JSON") from exc
         except httpx.HTTPError as exc:
             raise BackendError(f"Cannot list Ollama models: {exc}") from exc
+        # R8 J6 (D7 parity): validate the shape before touching it — a proxy
+        # page or a bare list must surface as BackendError, not AttributeError.
+        if not isinstance(payload, dict):
+            raise BackendError(f"Ollama: unexpected model list shape ({type(payload).__name__})")
+        models = payload.get("models") or []
+        if not isinstance(models, list):
+            raise BackendError(f"Ollama: unexpected model list shape (models is {type(models).__name__})")
         out: list[ModelInfo] = []
-        for m in data.get("models", []):
-            details = m.get("details", {}) or {}
+        for m in models:
+            if not isinstance(m, dict):
+                continue  # R8 J6 (D7 parity): non-dict rows are skipped
+            d0 = m.get("details")
+            details = d0 if isinstance(d0, dict) else {}
             params = _parse_params(details.get("parameter_size"))
             info = ModelInfo(
                 name=m.get("model", "?"),
@@ -292,6 +305,7 @@ class OllamaBackend(BaseBackend):
         sp = ThinkSplitter()  # inline  tags -> reasoning channel
         content_seen = False
         thinking_parts: list[str] = []
+        done_seen = False
         try:
             for _attempt in range(2):
               # bounded read gap: a wedged serve slot must not hang forever
@@ -315,7 +329,12 @@ class OllamaBackend(BaseBackend):
                             data = json.loads(line)
                         except json.JSONDecodeError:
                             continue
-                        msg = data.get("message") or {}
+                        # R8 J6 (D7 parity): bad shapes are SKIPPED, never raw
+                        # AttributeError — the turn still terminates (below).
+                        if not isinstance(data, dict):
+                            continue
+                        m0 = data.get("message")
+                        msg = m0 if isinstance(m0, dict) else {}
                         if msg.get("thinking"):
                             thinking_parts.append(str(msg["thinking"]))
                         ctext, itext = "", ""
@@ -328,14 +347,16 @@ class OllamaBackend(BaseBackend):
                                     ctext += text
                         if ctext:
                             content_seen = True
+                        tcs = msg.get("tool_calls")
                         chunk = ChatChunk(
                             content=ctext,
                             reasoning=str(msg.get("thinking") or "") + itext,
-                            tool_calls=msg.get("tool_calls"),
+                            tool_calls=tcs if isinstance(tcs, list) else None,
                             done=bool(data.get("done")),
                             finish=data.get("done_reason"),
                         )
                         if data.get("done"):
+                            done_seen = True
                             for kind, text in sp.flush():
                                 if kind == "reasoning":
                                     chunk.reasoning += text
@@ -353,6 +374,19 @@ class OllamaBackend(BaseBackend):
                                 chunk.content = "".join(thinking_parts)
                         yield chunk
               break
+            if not done_seen:
+                # R8 J6 (D7 parity): early stream end / all-bad-shape lines —
+                # the splitter tail must not vanish and the turn must still
+                # terminate with a done chunk (cloud.py terminal contract).
+                ctext, itext = "", ""
+                for kind, text in sp.flush():
+                    if kind == "reasoning":
+                        itext += text
+                        thinking_parts.append(text)
+                    else:
+                        ctext += text
+                yield ChatChunk(content=ctext, reasoning=itext, done=True,
+                                finish="stream_ended")
         except httpx.HTTPError as exc:
             raise BackendError(f"Ollama request error: {exc}") from exc
 

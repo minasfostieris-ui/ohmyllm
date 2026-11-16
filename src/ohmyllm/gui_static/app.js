@@ -379,6 +379,10 @@ function md(src) {
     if (bm) {
       flushPara(); flushList();
       const b = blocks[+bm[1]];
+      // R8-J7: NUL placeholders are forgeable from model output and survive
+      // the JSON wire. An out-of-range index renders as escaped literal text
+      // — never dereference undefined and abort the whole render (boot brick).
+      if (!b) { html += `<p>${esc(line)}</p>`; continue; }
       html += `<pre class="codeblock"><code>${hl(b.code, b.lang)}</code><button class="btn small copy-code" type="button" data-code="${esc(b.code)}">copy</button></pre>`;
       continue;
     }
@@ -823,41 +827,56 @@ async function loadSessionIntoView(sid) {
   });
   let pendingEcho = null;
   (sess.messages || []).forEach((m) => {
-    if (m.role === "user") { addMsg("user", m.content); return; }
-    if (m.role === "assistant") {
-      (m.tool_calls || []).forEach((tc) => {
-        let args = {};
-        try { args = JSON.parse((tc.function || {}).arguments || "{}"); } catch { args = {}; }
-        if (tc.id) anchors.set(tc.id, { name: (tc.function || {}).name || "tool", args });
-      });
-      const text = Array.isArray(m.content)
-        ? m.content.filter((p) => p && p.type === "text").map((p) => p.text || "").join("")
-        : String(m.content ?? "");
-      const echo = approvalEcho(text);
-      if (echo) pendingEcho = { name: echo[2], denied: echo[1] === "asked to run" };
-      replayAssistant(m);
-      return;
-    }
-    if (m.role === "tool") {
-      const anchor = anchors.get(m.tool_call_id);
-      const name = m.name || (anchor && anchor.name) || "tool";
-      const queue = rowsByName.get(name);
-      const row = queue && queue.length ? queue.shift() : null;
-      const content = String(m.content ?? "");
-      const denied = content.startsWith("The user DENIED this tool call")
-        || !!(pendingEcho && pendingEcho.denied && pendingEcho.name === name)
-        || (row && row.status === "denied");
-      const blocked = !denied && (content.startsWith("BLOCKED BY PERMISSION ENGINE")
-        || !!(pendingEcho && !pendingEcho.denied && pendingEcho.name === name)
-        || (row && row.status === "blocked"));
-      toolResult({
-        name, args: (anchor && anchor.args) || (row && row.args) || {},
-        call_id: m.tool_call_id, ok: !denied && !blocked,
-        denied: !!denied, blocked: !!blocked,
-        output: content.slice(0, 4000),
-        duration_ms: row ? row.duration_ms : undefined,
-      });
-      pendingEcho = null;
+    // R8-J7: one poisoned persisted message must never abort the whole
+    // replay — a replay rejection propagates into boot() and bricks the GUI.
+    try {
+      if (m.role === "user") { addMsg("user", m.content); return; }
+      if (m.role === "assistant") {
+        (m.tool_calls || []).forEach((tc) => {
+          let args = {};
+          try { args = JSON.parse((tc.function || {}).arguments || "{}"); } catch { args = {}; }
+          if (tc.id) anchors.set(tc.id, { name: (tc.function || {}).name || "tool", args });
+        });
+        const text = Array.isArray(m.content)
+          ? m.content.filter((p) => p && p.type === "text").map((p) => p.text || "").join("")
+          : String(m.content ?? "");
+        const echo = approvalEcho(text);
+        if (echo) pendingEcho = { name: echo[2], denied: echo[1] === "asked to run" };
+        replayAssistant(m);
+        return;
+      }
+      if (m.role === "tool") {
+        const anchor = anchors.get(m.tool_call_id);
+        const name = m.name || (anchor && anchor.name) || "tool";
+        const queue = rowsByName.get(name);
+        const row = queue && queue.length ? queue.shift() : null;
+        const content = String(m.content ?? "");
+        const denied = content.startsWith("The user DENIED this tool call")
+          || !!(pendingEcho && pendingEcho.denied && pendingEcho.name === name)
+          || (row && row.status === "denied");
+        const blocked = !denied && (content.startsWith("BLOCKED BY PERMISSION ENGINE")
+          || !!(pendingEcho && !pendingEcho.denied && pendingEcho.name === name)
+          || (row && row.status === "blocked"));
+        toolResult({
+          name, args: (anchor && anchor.args) || (row && row.args) || {},
+          call_id: m.tool_call_id, ok: !denied && !blocked,
+          denied: !!denied, blocked: !!blocked,
+          output: content.slice(0, 4000),
+          duration_ms: row ? row.duration_ms : undefined,
+        });
+        pendingEcho = null;
+      }
+    } catch (err) {
+      // R8-J7: renderer-safe fault note — the renderer itself may be what
+      // failed, so this path uses textContent only and never re-raises.
+      if (document.querySelector(".stream-empty")) clearStream();
+      const el = document.createElement("div");
+      el.className = "msg systemish";
+      el.innerHTML = '<div class="who">note</div><div class="content md"></div>';
+      el.querySelector(".content").textContent =
+        `a persisted message could not be rendered (${err && err.message ? err.message : "unknown error"}) — skipped`;
+      $("#stream").appendChild(el);
+      scrollBottom();
     }
   });
   if (!sess.messages?.length) emptyState();
@@ -3079,6 +3098,17 @@ $("#boot-retry").onclick = async () => {
   if (state.connected) { renderSidebar(); input.focus(); }
 };
 
+/* R8-J7: polling must install even when boot faults — idempotent so the
+   success path and the boot().catch net never double the timers. */
+let pollingInstalled = false;
+function installPolling() {
+  if (pollingInstalled) return;
+  pollingInstalled = true;
+  setInterval(refreshStatus, 5000);
+  setInterval(pollState, 2000);
+  pollState();
+}
+
 /* ------------------------------------------------------------------ boot */
 async function boot() {
   // prompt/confirm cancel buttons participate in Escape/scrim dismissal
@@ -3093,13 +3123,24 @@ async function boot() {
   await refreshStatus();
   await renderSidebar();
   const active = state.status && state.status.session;
-  if (active && state.chats.some((c) => c.id === active)) { addTab(active); await loadSessionIntoView(active); }
+  if (active && state.chats.some((c) => c.id === active)) {
+    addTab(active);
+    // R8-J7: a poisoned persisted session must never brick boot — surface
+    // the replay failure and fall back to the empty state, polling continues.
+    try { await loadSessionIntoView(active); }
+    catch (e) { toast(`chat replay failed: ${e.message}`, "err"); emptyState(); }
+  }
   else emptyState();
-  setInterval(refreshStatus, 5000);
-  setInterval(pollState, 2000);
-  pollState();
+  installPolling();
   // R5-F4: when the bridge is unreachable the boot-error card owns focus
   // (#boot-retry) — do not steal it back into the composer.
   if ($("#boot-error").hidden) input.focus();
 }
-boot();
+boot().catch((e) => {
+  // R8-J7: last-resort net — even a hard boot fault leaves polling alive and
+  // surfaces the failure on the R5 alert card instead of a dead, silent GUI.
+  installPolling();
+  $("#boot-error").hidden = false;
+  $("#boot-error-msg").textContent = `GUI boot failed: ${e && e.message ? e.message : e}`;
+  $("#boot-retry").focus();
+});

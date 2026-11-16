@@ -34,6 +34,11 @@ class Services:
     # R5 F1: a yolo arm/disarm requested mid-turn is deferred to the NEXT
     # prompt — never applied to the running turn, never retires it.
     _yolo_pending: bool | None = field(default=None, repr=False)
+    # R8 G3: the bridge wires its turn_lock here so an echo apply can snapshot
+    # the live runtime flags atomically w.r.t. a settling turn. Brief hold only
+    # — the apply itself stays OUTSIDE the lock (deadlock avoidance: never hold
+    # turn_lock across a gated apply). None for TUI/plain/CLI (no turn loop).
+    _runtime_lock: Any = field(default=None, repr=False)
 
     # ------------------------------------------------------------- factory
     @classmethod
@@ -219,27 +224,45 @@ class Services:
             # agent.yolo) ARE the live next-prompt state. A config copy taken
             # before a turn's one-prompt disarm or deferred settle goes stale the
             # moment the turn ends; applying it must never resurrect a CONSUMED
-            # arm (fail-open) nor wipe a SETTLED/idle arm (F1 break). Carry the
-            # live values at APPLY time — the authoritative state — mirroring
-            # reload_config. This is the unified fix for every config-mutation
-            # endpoint (_set_model/_backend/_config/_memory_config): whatever
-            # stale runtime flags a pre-lock copy carries, the live state wins.
+            # arm (fail-open) nor wipe a SETTLED/idle arm (F1 break).
             # R7 gate blocker 1: this carry is OPT-IN (carry_runtime) so it only
             # touches runtime ECHOES, never an intentional yolo delta from a
-            # direct caller. It runs BEFORE the snapshot so a pure/stale echo
-            # carries live yolo first and the compare sees NO spurious yolo delta
-            # (a model/theme/memory save must not retire the running turn — C5).
-            for name, field_info in Config.model_fields.items():
-                live = getattr(self.config, name)
-                fresh = getattr(cfg, name)
-                sub_fields = getattr(type(live), "model_fields", None)
-                if sub_fields is not None:
-                    for sub_name, sub_info in sub_fields.items():
-                        if sub_info.exclude:
-                            setattr(fresh, sub_name, getattr(live, sub_name))
-                elif field_info.exclude:
-                    setattr(cfg, name, live)
-        old_security = self._security_snapshot(self.config)
+            # direct caller (R1-H2 / R3-C5 retirement stays intact).
+            # R8 G3: carry + old snapshot are ONE atomic read under the runtime
+            # lock (the bridge's turn_lock, which work()'s finally settles
+            # under) — three separate live reads let a settle land mid-apply
+            # and resurrect a consumed arm / trip a spurious retire.
+            lock = getattr(self, "_runtime_lock", None)
+            with lock if lock is not None else contextlib.nullcontext():
+                runtime_live: dict[tuple[str, str], Any] = {}
+                for name, field_info in Config.model_fields.items():
+                    live = getattr(self.config, name)
+                    sub_fields = getattr(type(live), "model_fields", None)
+                    if sub_fields is not None:
+                        for sub_name, sub_info in sub_fields.items():
+                            if sub_info.exclude:
+                                runtime_live[(name, sub_name)] = getattr(live, sub_name)
+                    elif field_info.exclude:
+                        runtime_live[(name, "")] = live
+                old_security = self._security_snapshot(self.config)
+            # Carry the single snapshot into the incoming cfg BEFORE the new
+            # snapshot, so a pure/stale echo shows NO spurious yolo delta (a
+            # model/theme/memory save must not retire the running turn — C5).
+            for (name, sub_name), value in runtime_live.items():
+                if sub_name:
+                    setattr(getattr(cfg, name), sub_name, value)
+                else:
+                    setattr(cfg, name, value)
+            # Pin the old snapshot's runtime entries to the SAME single read:
+            # the runtime's one-prompt disarm is lock-free (agents/runtime.py),
+            # so it can still land between the locked read and the compare —
+            # old==new for the carried flags no matter where the settle lands.
+            for (name, sub_name), value in runtime_live.items():
+                key = sub_name or name
+                if key in old_security:
+                    old_security[key] = value
+        else:
+            old_security = self._security_snapshot(self.config)
         new_security = self._security_snapshot(cfg)
         security_changed = old_security != new_security
         cfg.policy_generation = max(self.config.policy_generation, cfg.policy_generation)
@@ -257,7 +280,24 @@ class Services:
             self._retire_runtimes()
         # Existing PolicyEngine and AgentRuntime objects reference this instance.
         for name in Config.model_fields:
-            setattr(self.config, name, copy.deepcopy(getattr(cfg, name)))
+            live_sec = getattr(self.config, name)
+            fresh_sec = getattr(cfg, name)
+            sub_fields = getattr(type(live_sec), "model_fields", None)
+            if carry_runtime and sub_fields is not None and any(
+                    i.exclude for i in sub_fields.values()):
+                # R8 G3: update the live section IN PLACE and never write the
+                # runtime exclude flags — a settle/disarm landing mid-apply
+                # (the runtime disarm is lock-free) is never overwritten, so
+                # the carried snapshot can neither resurrect nor wipe. Live
+                # wins by construction; the atomic snapshot above only feeds
+                # the security COMPARE.
+                for sub_name, sub_info in sub_fields.items():
+                    if not sub_info.exclude:
+                        setattr(live_sec, sub_name, copy.deepcopy(getattr(fresh_sec, sub_name)))
+            elif carry_runtime and Config.model_fields[name].exclude:
+                continue  # runtime-only top-level flag: live wins
+            else:
+                setattr(self.config, name, copy.deepcopy(fresh_sec))
         self._backend_cache.clear()
         if old_workspace != self.workspace:
             for attr in ("_policy", "_policy_cfg", "_policy_ws"):
@@ -279,21 +319,13 @@ class Services:
         cfg = self.config_store.load()
         # R3 U3: runtime-only flags (Field exclude=True, e.g. agent.yolo)
         # never reach config.toml — a wholesale replace on reload would
-        # silently reset them, so any out-of-band save disarm /yolo. Carry
-        # the live values into the reloaded config; real disk edits still
-        # apply, and with the flags preserved a no-op reload produces no
-        # security delta (C5: nothing retires).
-        for name, field_info in Config.model_fields.items():
-            live = getattr(self.config, name)
-            fresh = getattr(cfg, name)
-            sub_fields = getattr(type(live), "model_fields", None)
-            if sub_fields is not None:
-                for sub_name, sub_info in sub_fields.items():
-                    if sub_info.exclude:
-                        setattr(fresh, sub_name, getattr(live, sub_name))
-            elif field_info.exclude:
-                setattr(cfg, name, live)
-        self.apply_config(cfg, persist=False)
+        # silently reset them, so any out-of-band save disarm /yolo.
+        # R8 G3: carry through the UNIFIED atomic echo path at apply time
+        # (carry_runtime=True) instead of a private pre-carry loop here —
+        # that loop was a stale second live read (the same TOCTOU hole).
+        # Real disk edits still apply; a no-op reload produces no security
+        # delta (C5: nothing retires).
+        self.apply_config(cfg, persist=False, carry_runtime=True)
         return self.config
 
     def set_mode(self, mode: PermissionMode, *, phrase: str | None = None) -> bool:

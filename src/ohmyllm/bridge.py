@@ -95,7 +95,13 @@ class BridgeState:
         self.approvals: dict[str, asyncio.Future] = {}
         self.cancel: asyncio.Event | None = None
         self.busy = False
-        self.turn_lock = threading.Lock()  # atomic busy-check-and-claim
+        self.turn_lock = threading.RLock()  # atomic busy-check-and-claim
+        # R8 G3: re-entrant so a /api/status-triggered reload on a thread that
+        # already holds the lock (e.g. a gated request_yolo polling status)
+        # can take the atomic runtime snapshot without self-deadlocking.
+        # core.apply_config holds it only for the snapshot, never across the
+        # gated apply itself.
+        self.svc._runtime_lock = self.turn_lock
         self.interjections: list[str] = []
         self.tok_s = 0.0
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -301,9 +307,13 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             return
         if self.state.cfg_mtime and mt != self.state.cfg_mtime:
-            self.state.cfg_mtime = mt
+            # R8 G4: advance cfg_mtime only AFTER a successful reload — a
+            # failed (suppressed) reload must be retried on the next poll
+            # while the file is unchanged, not silently serve stale config
+            # until the NEXT mtime change.
             with contextlib.suppress(Exception):
                 self.state.svc.reload_config()
+                self.state.cfg_mtime = mt
         elif not self.state.cfg_mtime:
             self.state.cfg_mtime = mt
 
@@ -1318,13 +1328,17 @@ class Handler(BaseHTTPRequestHandler):
         svc = self.state.svc
         live = json.loads(svc.config.model_dump_json())
         live_agent = dict(live.get("agent") or {})
-        # pending-aware when the defer API is present (duck-typed fakes lack it)
-        effective = getattr(svc, "effective_yolo", None)
-        live_agent["yolo"] = (
-            effective() if effective is not None else bool(live_agent.get("yolo", False))
-        )
         incoming = {k: v for k, v in body.items() if k != "confirm"}
         sensitive = {"yolo", "op_mode", "tone", "custom_tones"}
+        # R8 G2: gate the REQUESTED yolo against the LIVE SETTLED next-prompt
+        # baseline, NOT effective_yolo() (the current-turn display state). An
+        # armed busy turn's live True is a one-prompt grant being CONSUMED —
+        # a no-confirm True echo would defer/extend it to a prompt the user
+        # never armed (fail-open). Idle live True is an UNCONSUMED arm, so a
+        # True==True echo stays confirm-free. Duck-typed fakes lack the defer
+        # API/state — getattr defaults keep them on the plain live flag.
+        busy_now = bool(getattr(self.state, "busy", False))
+        live_agent["yolo"] = _settled_yolo_baseline(svc, busy_now)
         changed = sorted(k for k in sensitive if k in incoming and incoming[k] != live_agent.get(k))
         if changed and body.get("confirm") is not True:
             return self._json(403, {"error": "agent policy change requires confirm=true: " + ", ".join(changed)})
@@ -1337,11 +1351,10 @@ class Handler(BaseHTTPRequestHandler):
         deferred = False
         lock = getattr(self.state, "turn_lock", None)
         request = getattr(svc, "request_yolo", None)
-        # R6 C3: busy-check, the defer request AND the config apply share ONE
-        # turn_lock acquisition — work()'s finally settles under this same
-        # lock, so a turn can neither settle between check and arm (orphaned
-        # pending) nor have its settled arm wiped by the in-place agent swap.
-        # apply_config is safe under the lock: retire() only sets a flag.
+        # R6 C3: busy-check and the defer request share ONE turn_lock
+        # acquisition — work()'s finally settles under this same lock, so a
+        # turn can neither settle between check and arm (orphaned pending)
+        # nor have its settled arm wiped by the in-place agent swap.
         with lock if lock is not None else contextlib.nullcontext():
             if lock is not None:
                 live = json.loads(svc.config.model_dump_json())
@@ -1353,14 +1366,25 @@ class Handler(BaseHTTPRequestHandler):
                 # resurrect a consumed arm or wipe a settled/idle one
                 # (R7-Y1/Y2/Y3/Y5). request_yolo returns True only when deferred.
                 if "yolo" in incoming and request is not None:
-                    deferred = request(bool(incoming["yolo"]), busy=self.state.busy)
+                    # R8 G2b: freshness RE-CHECK under the lock — the pre-lock
+                    # gate may have passed against a state that fully settled
+                    # while this request blocked on turn_lock; an idle re-arm
+                    # of a just-consumed grant must still require confirm.
+                    busy = bool(self.state.busy)
+                    if (bool(incoming["yolo"]) != _settled_yolo_baseline(svc, busy)
+                            and body.get("confirm") is not True):
+                        return self._json(403, {"error": "agent policy change requires confirm=true: yolo"})
+                    deferred = request(bool(incoming["yolo"]), busy=busy)
                     incoming = {k: v for k, v in incoming.items() if k != "yolo"}
             merged = _carry_runtime_flags(svc.config, deep_merge(live, {"agent": incoming}))
             try:
                 new = Config.model_validate(merged)
             except Exception as exc:  # noqa: BLE001
                 return self._json(400, {"error": _validation_sentence(exc)})
-            _apply_runtime_echo(svc, new)
+        # R8 G3: apply OUTSIDE turn_lock (unified echo pattern) — core takes
+        # the lock itself for the atomic runtime snapshot; holding it across
+        # a gated apply would deadlock work()'s under-lock settle.
+        _apply_runtime_echo(svc, new)
         svc.audit.log(
             mode=svc.config.permission_mode.value, tool="__agent_config__",
             args={"changed": sorted(incoming)}, approval="user", success=True,
@@ -1763,6 +1787,22 @@ def _carry_runtime_flags(cfg: Config, merged: dict[str, Any]) -> dict[str, Any]:
             if sub_info.exclude:
                 section.setdefault(sub_name, getattr(live, sub_name))
     return merged
+
+
+def _settled_yolo_baseline(svc: Any, busy: bool) -> bool:
+    """R8 G2: the LIVE SETTLED next-prompt yolo state the confirm-gate compares
+    against (NOT effective_yolo(), which is the current-turn display state).
+    A pending delta is the already-gated next-prompt state; otherwise an armed
+    BUSY turn's live flag is a one-prompt grant the runtime finally-disarms at
+    turn end, so its post-consumption baseline is False — re-arming it without
+    confirm would extend/resurrect a CONSUMED grant (fail-open). An idle live
+    True is an UNCONSUMED arm: a True==True echo changes nothing."""
+    pending = getattr(svc, "_yolo_pending", None)
+    if pending is not None:
+        return bool(pending)
+    agent = getattr(getattr(svc, "config", None), "agent", None)
+    live = bool(getattr(agent, "yolo", False))
+    return False if busy and live else live
 
 
 def _apply_runtime_echo(svc: Any, cfg: Config) -> None:

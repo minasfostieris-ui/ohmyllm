@@ -3163,6 +3163,181 @@ def flows_r7(page, client, width: int) -> None:
         flow(f"{name}-{width}", fn)
 
 
+def r8_poison_active(client, messages: list) -> tuple[str, Path, str]:
+    """R8-J7 fixture: temporarily poison the ALREADY-ACTIVE persisted session
+    (temp workspace only) and return (sid, path, original_text) so the flow
+    restores it byte-for-byte. Creating/deleting chats here would drift the
+    bridge's active session and break later laptop flows (draft-switch needs
+    the seeded session active at boot). GET /api/chats/<sid> reads fresh from
+    disk; json.dumps emits \\u0000 escapes for literal NULs — the poison
+    survives the JSON wire (N1c)."""
+    sid = client.get("/api/status")["session"]
+    f = WS / ".ohmyllm" / "history" / "sessions" / f"{sid}.json"
+    orig = f.read_text(encoding="utf-8")
+    d = json.loads(orig)
+    d["messages"] = messages
+    f.write_text(json.dumps(d), encoding="utf-8")
+    return sid, f, orig
+
+
+def f_r8_md_bounds(page, client, width: int) -> None:
+    """R8-J7 (LOW): forged NUL placeholders (Jay probes N1a/b/c) must render
+    as inert escaped text, never TypeError; the benign markdown pipeline must
+    stay fully functional. Per-leg try/catch in-page so each leg fails
+    individually pre-fix instead of aborting the whole flow."""
+    out = page.evaluate(r"""() => {
+        const out = {};
+        const leg = (k, fn) => {
+            try { out[k] = {ok: true, html: fn()}; }
+            catch (e) { out[k] = {ok: false, err: String((e && e.message) || e)}; }
+        };
+        leg("n1a", () => md("hello\n\u0000B99\u0000\nworld"));
+        leg("n1b", () => md("\u0000B0\u0000"));
+        leg("n1c", () => md(JSON.parse(JSON.stringify({text: "\u0000B0\u0000"})).text));
+        leg("benign", () => md("# Title\n\n- item one\n- item two\n\n**bold** and `code`"
+            + " and [link](https://example.com)\n\n```js\nconst x = 1;\n```\n\n> quote"));
+        return out;
+    }""")
+    print(f"PROBE R8-J7 {width}px md-bounds: " + json.dumps(out)[:500], flush=True)
+    a = out["n1a"]
+    ah = a.get("html", "")
+    check(f"{width}px: R8-J7 N1a out-of-range placeholder inert (escaped, no throw)",
+          a["ok"] and "B99" in ah and "codeblock" not in ah
+          and "<p>hello</p>" in ah and "world" in ah)
+    check(f"{width}px: R8-J7 N1b zero-block placeholder inert (no throw)",
+          out["n1b"]["ok"] and isinstance(out["n1b"].get("html"), str))
+    check(f"{width}px: R8-J7 N1c JSON-wire roundtrip placeholder inert (no throw)",
+          out["n1c"]["ok"] and isinstance(out["n1c"].get("html"), str))
+    bh = out["benign"].get("html", "")
+    check(f"{width}px: R8-J7 benign markdown still renders (h1/li/pre/b/a/code/quote)",
+          out["benign"]["ok"]
+          and all(s in bh for s in (
+              "<h1>Title</h1>", "<li>item one</li>", '<pre class="codeblock">',
+              "<b>bold</b>", "<code>code</code>", '<a href="https://example.com"',
+              "<blockquote>quote</blockquote>", 'data-code="const x = 1;')))
+
+
+def f_r8_poison_boot(page, client, width: int) -> None:
+    """R8-J7 (LOW): a PERSISTED poisoned ACTIVE session must never brick GUI
+    boot. Fresh page with setInterval instrumentation + error listeners:
+    pre-fix the replay TypeError aborts boot BEFORE polling installs; post-fix
+    the poison renders inert and both timers are alive."""
+    sid = None
+    p2 = None
+    f = orig = None
+    try:
+        sid, f, orig = r8_poison_active(client, [
+            {"role": "user", "content": "r8 poison seed"},
+            {"role": "assistant", "content": "hello\n\u0000B99\u0000\nworld"},
+            {"role": "assistant",
+             "content": "### Benign heading\n\n- benign item\n\n**still bold**"},
+        ])
+        p2 = page.context.new_page()
+        p2.set_default_timeout(20_000)
+        p2.on("dialog", lambda d: d.accept())
+        # NB: add_init_script evaluates the script AS-IS — plain statements,
+        # never an arrow-function wrapper (it would never be invoked).
+        p2.add_init_script("""
+            window.__r8Timers = [];
+            window.__r8Errors = [];
+            const orig = window.setInterval.bind(window);
+            window.setInterval = (fn, ms, ...a) => {
+                window.__r8Timers.push(ms); return orig(fn, ms, ...a);
+            };
+            window.addEventListener("error", (e) => window.__r8Errors.push(String(e.message)));
+            window.addEventListener("unhandledrejection", (e) => window.__r8Errors.push(
+                "rejection: " + String((e.reason && e.reason.message) || e.reason)));
+        """)
+        p2.goto(f"{client.base}/#token={client.token}", wait_until="domcontentloaded")
+        p2.wait_for_timeout(2500)  # boot + first poll tick window
+        probe = p2.evaluate("""() => ({
+            timers: window.__r8Timers,
+            errors: window.__r8Errors,
+            bootHidden: document.getElementById('boot-error').hidden,
+            rs: document.getElementById('run-state').textContent,
+            off: document.getElementById('conn-dot').classList.contains('off'),
+            msgs: Array.from(document.querySelectorAll('#stream .msg')).map((m) => ({
+                text: (m.querySelector('.content') || {}).textContent || '',
+                codeblocks: m.querySelectorAll('pre.codeblock').length,
+                h3: m.querySelectorAll('h3').length,
+                b: m.querySelectorAll('b').length})),
+        })""")
+        print(f"PROBE R8-J7 {width}px poison-boot: " + json.dumps(probe)[:600], flush=True)
+        check(f"{width}px: R8-J7 poisoned persisted session boots with polling alive",
+              5000 in probe["timers"] and 2000 in probe["timers"] and not probe["errors"])
+        check(f"{width}px: R8-J7 poison boot stays usable (Ready, dot on, no error card)",
+              probe["bootHidden"] and probe["rs"] == "Ready" and not probe["off"])
+        poison = [m for m in probe["msgs"] if "B99" in m["text"]]
+        benign = [m for m in probe["msgs"] if m["h3"] and m["b"]]
+        check(f"{width}px: R8-J7 poison inert (escaped text, no codeblock) + benign renders",
+              len(poison) == 1 and poison[0]["codeblocks"] == 0
+              and "hello" in poison[0]["text"] and "world" in poison[0]["text"]
+              and len(benign) == 1)
+    finally:
+        if f is not None and orig is not None:
+            f.write_text(orig, encoding="utf-8")
+        if p2 is not None:
+            try:
+                p2.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def f_r8_replay_catch(page, client, width: int) -> None:
+    """R8-J7 (LOW): a renderer fault on ONE persisted message must be caught
+    per-message — replay resolves true, leaves a visible renderer-safe note,
+    and CONTINUES with the remaining messages. Stub window.md to throw (a
+    simulated future renderer bug — proves the catch net beyond the bounds
+    fix); restore md and the prior view in finally."""
+    sid = None
+    f = orig = None
+    try:
+        sid, f, orig = r8_poison_active(client, [
+            {"role": "user", "content": "r8 replay seed"},
+            {"role": "assistant", "content": "fault one \u0000B99\u0000"},
+            {"role": "assistant", "content": "fault two"},
+        ])
+        page.evaluate("""() => {
+            window.__r8OrigMd = md;
+            window.md = () => { throw new TypeError("r8 simulated renderer fault"); };
+        }""")
+        res = page.evaluate("""async (s) => {
+            try { return {ok: true, r: await loadSessionIntoView(s)}; }
+            catch (e) { return {ok: false, err: String((e && e.message) || e)}; }
+        }""", sid)
+        probe = page.evaluate("""() => ({
+            notes: Array.from(document.querySelectorAll('#stream .msg.systemish .content'))
+                .filter((e) => e.textContent.includes('could not be rendered')).length,
+            user: Array.from(document.querySelectorAll('#stream .msg.user .content'))
+                .some((e) => e.textContent.includes('r8 replay seed')),
+        })""")
+        print(f"PROBE R8-J7 {width}px replay-catch: "
+              + json.dumps({"res": res, **probe}), flush=True)
+        check(f"{width}px: R8-J7 replay catches a renderer fault (resolves, note visible)",
+              res["ok"] and res.get("r") is True and probe["notes"] >= 1)
+        check(f"{width}px: R8-J7 replay continues past the fault (both messages noted)",
+              probe["user"] and probe["notes"] == 2)
+    finally:
+        page.evaluate("""() => {
+            if (window.__r8OrigMd) { window.md = window.__r8OrigMd; delete window.__r8OrigMd; }
+        }""")
+        if f is not None and orig is not None:
+            f.write_text(orig, encoding="utf-8")
+        if sid:
+            page.evaluate("async (s) => { await loadSessionIntoView(s); }", sid)
+
+
+def flows_r8(page, client, width: int) -> None:
+    """R8 UX regression flows (task 124, Jay J7) — run at EVERY width."""
+    for name, fn in [
+        ("r8-md-bounds", lambda: f_r8_md_bounds(page, client, width)),
+        ("r8-poison-boot", lambda: f_r8_poison_boot(page, client, width)),
+        ("r8-replay-catch", lambda: f_r8_replay_catch(page, client, width)),
+    ]:
+        dismiss_stray_modals(page)
+        flow(f"{name}-{width}", fn)
+
+
 def flows_responsive(page, width: int) -> None:
     def f():
         wait_boot(page)
@@ -3363,6 +3538,8 @@ def main() -> int:
                     flows_r5(page, client, width)
                     # R7 UX regressions (task 110) run at EVERY width.
                     flows_r7(page, client, width)
+                    # R8 UX regressions (task 124, J7) run at EVERY width.
+                    flows_r8(page, client, width)
                     dismiss_stray_modals(page)
                     # capture hygiene: let entrance animations settle (view
                     # switches replay them) and drop transient test toasts so

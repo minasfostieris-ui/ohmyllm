@@ -441,7 +441,7 @@ class PolicyEngine:
         command = args.get("command")
         if not isinstance(command, str) or not command.strip():
             return None
-        variants = command_variants(command)
+        variants = command_variants(command, cwd=str(args.get("cwd") or "") or None)
         if not _quotes_balanced(command):
             # R4-S1 fail-closed: an unclosed quote makes wrapper-flag
             # boundaries unknowable; expose every payload-position suffix
@@ -524,7 +524,10 @@ class PolicyEngine:
             # normalizer cannot resolve is catastrophic, never silent-allow.
             if unresolved_destructive_operands(cmd):
                 return True
-            for variant in command_variants(cmd):
+            # R8 J1: relative destructive operands collapse against the
+            # resolved cwd (rm -rf home/../etc with cwd=/ denotes /etc).
+            cwd = str(args.get("cwd") or "") or None
+            for variant in command_variants(cmd, cwd=cwd):
                 low = variant.lower()
                 # R5 A44 (REFUTED, must stay inert): a control char spliced
                 # INTO the executable word is one nonexistent command name

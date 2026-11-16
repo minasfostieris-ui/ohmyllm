@@ -382,15 +382,19 @@ class CloudBackend(BaseBackend):
                                 # D2: parallel tool calls are keyed by the SSE
                                 # `index` first — id-only keying merges distinct
                                 # calls when providers reuse or omit ids.
-                                if tid and tid in by_id:
-                                    slot = pending[by_id[tid]]
-                                elif idx is not None:
+                                # R8 J5: index-FIRST (lmstudio parity) — a reused
+                                # id carrying a distinct index is a NEW call, not
+                                # a continuation of the old id's slot. by_id is
+                                # still updated for id-only continuation fragments.
+                                if idx is not None:
                                     slot = pending.setdefault(idx, {"id": tid, "name": "", "args": ""})
                                     if tid and not slot["id"]:
                                         slot["id"] = tid
                                     if tid:
                                         by_id[tid] = idx
                                     last_key = idx
+                                elif tid and tid in by_id:
+                                    slot = pending[by_id[tid]]
                                 elif tid:
                                     last_key = max(pending, default=-1) + 1
                                     by_id[tid] = last_key

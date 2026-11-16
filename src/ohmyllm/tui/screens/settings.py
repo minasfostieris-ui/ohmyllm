@@ -497,12 +497,26 @@ class SettingsScreen(Screen):
         if errors:
             self._show_errors(errors)
             return
+        self._commit_settings(payload)
+
+    def _commit_settings(self, payload: dict) -> None:
+        """Rebuild + apply the validated settings payload (the save tail,
+        extracted so the R8 G1 regression pins can exercise the real path)."""
         try:
             live = self.app.svc.config.model_dump(mode="json")
             new_cfg = Config.model_validate(deep_merge(live, payload))
         except Exception as exc:  # noqa: BLE001
             self._show_errors([str(exc)[:1500]])
             return
+        # R8 G1: a settings save is a pure ECHO with no yolo intent — the form
+        # has no yolo field and model_dump omits the exclude=True runtime flag,
+        # so the rebuild validates yolo=False. Mark it for the unified carry
+        # (core.apply_config) so the live runtime flags are preserved
+        # atomically: never wipes an armed yolo, never spurious-retires, and
+        # never cancels the running turn (F1/C5 on the TUI leg). The marker is
+        # never persisted (absent from every dump). Mirrors the bridge's
+        # _apply_runtime_echo; positional apply keeps duck-typed fakes working.
+        object.__setattr__(new_cfg, "_omllm_carry_runtime", True)
         self.app.svc.apply_config(new_cfg)
         self.app.theme = self._selected_theme()
         self._committed = True

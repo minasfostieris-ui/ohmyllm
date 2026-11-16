@@ -176,9 +176,19 @@ class LMStudioBackend(BaseBackend):
             async with self._client(base, timeout=10.0) as c:
                 r = await c.get("/v1/models")
                 r.raise_for_status()
-                data = r.json().get("data", [])
+                try:
+                    payload = r.json()
+                except ValueError as exc:
+                    raise BackendError("LM Studio: model list returned invalid JSON") from exc
         except httpx.HTTPError as exc:
             raise BackendError(f"Cannot list LM Studio models: {exc}") from exc
+        # R8 J6 (D7 parity): validate the shape before touching it — a proxy
+        # page or a bare list must surface as BackendError, not AttributeError.
+        if not isinstance(payload, dict):
+            raise BackendError(f"LM Studio: unexpected model list shape ({type(payload).__name__})")
+        data = payload.get("data") or []
+        if not isinstance(data, list):
+            raise BackendError(f"LM Studio: unexpected model list shape (data is {type(data).__name__})")
         rest = await self._rest_model_details()
         self._vision_scan_cache = getattr(self, "_vision_scan_cache", None) or self.vision_scan()
         vis: set[str] = self._vision_scan_cache
@@ -193,6 +203,8 @@ class LMStudioBackend(BaseBackend):
                 target.setdefault(k, v)
         out: list[ModelInfo] = []
         for m in data:
+            if not isinstance(m, dict):
+                continue  # R8 J6 (D7 parity): non-dict rows are skipped
             name = m.get("id") or m.get("model") or "?"
             extra = rest.get(name, {})
             info = ModelInfo(
@@ -264,10 +276,20 @@ class LMStudioBackend(BaseBackend):
                 r = await c.get("/api/v0/models")
                 if r.status_code != 200:
                     return {}
-                payload = r.json()
+                try:
+                    payload = r.json()
+                except ValueError:
+                    return {}
         except httpx.HTTPError:
             return {}
-        items = payload.get("data", payload if isinstance(payload, list) else [])
+        # R8 J6 (D7 parity): best-effort endpoint — any non-dict/list payload
+        # (login page, bare string) degrades to {} instead of AttributeError.
+        if isinstance(payload, dict):
+            items = payload.get("data", [])
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            items = []
         out: dict[str, dict[str, Any]] = {}
         for it in items if isinstance(items, list) else []:
             if isinstance(it, dict) and it.get("id"):
@@ -575,8 +597,18 @@ class LMStudioBackend(BaseBackend):
                                     yield terminal
                                     return
                                 try:
-                                    msg = (json.loads(payload).get("error") or {}).get("message") or payload
+                                    err_obj = json.loads(payload)
                                 except json.JSONDecodeError:
+                                    err_obj = None
+                                # R8 J6 (D7 parity): error events may carry a
+                                # string, a dict or a non-dict JSON body — the
+                                # BackendError contract holds for every shape.
+                                err = err_obj.get("error") if isinstance(err_obj, dict) else None
+                                if isinstance(err, dict):
+                                    msg = err.get("message") or payload
+                                elif isinstance(err, str) and err:
+                                    msg = err
+                                else:
                                     msg = payload
                                 raise BackendError(f"LM Studio: {str(msg)[:200]}")
                             if payload == "[DONE]":
@@ -600,6 +632,11 @@ class LMStudioBackend(BaseBackend):
                                 data = json.loads(payload)
                             except json.JSONDecodeError:
                                 continue
+                            # R8 J6 (D7 parity): bad shapes are SKIPPED, never
+                            # raw AttributeError/KeyError/TypeError — the turn
+                            # still completes via the terminal chunk below.
+                            if not isinstance(data, dict):
+                                continue
                             if isinstance(data.get("usage"), dict) and data["usage"]:
                                 usage_stash = data["usage"]
                             if terminal is not None:
@@ -607,14 +644,21 @@ class LMStudioBackend(BaseBackend):
                                 # can still matter; the line cap + wall-clock
                                 # deadline above bound the wait (R6 C2).
                                 continue
-                            if not data.get("choices"):
+                            choices = data.get("choices")
+                            if not isinstance(choices, list) or not choices:
                                 # usage-only trailer (include_usage): nothing to
                                 # emit — keep it for the terminal chunk
                                 continue
-                            choice = (data.get("choices") or [{}])[0]
-                            delta = choice.get("delta") or {}
+                            choice = choices[0]
+                            if not isinstance(choice, dict):
+                                continue
+                            d0 = choice.get("delta")
+                            delta = d0 if isinstance(d0, dict) else {}
                             finish = choice.get("finish_reason")
-                            for tc in delta.get("tool_calls") or []:
+                            tcs = delta.get("tool_calls")
+                            for tc in tcs if isinstance(tcs, list) else []:
+                                if not isinstance(tc, dict):
+                                    continue
                                 # R3 C16: index-less deltas must key by server
                                 # id (mirror cloud.py) — defaulting everything
                                 # to index 0 merges distinct calls, corrupts
@@ -633,13 +677,15 @@ class LMStudioBackend(BaseBackend):
                                 if tid and not slot["id"]:
                                     slot["id"] = tid
                                 last_tool_key = key
-                                fn = tc.get("function") or {}
+                                fn0 = tc.get("function")
+                                fn = fn0 if isinstance(fn0, dict) else {}
                                 if fn.get("name"):
-                                    slot["name"] = fn["name"]
-                                if fn.get("arguments"):
-                                    slot["args"] += fn["arguments"]
+                                    slot["name"] = str(fn["name"])
+                                args = fn.get("arguments")
+                                if isinstance(args, str) and args:
+                                    slot["args"] += args
                                     n = len(slot["args"])
-                                    crossed = key not in prog_seen or n // 64 > (n - len(fn["arguments"])) // 64
+                                    crossed = key not in prog_seen or n // 64 > (n - len(args)) // 64
                                     if slot["name"] and crossed:
                                         prog_seen.add(key)
                                         ct = ""

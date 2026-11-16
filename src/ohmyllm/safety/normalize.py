@@ -22,6 +22,7 @@ Additional deobfuscation layers (R1 security review):
 
 from __future__ import annotations
 
+import posixpath
 import re
 
 # Single & matters: `echo ok & rm -rf X` backgrounds the first command and
@@ -954,10 +955,44 @@ def _tokens_raw(seg: str) -> list[str]:
         return seg.split()
 
 
+# R8 J2/J3: shell interpreters that EXECUTE stdin as code when fed by a pipe
+# or a herestring (and no -c payload / script-file operand wins instead).
+# busybox/sudo/env/… prefixes are stripped transparently before the check.
+_STDIN_SHELLS = _SHELL_WRAPPERS | {"ash"}
+
+
+def _shell_reads_stdin(rest: list[str]) -> bool:
+    """True when a shell's own arguments leave it reading commands from
+    stdin (R8 J2/J3): no -c (exact or short cluster — the inline payload
+    ignores stdin) and no script-file operand (the script ignores stdin).
+    Long --flags, bare - and -s/-i/… keep stdin reading."""
+    for t in rest:
+        if t == "-" or t.startswith("--"):
+            continue
+        if t.startswith("-"):
+            if "c" in t[1:]:
+                return False
+            continue
+        return False
+    return True
+
+
+def _decode_shell_escapes(text: str) -> str:
+    """Decode backslash escapes (\\n, \\t, \\\\, …) the way printf's FORMAT
+    and echo -e do. Runs on RAW token content — _strip_tricks would have
+    already erased the backslash (R8 J2 printf-\\n leg)."""
+    return re.sub(r"\\(.)", lambda m: _ANSI_ESCAPES.get(m.group(1), m.group(1)), text)
+
+
 def _literal_output(seg: str) -> str | None:
     """The literal stdout of a pure ``echo``/``printf`` segment, or None when
     the output is not statically knowable (variables, substitutions, other
-    executables). Never executes anything."""
+    executables). Never executes anything.
+
+    R8 J2: printf's FORMAT is read from the RAW quote-aware tokens and its
+    backslash escapes are decoded — quote removal + escape stripping would
+    otherwise mangle ``printf "rm -rf /\\n"`` into a non-root phantom. echo -e
+    decodes escapes too (bash semantics); plain echo does NOT."""
     norm = _strip_tricks(seg)
     tokens = norm.split()
     if not tokens:
@@ -967,9 +1002,20 @@ def _literal_output(seg: str) -> str | None:
         args = [t for t in tokens[1:] if t not in ("-n", "-e", "-E")]
         if any("$" in t or "`" in t for t in args):
             return None
+        if "-e" in tokens[1:] and "-E" not in tokens[1:]:
+            raw = _tokens_raw(seg)
+            rargs = [_unquote_outer(t) for t in raw[1:]
+                     if t not in ("-n", "-e", "-E")]
+            if any("$" in t or "`" in t for t in rargs):
+                return None
+            return _decode_shell_escapes(" ".join(rargs)).strip() or None
         return " ".join(args) or None
-    if exe == "printf" and len(tokens) >= 2:
-        fmt, args = tokens[1], tokens[2:]
+    if exe == "printf":
+        raw = _tokens_raw(seg)
+        if len(raw) < 2:
+            return None
+        fmt = _unquote_outer(raw[1])
+        args = [_unquote_outer(t) for t in raw[2:]]
         if any("$" in t or "`" in t for t in [fmt, *args]):
             return None
         if "%" in fmt.replace("%s", ""):
@@ -977,7 +1023,7 @@ def _literal_output(seg: str) -> str | None:
         out = fmt
         for arg in args:
             out = out.replace("%s", arg, 1)
-        out = out.replace("\\n", "\n").strip()
+        out = _decode_shell_escapes(out).strip()
         return out or None
     return None
 
@@ -1063,16 +1109,128 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
                     s = head + flags + payload.replace(repl, lit)
                 else:
                     s = s + " " + lit
+        elif toks:
+            # R8 J2/J3: stdin synthesis for ANY shell interpreter — a pipe
+            # RHS or herestring-fed sh/bash/dash/ash/zsh/ksh (incl. busybox/
+            # sudo prefixes) EXECUTES its stdin as code. The synthesized
+            # content REPLACES the shell segment (it IS the command run);
+            # transparent prefixes are preserved. -c payloads and script-file
+            # operands ignore stdin (no synthesis). curl|sh stays untouched:
+            # curl output is not statically literal, so the existing
+            # remote-script rule keeps firing (cross-mode invariant).
+            i = 0
+            while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
+                i += 1
+            payload = _strip_transparent_prefixes(" ".join(toks[i:]))
+            ptoks = payload.split()
+            pbase = ptoks[0].rsplit("/", 1)[-1].lower() if ptoks else ""
+            if pbase in _STDIN_SHELLS:
+                rest = ptoks[1:]
+                hs: str | None = None
+                if "<<<" in rest:
+                    hi = rest.index("<<<")
+                    hs = " ".join(rest[hi + 1:])
+                    rest = rest[:hi]
+                if _shell_reads_stdin(rest):
+                    head = s[:len(s) - len(payload)] if s.endswith(payload) else ""
+                    if hs is not None:
+                        if hs.strip():
+                            s = head + hs
+                    elif "|" in sep and "||" not in sep and idx > 0:
+                        lit = _literal_output(segs[idx - 1][1])
+                        if lit is not None and lit.strip():
+                            s = head + lit
         out.append(sep + s)
     return "".join(out)
 
 
 _DESTRUCTIVE_EXES = frozenset({"rm", "shred", "dd"})
 
+# R8 J1: filesystem-destructive verbs whose path operands are lexically
+# collapsed (kernel-resolution semantics) BEFORE root-operand matching —
+# the kernel resolves /home/../etc to /etc before rm ever sees it, so the
+# dotdot spelling must not dodge the catastrophic gate / deny floor / scorer.
+_COLLAPSE_VERBS = frozenset({"rm", "shred", "dd", "find", "chmod", "chown", "wipefs"})
+# A path token with a "."/".." COMPONENT (not a bare name like 777 or file.txt
+# — mode operands and plain filenames are never rewritten).
+_DOT_COMPONENT_RX = re.compile(r"(?:^|/)\.{1,2}(?:/|$)")
+# Upward traversal specifically: relative operands only collapse against cwd
+# when they actually escape via ".." — workspace-relative cleanup (find . /
+# find ./build -delete, R3 S6) must keep its relative, approvable spelling.
+_DOTDOT_COMPONENT_RX = re.compile(r"(?:^|/)\.\.(?:/|$)")
+
+
+def _collapse_destructive_seg(seg: str, cwd: str | None = None) -> str | None:
+    """R8 J1: normpath-collapse the path operands of a filesystem-destructive
+    verb segment (assignment prefixes and transparent wrappers preserved).
+    Returns the collapsed segment, or None when the verb is not destructive
+    or nothing changed. Dynamic ``$…``/backtick, brace, ``~`` and ``key=value``
+    operands are left untouched (the fail-closed lane owns unresolvable ones);
+    relative operands collapse against *cwd* only when it is supplied.
+    Non-destructive verbs are NEVER collapsed (over-block guard)."""
+    toks = seg.split()
+    i = 0
+    while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
+        i += 1
+    if i >= len(toks):
+        return None
+    orig = " ".join(toks[i:])
+    payload = _strip_transparent_prefixes(orig)
+    ptoks = payload.split()
+    if not ptoks:
+        return None
+    if ptoks[0].rsplit("/", 1)[-1].lower() not in _COLLAPSE_VERBS:
+        return None
+    changed = False
+    out: list[str] = []
+    for tok in ptoks[1:]:
+        if (tok.startswith("-") or tok.startswith("~") or "=" in tok
+                or "$" in tok or "`" in tok or "{" in tok
+                or not _DOT_COMPONENT_RX.search(tok)):
+            out.append(tok)
+            continue
+        if tok.startswith("/"):
+            new = posixpath.normpath(tok)
+        elif cwd and cwd.startswith("/") and _DOTDOT_COMPONENT_RX.search(tok):
+            new = posixpath.normpath(posixpath.join(cwd, tok))
+        else:
+            out.append(tok)
+            continue
+        changed = changed or new != tok
+        out.append(new)
+    if not changed:
+        return None
+    prefix = orig[:len(orig) - len(payload)]
+    head = " ".join(toks[:i])
+    return ((head + " ") if head else "") + prefix + " ".join([ptoks[0]] + out)
+
 
 def _is_find_delete(args: list[str]) -> bool:
     joined = " ".join(args)
     return "-delete" in args or bool(re.search(r"-exec(dir)?\s+rm\b", joined))
+
+
+def _destructive_brace_position(text: str) -> bool:
+    """R8 J4: True when an unresolvable-brace segment carries a filesystem-
+    destructive verb at COMMAND position (assignment skip + transparent
+    prefix strip), or the command-position word itself is brace-built
+    (R7 S1 doctrine: the brace word may BE the verb). Subcommand/argument
+    positions (git rm --cached, docker rm, echo rm) are NOT filesystem-
+    destructive and must never fail closed on a brace range."""
+    toks = text.split()
+    i = 0
+    while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
+        i += 1
+    payload = _strip_transparent_prefixes(" ".join(toks[i:]))
+    ptoks = payload.split()
+    if not ptoks:
+        return False
+    head = ptoks[0]
+    if "{" in head:
+        return True
+    base = head.rsplit("/", 1)[-1]
+    return base in _DESTRUCTIVE_EXES or (
+        base == "find" and "-delete" in ptoks[1:])
 
 
 def unresolved_destructive_operands(command: str) -> bool:
@@ -1140,13 +1298,13 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
         # an unknown operand (R2 W6 balance: `rm $HOME/notes.txt` is benign).
         norm = norm.replace("$HOME", "~")
         # R7 S1: expand brace lists so a brace-built verb/operand is visible
-        # ({rm,-rf,/} IS rm). An UNRESOLVABLE brace list plus a destructive
-        # verb anywhere in the segment fails closed — the brace word may BE
-        # the verb, so operand-only checks cannot see it.
+        # ({rm,-rf,/} IS rm). R8 J4: an UNRESOLVABLE brace list fails closed
+        # only when a destructive verb sits at COMMAND position (or the
+        # brace word may BE the verb) — git rm --cached / docker rm /
+        # echo rm carry the word in subcommand/argument position and pass.
         braced = _expand_braces(norm)
         if braced is None:
-            if re.search(r"\b(?:rm|shred|dd)\b", norm) or (
-                    re.search(r"\bfind\b", norm) and "-delete" in norm):
+            if _destructive_brace_position(norm):
                 return True
         else:
             norm = braced
@@ -1189,9 +1347,11 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
             if not ptoks:
                 continue
             # R7 S1: a brace-built xargs payload verb is the real verb.
+            # R8 J4: command-position-aware — git rm --cached / docker rm
+            # payloads are not filesystem-destructive and pass.
             pbraced = _expand_braces(payload)
             if pbraced is None:
-                if re.search(r"\b(?:rm|shred|dd)\b", payload):
+                if _destructive_brace_position(payload):
                     return True
                 continue
             ptoks = pbraced.split()
@@ -1229,7 +1389,7 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
     return False
 
 
-def command_variants(command: str) -> list[str]:
+def command_variants(command: str, cwd: str | None = None) -> list[str]:
     """Return normalized variants of *command* for deny-glob matching.
 
     Includes the normalized whole, its whitespace-free form, every chained
@@ -1296,6 +1456,14 @@ def command_variants(command: str) -> list[str]:
             if folded != seg:
                 add(folded)
                 add(_compact(folded))
+            # R8 J1: kernel-resolution collapse of destructive operands —
+            # /home/../etc IS /etc, so the collapsed spelling must reach the
+            # deny floor and the catastrophic gate too (both flag forms).
+            for base_seg in (seg, folded):
+                collapsed = _collapse_destructive_seg(base_seg, cwd)
+                if collapsed and collapsed != base_seg:
+                    add(collapsed)
+                    add(_compact(collapsed))
             tokens = seg.split()
             if not tokens:
                 continue
@@ -1387,6 +1555,26 @@ def command_variants(command: str) -> list[str]:
                                 walk(payload + " " + lit, depth + 1, positionals)
                     else:
                         walk(payload, depth + 1, positionals)
+                elif rbase in _STDIN_SHELLS:
+                    # R8 J2/J3: quote-aware raw pass — herestring content and
+                    # literal piped stdin are EXECUTED by the shell; walk them
+                    # as command input so a quoted multi-command payload
+                    # (sh <<< "rm -rf /; echo done") exposes its inner segments
+                    # to the deny floor and the catastrophic gate.
+                    rest = rtoks[1:]
+                    hs_raw: str | None = None
+                    if "<<<" in rest:
+                        hi = rest.index("<<<")
+                        hs_raw = _unquote_outer(" ".join(rest[hi + 1:]))
+                        rest = rest[:hi]
+                    if _shell_reads_stdin(rest):
+                        if hs_raw is not None:
+                            if hs_raw.strip():
+                                walk(hs_raw, depth + 1, positionals)
+                        elif "|" in sep and "||" not in sep and idx > 0:
+                            lit = _literal_output(raw_segs[idx - 1][1])
+                            if lit:
+                                walk(lit, depth + 1, positionals)
                 elif rbase == "env":
                     # R6 E3: quote-aware raw pass — the -S nested command keeps
                     # its word boundaries (-S'rm -rf /' is ONE quoted value).
@@ -1434,4 +1622,14 @@ def normalize_command(command: str) -> str:
     braced = _expand_braces(text)
     if braced is not None:
         text = braced
-    return _semantic_flags(_resolve_dynamic(text))
+    resolved = _resolve_dynamic(text)
+    # R8 J1: collapse destructive-verb operands in the canonical form too, so
+    # risk scoring sees the kernel-resolved path (/home/../etc -> /etc).
+    segs = _raw_segments(resolved)
+    if segs:
+        parts: list[str] = []
+        for sep, seg in segs:
+            collapsed = _collapse_destructive_seg(seg)
+            parts.append(sep + (collapsed if collapsed else seg))
+        resolved = "".join(parts)
+    return _semantic_flags(resolved)
