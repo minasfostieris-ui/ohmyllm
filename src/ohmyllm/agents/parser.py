@@ -227,12 +227,16 @@ class ToolCallParser:
         if "function_call" in obj and isinstance(obj["function_call"], dict):
             out.extend(self._calls_from_obj(obj["function_call"], source, raw))
             return out
-        name = obj.get("name") or obj.get("tool") or (obj.get("function") or {}).get("name")
+        # R10 N-R10-5: a truthy NON-dict function value (str/int/list) must be
+        # a malformed parse (retry path), never a raw AttributeError (D7 family).
+        fn0 = obj.get("function")
+        fn = fn0 if isinstance(fn0, dict) else {}
+        name = obj.get("name") or obj.get("tool") or fn.get("name")
         if not name:
             return out
         args: Any = obj.get("arguments") or obj.get("args") or obj.get("parameters") or {}
-        if (obj.get("function") or {}).get("arguments") is not None:
-            args = obj["function"]["arguments"]
+        if fn.get("arguments") is not None:
+            args = fn["arguments"]
         if isinstance(args, str):
             parsed, err = self._coerce_obj(args)
             args = parsed if isinstance(parsed, dict) else ({"_raw": args} if err else {})

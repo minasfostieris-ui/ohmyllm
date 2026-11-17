@@ -295,6 +295,13 @@ class Services:
             # theme save must never cancel the user's running turn.
             self._retire_runtimes()
         # Existing PolicyEngine and AgentRuntime objects reference this instance.
+        # R10 M8: snapshot the pre-apply state (persist path only) so a FAILED
+        # save can roll the live config back to the on-disk state — a 500 must
+        # not leave live flipped while disk is stale (no mtime move means
+        # _sync_disk_config never reconciles). Runtime exclude flags are NEVER
+        # restored (same law as the carry); the retire/invalidate that already
+        # ran stay (fail-closed).
+        pre_apply = self.config.model_copy(deep=True) if persist else None
         for name in Config.model_fields:
             live_sec = getattr(self.config, name)
             fresh_sec = getattr(cfg, name)
@@ -326,7 +333,29 @@ class Services:
         if security_changed:
             self.approvals.invalidate_all()
         if persist:
-            self.save_config()
+            try:
+                self.save_config()
+            except Exception:
+                # R10 M8: restore the non-runtime fields in place from the
+                # pre-apply snapshot (live==disk(old)), refresh the backend
+                # cache, and re-raise so the caller still reports the failure.
+                # save_config stays the persist/injection point.
+                assert pre_apply is not None
+                for name in Config.model_fields:
+                    live_sec = getattr(self.config, name)
+                    old_sec = getattr(pre_apply, name)
+                    sub_fields = getattr(type(live_sec), "model_fields", None)
+                    if sub_fields is not None:
+                        for sub_name, sub_info in sub_fields.items():
+                            if not sub_info.exclude:
+                                setattr(live_sec, sub_name,
+                                        copy.deepcopy(getattr(old_sec, sub_name)))
+                    elif Config.model_fields[name].exclude:
+                        continue  # runtime-only top-level flag: live wins
+                    else:
+                        setattr(self.config, name, copy.deepcopy(old_sec))
+                self._backend_cache.clear()
+                raise
 
     def reload_config(self) -> Config:
         """Re-read config.toml from disk without writing anything back: the
@@ -354,13 +383,19 @@ class Services:
         if mode is PermissionMode.FULL_ACCESS:
             if (phrase or "").strip() != self.full_access_phrase():
                 return False
-        changed = self.config.permission_mode is not mode
-        self.config.permission_mode = mode
-        if changed:
-            self.config.policy_generation += 1
-            self._retire_runtimes()
-            self.approvals.invalidate_all()
-        self.save_config()
+        # R10 N-R10-2: mutation + gen bump + retire + invalidate + save share
+        # the config-mutation mutex so a concurrent stale echo/reload can never
+        # revert a confirmed tightening (M5b fail-open). NEVER turn_lock; None
+        # for TUI/plain/CLI (single-threaded). Phrase check + audit stay outside.
+        mutex = getattr(self, "_config_mutex", None)
+        with mutex if mutex is not None else contextlib.nullcontext():
+            changed = self.config.permission_mode is not mode
+            self.config.permission_mode = mode
+            if changed:
+                self.config.policy_generation += 1
+                self._retire_runtimes()
+                self.approvals.invalidate_all()
+            self.save_config()
         self.audit.log(
             mode=mode.value, tool="__permission_mode__", args={"new_mode": mode.value},
             approval="user", success=True, duration_ms=0, event="permission_mode_changed",

@@ -14,7 +14,6 @@ from .normalize import (
     _XARGS_OPT_SHORT,
     _XARGS_REQ_LONG,
     _XARGS_REQ_SHORT,
-    _literal_output,
     _rm_root_order_free,
     _skip_wrapper_flags,
     _strip_transparent_prefixes,
@@ -211,14 +210,19 @@ class RiskScorer:
             # boundaries — score them, and when a shell consumes the procsub
             # output as code (bash <(echo 'rm -rf /')), score that literal
             # output as the executed command too.
-            from .policy import procsub_interiors
+            # R10 F1: the exec-consumer lane covers source/dot/ash too, and
+            # the interior output is read through the ONE pipe-aware static
+            # reader (herestring-fed cat/head, printf %b, multi-hop chains) —
+            # not just a bare echo/printf. ONE procsub grammar (normalize).
+            from .normalize import _raw_segments, _static_output, procsub_interiors
             for inner in procsub_interiors(command):
                 sub = self.score_command(inner)
                 if sub.score > score:
                     score = sub.score
                 reasons.extend(r for r in sub.reasons if r not in reasons)
-                if base in _SHELL_WRAPPERS or base == "eval":
-                    lit = _literal_output(inner)
+                if base in _SHELL_WRAPPERS or base in ("eval", "source", ".", "ash"):
+                    isegs = _raw_segments(inner)
+                    lit = _static_output(isegs, len(isegs) - 1) if isegs else None
                     if lit:
                         sub2 = self.score_command(lit)
                         if sub2.score > score:

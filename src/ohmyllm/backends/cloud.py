@@ -399,7 +399,11 @@ class CloudBackend(BaseBackend):
                                     # R9 E7: id-fallback keys live in a NEGATIVE
                                     # namespace so a later index=0 delta with the
                                     # same reused id can never clobber this slot.
-                                    last_key = min(pending, default=0) - 1
+                                    # R10 N-R10-3: clamp at 0 FIRST — after an
+                                    # indexed slot min(pending) is POSITIVE, and
+                                    # min(pending)-1 would collide with a later
+                                    # real index (Terry-verified shape).
+                                    last_key = min(min(pending, default=0), 0) - 1
                                     by_id[tid] = last_key
                                     slot = pending[last_key] = {"id": tid, "name": "", "args": ""}
                                 elif last_key >= 0 or last_key in pending:

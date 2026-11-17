@@ -405,9 +405,20 @@ class OllamaBackend(BaseBackend):
                             data = json.loads(line)
                         except json.JSONDecodeError:
                             continue
+                        # R10 N-R10-4: a well-formed JSON line may still be a
+                        # non-dict (list/bool/str/number) — skip it, never crash
+                        # with a raw AttributeError (D7 guard family).
+                        if not isinstance(data, dict):
+                            continue
                         status = data.get("status", "")
                         total, completed = data.get("total"), data.get("completed")
-                        pct = (completed / total) if total and completed is not None else None
+                        # R10 N-R10-4: pct only for REAL numbers (bool is an int
+                        # subclass — a bool completed is shape garbage, not 0/1);
+                        # a str completed must not raise TypeError on division.
+                        numeric = (isinstance(total, (int, float)) and not isinstance(total, bool)
+                                   and isinstance(completed, (int, float))
+                                   and not isinstance(completed, bool))
+                        pct = (completed / total) if numeric and total else None
                         if progress:
                             progress(status, pct)
                         if "error" in data:

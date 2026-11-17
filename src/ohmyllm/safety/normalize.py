@@ -56,67 +56,181 @@ _DEFAULT_RX = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*):-?([^{}]*)\}")
 _POS_REF_RX = re.compile(r"\$\{([0-9]+|[@*])\}|\$([0-9]+|[@*])")
 _SUBST_RX = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
 _ASSIGN_TOK_RX = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
+# R10 F12: parameter transforms (${X@Q}/@E/@P/…) and nameref declarations.
+_TRANSFORM_RX = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)@([QEPAaUuLlKk])\}")
+_NAMEREF_RX = re.compile(
+    r"\b(?:declare|typeset|local)\s+-[A-Za-z]*n[A-Za-z]*\s+([A-Za-z_][A-Za-z0-9_]*)=([A-Za-z_][A-Za-z0-9_]*)")
 # Quote splicing: '"' / "'" adjacency concatenates shell strings. The splice
 # quotes are pure syntax — dropping them exposes hidden $'...' payloads (H1).
+
+
+def _decode_escape_body(body: str) -> str:
+    """R10 structural grammar (F4/F5): the ONE bash escape-sequence decoder.
+    Shared by ANSI-C ``$'...'`` quoting, printf ``%b`` arguments and every
+    payload-word decode site — the grammars cannot desync (>=2 prior instance
+    patches: R8 J2 + R9 E5). Handles \\xHH, \\uHHHH, \\UHHHHHHHH, octal \\NNN,
+    \\cX control chars and the ANSI table."""
+    out: list[str] = []
+    i = 0
+    while i < len(body):
+        ch = body[i]
+        if ch == "\\" and i + 1 < len(body):
+            nxt = body[i + 1]
+            if nxt == "x":
+                j = i + 2
+                while j < len(body) and j < i + 4 and body[j] in "0123456789abcdefABCDEF":
+                    j += 1
+                if j > i + 2:
+                    out.append(chr(int(body[i + 2:j], 16)))
+                    i = j
+                    continue
+            elif nxt in "uU":
+                width = 4 if nxt == "u" else 8
+                digits = body[i + 2:i + 2 + width]
+                if len(digits) == width and all(c in "0123456789abcdefABCDEF" for c in digits):
+                    out.append(chr(int(digits, 16)))
+                    i += 2 + width
+                    continue
+            elif nxt in "01234567":
+                j = i + 1
+                while j < len(body) and j < i + 4 and body[j] in "01234567":
+                    j += 1
+                out.append(chr(int(body[i + 1:j], 8)))
+                i = j
+                continue
+            elif nxt == "c" and i + 2 < len(body):
+                # R5 A15-A17: bash decodes \cX as the control character
+                # ord(X) & 0x1f — \cI is TAB, \cJ is LF, \c? is DEL.
+                cx = body[i + 2]
+                out.append("\x7f" if cx == "?" else chr(ord(cx) & 0x1F))
+                i += 3
+                continue
+            out.append(_ANSI_ESCAPES.get(nxt, nxt))
+            i += 2
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out)
 
 
 def _decode_ansi_c(text: str) -> str:
     """Decode ANSI-C ``$'...'`` quoting (H1). Runs before generic quote
     removal so ``$'\\t'`` becomes a real tab instead of a literal ``t``.
-    Handles ``\\xHH``, ``\\uHHHH``, ``\\UHHHHHHHH`` and octal ``\\NNN`` too,
-    so ``$'\\x2f'`` cannot hide a ``/`` from the catastrophic gate."""
+    R10: delegates to the ONE escape-body decoder (_decode_escape_body)."""
+    return _ANSI_C_RX.sub(lambda m: _decode_escape_body(m.group(1)), text)
 
-    def _sub(m: re.Match[str]) -> str:
-        body = m.group(1)
-        out: list[str] = []
-        i = 0
-        while i < len(body):
-            ch = body[i]
-            if ch == "\\" and i + 1 < len(body):
-                nxt = body[i + 1]
-                if nxt == "x":
-                    j = i + 2
-                    while j < len(body) and j < i + 4 and body[j] in "0123456789abcdefABCDEF":
-                        j += 1
-                    if j > i + 2:
-                        out.append(chr(int(body[i + 2:j], 16)))
-                        i = j
-                        continue
-                elif nxt in "uU":
-                    width = 4 if nxt == "u" else 8
-                    digits = body[i + 2:i + 2 + width]
-                    if len(digits) == width and all(c in "0123456789abcdefABCDEF" for c in digits):
-                        out.append(chr(int(digits, 16)))
-                        i += 2 + width
-                        continue
-                elif nxt in "01234567":
-                    j = i + 1
-                    while j < len(body) and j < i + 4 and body[j] in "01234567":
-                        j += 1
-                    out.append(chr(int(body[i + 1:j], 8)))
-                    i = j
+
+def _strip_continuations(text: str) -> str:
+    """R10 structural grammar (F7): bash removes backslash-newline line
+    continuations BEFORE tokenization — ``r\\<NL>m`` IS ``rm`` and
+    ``s\\<NL>h`` IS ``sh`` (SEM6/SEM7 proofs). Inside SINGLE quotes the
+    pair is literal and stays. Quote-aware so DQ backslash parity holds."""
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            if text[i + 1] == "\n":
+                i += 2  # continuation: removed (unquoted and inside DQ)
+                continue
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if quote is None and ch in "'\"":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if quote == '"' and ch == '"':
+            quote = None
+            out.append(ch)
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _decode_word(tok: str) -> str:
+    """R10 structural grammar (F4): the ONE payload-word parser. Decodes a
+    shell word — including QUOTE CONCATENATION (``'a'\"b\"'c'`` is one word
+    ``abc``; shlex.quote nests build exactly this debris) — with bash-faithful
+    per-span rules: SQ literal, DQ backslash only before $ ` \" \\ NL, ANSI-C
+    $'...' via the shared escape decoder, unquoted backslash pairs, and
+    backslash-NL continuation removal. Each rescan layer decodes EXACTLY its
+    own layer (closure): the decoded payload is re-parsed by the next layer,
+    so escapes never accumulate across nesting depths."""
+    out: list[str] = []
+    i = 0
+    n = len(tok)
+    while i < n:
+        ch = tok[i]
+        if ch == "$" and i + 1 < n and tok[i + 1] == "'":
+            j = i + 2
+            body: list[str] = []
+            while j < n:
+                if tok[j] == "\\" and j + 1 < n:
+                    body.append(tok[j:j + 2])
+                    j += 2
                     continue
-                elif nxt == "c" and i + 2 < len(body):
-                    # R5 A15-A17: bash decodes \cX as the control character
-                    # ord(X) & 0x1f — \cI is TAB, \cJ is LF, \c? is DEL.
-                    # Leaving it as a literal "cX" fabricates phantom operands
-                    # and hides separators from the catastrophic gate.
-                    cx = body[i + 2]
-                    out.append("\x7f" if cx == "?" else chr(ord(cx) & 0x1F))
-                    i += 3
+                if tok[j] == "'":
+                    break
+                body.append(tok[j])
+                j += 1
+            out.append(_decode_escape_body("".join(body)))
+            i = j + 1
+            continue
+        if ch == "'":
+            j = tok.find("'", i + 1)
+            if j < 0:
+                out.append(tok[i + 1:])
+                break
+            out.append(tok[i + 1:j])
+            i = j + 1
+            continue
+        if ch == '"':
+            j = i + 1
+            dq: list[str] = []
+            while j < n:
+                if tok[j] == "\\" and j + 1 < n and tok[j + 1] in "$`\"\\\n":
+                    if tok[j + 1] == "\n":
+                        j += 2
+                        continue
+                    dq.append(tok[j + 1])
+                    j += 2
                     continue
-                out.append(_ANSI_ESCAPES.get(nxt, nxt))
+                if tok[j] == '"':
+                    break
+                dq.append(tok[j])
+                j += 1
+            out.append("".join(dq))
+            i = j + 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            if tok[i + 1] == "\n":
                 i += 2
-            else:
-                out.append(ch)
-                i += 1
-        return "".join(out)
-
-    return _ANSI_C_RX.sub(_sub, text)
+                continue
+            out.append(tok[i + 1])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _strip_tricks(text: str) -> str:
     """Remove quoting/escape/whitespace obfuscation, collapse whitespace."""
+    # R10 F7: line continuations are removed BEFORE any other decode — the
+    # old _ESCAPE_RX pass turned \<NL> into a real newline and SPLIT words.
+    text = _strip_continuations(text)
     out = _IFS_RX.sub(" ", text)
     # Unsplice '"' / "'" adjacencies (fixpoint) BEFORE decoding: splicing
     # hides ANSI-C payloads from the decoder, and a premature decode would
@@ -189,11 +303,50 @@ def _assignment_values_raw(text: str, *, posix: bool = False) -> dict[str, str]:
             m = re.match(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", word, re.DOTALL)
             if not m:
                 break
-            values[m.group(1)] = m.group(2)
+            val = m.group(2)
             pos = end
+            # R10 F2: a command-substitution value spans whitespace
+            # (X=$(cat <<< 'rm -rf /')) — keep reading words until the
+            # substitution parens balance, so the FULL value is tracked.
+            while _subst_paren_depth(val) > 0 and pos < len(seg):
+                nxt, nend, _nclosed = _read_word(seg, pos, posix=posix)
+                if nend <= pos:
+                    break
+                val += " " + nxt
+                pos = nend
+            values[m.group(1)] = val
             if not closed:
                 break
     return values
+
+
+def _subst_paren_depth(val: str) -> int:
+    """Unbalanced ``$(``/backtick substitution depth of an assignment value
+    (R10 F2): quote-aware so parens inside quotes do not count."""
+    depth = 0
+    quote: str | None = None
+    i = 0
+    while i < len(val):
+        ch = val[i]
+        if quote == "'":
+            if ch == "'":
+                quote = None
+        elif ch == "\\" and quote != "'":
+            i += 1
+        elif quote == '"':
+            if ch == '"':
+                quote = None
+        elif ch in "'\"":
+            quote = ch
+        elif val.startswith("$(", i):
+            depth += 1
+            i += 1
+        elif ch == "`":
+            depth = depth + 1 if depth == 0 else depth
+        elif ch == ")" and depth > 0:
+            depth -= 1
+        i += 1
+    return depth
 
 
 def _merged_assignments(raw: str, norm: str) -> dict[str, str]:
@@ -210,6 +363,43 @@ def _merged_assignments(raw: str, norm: str) -> dict[str, str]:
     values = _assignment_values(norm)
     values.update(_assignment_values_raw(raw))
     values.update(_assignment_values_raw(raw, posix=True))
+    # R10 synthesis closure: a substitution-valued assignment spans pipe
+    # separators (X=$(echo … | cat)) that _raw_segments splits — extract from
+    # the WHOLE-TEXT literal-folded reading too, so the full value is tracked.
+    folded = _sub_literal_subshells(raw)
+    if folded != raw:
+        values.update(_assignment_values_raw(folded))
+        values.update(_assignment_values_raw(folded, posix=True))
+    # R10 F2: printf -v / read assignment sources join the ONE value map.
+    values.update(_cmd_assignments(raw))
+    # R10 F12: nameref (declare -n R=X) aliases resolve to their target's
+    # value — rm -rf $R with X=/ IS rm -rf /.
+    for m in _NAMEREF_RX.finditer(raw):
+        target = values.get(m.group(2))
+        if target is not None:
+            values[m.group(1)] = target
+    return values
+
+
+def _scope_values(raw: str) -> dict[str, str]:
+    """R10: OUTER-scope values for the -c/eval payload pre-substitution —
+    quote-aware RAW extraction only (both shell interpretations, the folded
+    reading, command-assignment sources and namerefs). The legacy
+    deobfuscated pass of _merged_assignments would read assignments that
+    live INSIDE the quoted payload (truncated at the first space after quote
+    removal) and inject them back into it, destroying the payload's own
+    quoting — the R7 H1 POSIX-parity family must keep its interior intact."""
+    values = _assignment_values_raw(raw)
+    values.update(_assignment_values_raw(raw, posix=True))
+    folded = _sub_literal_subshells(raw)
+    if folded != raw:
+        values.update(_assignment_values_raw(folded))
+        values.update(_assignment_values_raw(folded, posix=True))
+    values.update(_cmd_assignments(raw))
+    for m in _NAMEREF_RX.finditer(raw):
+        target = values.get(m.group(2))
+        if target is not None:
+            values[m.group(1)] = target
     return values
 
 
@@ -219,11 +409,39 @@ def _sub_refs(text: str, values: dict[str, str]) -> str:
     R7 S3: a custom non-empty IFS splits UNQUOTED substituted values at
     runtime (``IFS=,; X=rm,-rf,/; $X`` runs ``rm -rf /``) — translate the
     assigned IFS characters to spaces inside substituted values so the
-    downstream gates see the real words. Empty IFS means NO splitting."""
+    downstream gates see the real words. Empty IFS means NO splitting.
+
+    R10 F12: ``${VAR@OP}`` parameter transforms are part of the SAME
+    substitution grammar. @Q quotes the value — substituted ONLY when the
+    value is a single word (a quoted multi-word value is ONE ENOENT command
+    name, never a fabricated ``rm -rf /`` — X1 superseded by X1b). @E/@P
+    substitute the decoded value (eval re-parses it), @U/@u/@L/@l case-fold,
+    other ops substitute the value as-is."""
     if not values:
         return text
     ifs = values.get("IFS") or ""
     split_chars = [ch for ch in ifs if not ch.isspace()]
+
+    def _xform(m: re.Match[str]) -> str:
+        name, op = m.group(1), m.group(2)
+        val = values.get(name)
+        if val is None:
+            return m.group(0)
+        if op == "Q":
+            if re.search(r"\s", val):
+                return m.group(0)
+            return "'" + val.replace("'", "'\\''") + "'"
+        if op in ("E", "P"):
+            return _decode_shell_escapes(val)
+        if op == "U":
+            return val.upper()
+        if op == "u":
+            return val[:1].upper() + val[1:]
+        if op == "L":
+            return val.lower()
+        if op == "l":
+            return val[:1].lower() + val[1:]
+        return val
 
     def _sub(m: re.Match[str]) -> str:
         name = m.group(1) or m.group(2)
@@ -236,7 +454,8 @@ def _sub_refs(text: str, values: dict[str, str]) -> str:
 
     out = text
     for _ in range(3):
-        nxt = _VAR_REF_RX.sub(_sub, out)
+        nxt = _TRANSFORM_RX.sub(_xform, out)
+        nxt = _VAR_REF_RX.sub(_sub, nxt)
         if nxt == out:
             break
         out = nxt
@@ -252,6 +471,239 @@ def _expand_vars(text: str) -> str:
     left as-is.
     """
     return _sub_refs(text, _assignment_values(text))
+
+
+def _cmd_assignments(text: str) -> dict[str, str]:
+    """R10 F2 synthesis pillar: assignment sources that are COMMANDS, not
+    ``VAR=value`` words — ``printf -v VAR fmt args`` (the formatted output
+    IS the value) and ``read [-r] VAR… <<< content`` (one variable gets the
+    whole line; several split it on IFS whitespace). Feeds the ONE merged
+    value map so ``eval "$X"`` sees the laundered payload."""
+    values: dict[str, str] = {}
+    for _sep, seg in _raw_segments(text):
+        toks = _tokens_raw(seg)
+        if not toks:
+            continue
+        base = _strip_tricks(toks[0]).rsplit("/", 1)[-1]
+        if base == "printf" and len(toks) >= 4 and toks[1] == "-v":
+            var = _decode_word(toks[2])
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", var):
+                val = _literal_output("printf " + " ".join(toks[3:]))
+                if val is not None:
+                    values[var] = val
+        elif base == "read" and "<<<" in toks:
+            hi = toks.index("<<<")
+            content = " ".join(_decode_word(t) for t in toks[hi + 1:]).strip()
+            names = [t for t in toks[1:hi] if not t.startswith("-")]
+            if not names or not content:
+                continue
+            if len(names) == 1:
+                if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", names[0]):
+                    values[names[0]] = content
+            else:
+                words = content.split()
+                for k, nm in enumerate(names):
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", nm):
+                        values[nm] = words[k] if k < len(words) else ""
+    return values
+
+
+def procsub_interiors(text: str) -> list[str]:
+    """Interior commands of process substitutions ``>(…)``/``<(…)`` (R5
+    A20-A21), quote-aware with balanced-paren scanning. ``$((…))`` arithmetic
+    is NOT a procsub (the preceding ``$`` disqualifies it). Interiors are
+    real command boundaries: their writers and verbs must be gated.
+    R10: the ONE procsub grammar lives here (normalize) — policy re-exports
+    it so the redirect scan, the variant walk and the scorer cannot desync."""
+    out: list[str] = []
+    quote: str | None = None
+    escaped = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if escaped:
+            escaped = False
+            i += 1
+            continue
+        if quote == "'":
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if ch == "\\":
+            escaped = True
+            i += 1
+            continue
+        if quote == '"':
+            if ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+            i += 1
+            continue
+        if ch in "<>" and i + 1 < n and text[i + 1] == "(" \
+                and (i == 0 or text[i - 1] != "$"):
+            depth = 1
+            j = i + 2
+            q2: str | None = None
+            esc2 = False
+            while j < n and depth:
+                c2 = text[j]
+                if esc2:
+                    esc2 = False
+                elif q2 == "'":
+                    if c2 == "'":
+                        q2 = None
+                elif c2 == "\\":
+                    esc2 = True
+                elif q2 == '"':
+                    if c2 == '"':
+                        q2 = None
+                elif c2 in "'\"":
+                    q2 = c2
+                elif c2 == "(":
+                    depth += 1
+                elif c2 == ")":
+                    depth -= 1
+                j += 1
+            inner = text[i + 2:j - 1] if depth == 0 else text[i + 2:]
+            if inner.strip():
+                out.append(inner)
+            i = j
+            continue
+        i += 1
+    return out
+
+
+def _quote_mask(text: str) -> str:
+    """Blank the CONTENT of quoted spans (length-preserving) so text-level
+    synthesis extractors (coproc/function bodies) never match inside an
+    echo string — ``echo "f(){ rm -rf /; }"`` is inert data, not a definition."""
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if quote == "'":
+            out.append(" " if ch != "'" else ch)
+            if ch == "'":
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append("  " if quote else text[i:i + 2])
+            i += 2
+            continue
+        if quote == '"':
+            out.append(" " if ch != '"' else ch)
+            if ch == '"':
+                quote = None
+            i += 1
+            continue
+        if ch in "'\"":
+            quote = ch
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+_COPROC_BRACE_RX = re.compile(r"\bcoproc\s+(?:[A-Za-z_]\w*\s+)?\{([^}]*)\}", re.DOTALL)
+_FUNC_PAREN_RX = re.compile(r"\b([A-Za-z_]\w*)\s*\(\s*\)\s*\{([^}]*)\}", re.DOTALL)
+_FUNC_KW_RX = re.compile(r"\bfunction\s+([A-Za-z_]\w*)\s*(?:\(\s*\)\s*)?\{([^}]*)\}", re.DOTALL)
+
+
+def _coproc_bodies(text: str) -> list[str]:
+    """R10 F1 synthesis pillar: coproc bodies execute asynchronously — both
+    the brace form (``coproc [NAME] { …; }``) and the plain form
+    (``coproc cmd args`` — a NAME is only legal with a brace compound).
+    Quote-masked so echo strings stay inert; the mask is LENGTH-PRESERVING,
+    so bodies are extracted from the ORIGINAL text via match spans (the
+    masked copy would blank a quoted payload like ``bash -c 'rm -rf /'``)."""
+    masked = _quote_mask(text)
+    out: list[str] = []
+    for m in _COPROC_BRACE_RX.finditer(masked):
+        body = text[m.start(1):m.end(1)].strip()
+        if body:
+            out.append(body)
+        masked = masked.replace(m.group(0), " " * len(m.group(0)), 1)
+    for m in re.finditer(r"\bcoproc\s+([^;|&\n]+)", masked):
+        cmd = text[m.start(1):m.end(1)].strip()
+        if cmd:
+            out.append(cmd)
+    return out
+
+
+def _function_bodies(text: str) -> dict[str, str]:
+    """R10 F12 synthesis pillar: shell function definitions (``f(){ …; }``,
+    ``f () { …; }``, ``function f { …; }``) — the body is the payload that
+    runs when the name is called. Quote-masked; braces span segments, so
+    extraction is text-level, not segment-level. Bodies come from the
+    ORIGINAL text via match spans — the length-preserving mask only locates
+    unquoted braces, it must not blank the payload's own quoting."""
+    masked = _quote_mask(text)
+    bodies: dict[str, str] = {}
+    for rx in (_FUNC_PAREN_RX, _FUNC_KW_RX):
+        for m in rx.finditer(masked):
+            body = text[m.start(2):m.end(2)].strip()
+            if body:
+                bodies[m.group(1)] = body
+    return bodies
+
+
+_READ_SUBST_RX = re.compile(r"\$\(<\s*([^()<>|]+?)\s*\)")
+
+
+def _written_files(segs: list[tuple[str, str]]) -> dict[str, str]:
+    """R10 F11 synthesis pillar: path → literal content for files WRITTEN by
+    earlier segments — echo/printf redirects (``>``/``>>``) and tee pipe
+    targets. The content is the producer's static stdout with the redirect
+    tokens removed; append accumulates. Consumed by source/./sh FILE and
+    ``$(<file)`` read-substitution folding."""
+    written: dict[str, str] = {}
+    for idx, (sep, seg) in enumerate(segs):
+        toks = _tokens_raw(seg)
+        if not toks:
+            continue
+        ri: int | None = None
+        for k, t in enumerate(toks):
+            if t in (">", ">>", ">|"):
+                ri = k
+                break
+        if ri is not None and ri + 1 < len(toks):
+            target = _decode_word(toks[ri + 1])
+            content = _literal_output(" ".join(toks[:ri]))
+            if content and target and not target.startswith("&"):
+                if toks[ri] == ">>" and target in written:
+                    written[target] = written[target] + "\n" + content
+                else:
+                    written[target] = content
+            continue
+        stripped = [_strip_tricks(t) for t in toks]
+        i = 0
+        while i < len(stripped) and _ASSIGN_TOK_RX.match(stripped[i]):
+            i += 1
+        if i < len(stripped) and stripped[i].rsplit("/", 1)[-1] == "tee" \
+                and "|" in sep and "||" not in sep and idx > 0:
+            content = _pipe_literal(segs, idx)
+            if content:
+                for t in stripped[i + 1:]:
+                    if not t.startswith("-"):
+                        written[t] = content
+    return written
+
+
+def _fold_read_subst(text: str, written: dict[str, str]) -> str:
+    """R10 F11: ``$(<file)`` is bash's read-substitution — the file's content
+    in operand position. Fold it when the content was tracked as written;
+    unknown files stay untouched (the fail-closed lane owns them)."""
+    if not written or "$(<" not in text:
+        return text
+    return _READ_SUBST_RX.sub(
+        lambda m: written.get(m.group(1).strip(), m.group(0)), text)
 
 
 # R7 S1 (FAMILY): bash comma-list brace expansion. /bin/sh -> bash KEEPS brace
@@ -392,7 +844,7 @@ _ENV_NESTED_SHORT = frozenset("S")
 _ENV_NESTED_LONG = frozenset({"--split-string"})
 # sudo/doas are transparent prefixes: the real executable follows their own
 # flags (R2 W5 — `sudo rm -rf $HOME` must still position-match as rm).
-_PRIV_WRAPPERS = frozenset({"sudo", "doas"})
+_PRIV_WRAPPERS = frozenset({"sudo", "doas", "pkexec", "su", "runuser"})
 _PRIV_REQ_SHORT = frozenset("ugChpRTU")
 _PRIV_REQ_LONG = frozenset({
     "--user", "--group", "--host", "--prompt", "--close-from",
@@ -405,6 +857,8 @@ _PRIV_REQ_LONG = frozenset({
 _TRANSPARENT_WRAPPERS = frozenset({
     "busybox", "toybox", "exec", "command", "nice", "nohup", "time",
     "timeout", "stdbuf", "ionice",
+    # R10 F9/M1/M2: session/namespace/pty wrappers run the payload unchanged.
+    "setsid", "parallel", "systemd-run", "chroot", "nsenter", "script",
 })
 _TRANSPARENT_REQ_SHORT: dict[str, frozenset[str]] = {
     "exec": frozenset("a"),  # R6 E2: exec -a NAME sets argv[0], then runs NAME's command
@@ -412,13 +866,21 @@ _TRANSPARENT_REQ_SHORT: dict[str, frozenset[str]] = {
     "timeout": frozenset("ks"),
     "stdbuf": frozenset("ioe"),
     "ionice": frozenset("cn"),
+    "nsenter": frozenset("t"),  # R10 M1: -t PID targets the namespace
 }
 _TRANSPARENT_REQ_LONG: dict[str, frozenset[str]] = {
     "nice": frozenset({"--adjustment"}),
     "timeout": frozenset({"--signal", "--kill-after"}),
     "stdbuf": frozenset({"--input", "--output", "--error"}),
     "ionice": frozenset({"--class", "--classdata"}),
+    "nsenter": frozenset({"--target"}),
 }
+# R10 M2: script -c/--command runs a NESTED command string (pty wrapper).
+_TRANSPARENT_NESTED_SHORT: dict[str, frozenset[str]] = {"script": frozenset("c")}
+_TRANSPARENT_NESTED_LONG: dict[str, frozenset[str]] = {"script": frozenset({"--command"})}
+# R10 M3: at/batch execute their STDIN as a deferred job — stdin-exec
+# synthesis applies unconditionally (time words are not script operands).
+_DEFERRED_EXEC = frozenset({"at", "batch"})
 _TIMEOUT_DURATION_RX = re.compile(r"[0-9]+(?:\.[0-9]+)?[smhd]?")
 # R5 A18/A19: wrapper-nesting budget. The variant walk exposes two wrapper
 # levels and the scorer recurses three; anything deeper is unanalyzable and
@@ -631,6 +1093,26 @@ def _skip_env_flags(payload: str) -> str:
         nested_long=_ENV_NESTED_LONG)
 
 
+def _skip_priv_flags(payload: str, base: str = "") -> str:
+    """R10 M1: ONE privilege-wrapper flag grammar. sudo/doas/pkexec/runuser
+    flags are consumed normally; su additionally takes an optional USER
+    positional before its -c NESTED command (``su root -c 'rm -rf /'``)."""
+    p = _skip_wrapper_flags(
+        payload, req_short=_PRIV_REQ_SHORT, req_long=_PRIV_REQ_LONG,
+        nested_short=frozenset("c") if base == "su" else frozenset())
+    if base != "su":
+        return p
+    tok, end, _closed = _read_word(p)
+    if tok and not tok.startswith("-"):
+        rest = p[end:]
+        nxt = _skip_wrapper_flags(
+            rest, req_short=_PRIV_REQ_SHORT, req_long=_PRIV_REQ_LONG,
+            nested_short=frozenset("c"))
+        if nxt != rest:
+            return nxt
+    return p
+
+
 def _strip_transparent_prefixes(text: str) -> str:
     """Consume transparent exec prefixes (R5 A04-A13) plus sudo/doas/env so
     the real payload command is exposed: ``busybox rm -rf /``,
@@ -645,8 +1127,7 @@ def _strip_transparent_prefixes(text: str) -> str:
         base = tok.rsplit("/", 1)[-1].lower()
         rest = payload[end:]
         if base in _PRIV_WRAPPERS:
-            payload = _skip_wrapper_flags(
-                rest, req_short=_PRIV_REQ_SHORT, req_long=_PRIV_REQ_LONG)
+            payload = _skip_priv_flags(rest, base)
         elif base == "env":
             payload = _skip_env_flags(rest)
         elif base in _TRANSPARENT_WRAPPERS:
@@ -654,11 +1135,19 @@ def _strip_transparent_prefixes(text: str) -> str:
                 rest,
                 req_short=_TRANSPARENT_REQ_SHORT.get(base, frozenset()),
                 req_long=_TRANSPARENT_REQ_LONG.get(base, frozenset()),
+                nested_short=_TRANSPARENT_NESTED_SHORT.get(base, frozenset()),
+                nested_long=_TRANSPARENT_NESTED_LONG.get(base, frozenset()),
             )
             if base == "timeout":
                 dur, dend, _dc = _read_word(payload)
                 if dur and _TIMEOUT_DURATION_RX.fullmatch(dur):
                     payload = payload[dend:]
+            elif base == "chroot":
+                # R10 M1: chroot NEWROOT cmd — consume the ONE positional
+                # root operand (like timeout's duration) so the payload shows.
+                _root, rend, _rc = _read_word(payload)
+                if payload:
+                    payload = payload[rend:]
         else:
             break
     return payload
@@ -888,6 +1377,7 @@ def _raw_segments(text: str, *, posix: bool = False) -> list[tuple[str, str]]:
     parity read merges into an inert lead (Alex H1 unclosed-tail family).
     Bash parity (default) is unchanged; the pass is over-inclusive by design
     and harmless for non-destructive commands, which never fail closed."""
+    text = _strip_continuations(text)  # R10 F7: continuations join words
     out: list[tuple[str, str]] = []
     buf: list[str] = []
     quote: str | None = None
@@ -962,6 +1452,7 @@ def _tokens_raw(seg: str) -> list[str]:
     a backslash escapes only $, `, \", \\ and newline; $'…' keeps ANSI-C
     semantics. Unbalanced quotes degrade to whitespace splitting (the
     fail-closed lanes own the imbalance itself)."""
+    seg = _strip_continuations(seg)  # R10 F7: continuations join words
     out: list[str] = []
     buf: list[str] = []
     quote: str | None = None
@@ -1096,49 +1587,79 @@ def _literal_output(seg: str) -> str | None:
     the output is not statically knowable (variables, substitutions, other
     executables). Never executes anything.
 
-    R8 J2: printf's FORMAT is read from the RAW quote-aware tokens and its
-    backslash escapes are decoded — quote removal + escape stripping would
-    otherwise mangle ``printf "rm -rf /\\n"`` into a non-root phantom. echo -e
-    decodes escapes too (bash semantics); plain echo does NOT."""
+    R10 structural grammar: word decoding goes through the ONE payload-word
+    parser (_decode_word — quote concatenation, ANSI-C spans, bash-faithful
+    DQ rules). echo flags are scanned LAST-WINS (F6: bash reads -e/-E in
+    order; the last one wins, clusters like -neE count per character).
+    printf is a real directive scanner (F5): %% literal, %s raw argument,
+    %b decodes the argument through the shared escape decoder, any other
+    directive is not statically foldable. ``printf -v VAR`` writes a
+    variable, not stdout → None (F2 assignment lane handles it)."""
     norm = _strip_tricks(seg)
     tokens = norm.split()
     if not tokens:
         return None
     exe = tokens[0].rsplit("/", 1)[-1]
     if exe == "echo":
-        args = [t for t in tokens[1:] if t not in ("-n", "-e", "-E")]
-        if any("$" in t or "`" in t for t in args):
-            return None
-        if "-e" in tokens[1:] and "-E" not in tokens[1:]:
-            raw = _tokens_raw(seg)
-            rargs = [_dq_escape_decode(_unquote_outer(t)) if t.startswith('"')
-                     else _unquote_outer(t)
-                     for t in raw[1:] if t not in ("-n", "-e", "-E")]
-            if any("$" in t or "`" in t for t in rargs):
-                return None
-            return _decode_shell_escapes(" ".join(rargs)).strip() or None
         raw = _tokens_raw(seg)
-        rargs = [_dq_escape_decode(_unquote_outer(t)) if t.startswith('"')
-                 else _unquote_outer(t)
-                 for t in raw[1:] if t not in ("-n", "-e", "-E")]
-        return " ".join(rargs) or None
+        decode = False
+        k = 1
+        while k < len(raw):
+            t = raw[k]
+            if t == "--":
+                k += 1
+                break
+            if re.fullmatch(r"-[neE]+", t):
+                for c in t[1:]:
+                    if c == "e":
+                        decode = True
+                    elif c == "E":
+                        decode = False
+                k += 1
+                continue
+            break
+        rargs = [_decode_word(t) for t in raw[k:]]
+        if any("$" in t or "`" in t for t in rargs):
+            return None
+        out = " ".join(rargs)
+        if decode:
+            out = _decode_shell_escapes(out)
+        return out.strip() or None
     if exe == "printf":
         raw = _tokens_raw(seg)
+        if len(raw) >= 2 and raw[1] in ("-v", "--"):
+            if raw[1] == "-v":
+                return None  # -v writes a variable — no stdout payload
+            raw = raw[:1] + raw[2:]
         if len(raw) < 2:
             return None
-        fmt = _dq_escape_decode(_unquote_outer(raw[1])) if raw[1].startswith('"') \
-            else _unquote_outer(raw[1])
-        args = [_dq_escape_decode(_unquote_outer(t)) if t.startswith('"')
-                else _unquote_outer(t) for t in raw[2:]]
+        fmt = _decode_word(raw[1])
+        args = [_decode_word(t) for t in raw[2:]]
         if any("$" in t or "`" in t for t in [fmt, *args]):
             return None
-        if "%" in fmt.replace("%s", ""):
-            return None  # only plain %s placeholders are statically foldable
-        out = fmt
-        for arg in args:
-            out = out.replace("%s", arg, 1)
-        out = _decode_shell_escapes(out).strip()
-        return out or None
+        parts: list[str] = []
+        ai = 0
+        i = 0
+        while i < len(fmt):
+            ch = fmt[i]
+            if ch == "%" and i + 1 < len(fmt):
+                d = fmt[i + 1]
+                if d == "%":
+                    parts.append("%")
+                elif d == "s":
+                    parts.append(args[ai] if ai < len(args) else "")
+                    ai += 1
+                elif d == "b":
+                    parts.append(_decode_escape_body(args[ai]) if ai < len(args) else "")
+                    ai += 1
+                else:
+                    return None  # %d/%q/… not statically foldable
+                i += 2
+                continue
+            parts.append(ch)
+            i += 1
+        result = _decode_shell_escapes("".join(parts)).strip()
+        return result or None
     return None
 
 
@@ -1150,12 +1671,14 @@ _RESCAN_MAX_DEPTH = 6
 
 
 def _herestring_content(seg: str) -> str | None:
-    """The (outer-unquoted) content of a ``<<<`` herestring, or None."""
+    """The decoded content of a ``<<<`` herestring, or None. R10 F4: each
+    word goes through the ONE payload-word parser — exactly ONE decode
+    layer per rescan, so escapes never accumulate across nesting depths."""
     toks = _tokens_raw(seg)
     if "<<<" not in toks:
         return None
     hi = toks.index("<<<")
-    return _unquote_outer(" ".join(toks[hi + 1:]))
+    return " ".join(_decode_word(t) for t in toks[hi + 1:])
 
 
 def _is_passthrough(seg: str) -> bool:
@@ -1214,12 +1737,14 @@ def _is_passthrough(seg: str) -> bool:
 
 def _pipe_producer(segs: list[tuple[str, str]], idx: int) -> str | None:
     """The segment whose stdout reaches pipe stage *idx* (R9 E1): walk back
-    over passthrough stages (bounded 6 hops). A passthrough fed by a
-    herestring IS the producer (its content is its stdout)."""
+    over passthrough stages. R10 F3: the walk is FULL and linear (O(n),
+    examines j=0) — the old 6-iteration cap made the effective budget 5 and
+    let ``echo … | cat×7 | sh`` evade synthesis entirely. A passthrough fed
+    by a herestring IS the producer (its content is its stdout). Hop count
+    alone NEVER fails a command closed; only the rescan DEPTH budget does,
+    and only for destructive shapes."""
     j = idx - 1
-    for _ in range(6):
-        if j < 0:
-            return None
+    while j >= 0:
         sep_j, seg_j = segs[j]
         if not _is_passthrough(seg_j):
             return seg_j
@@ -1246,6 +1771,23 @@ def _pipe_literal(segs: list[tuple[str, str]], idx: int) -> str | None:
     norm = " ".join(_strip_tricks(s) for _sep, s in segs)
     expanded = _sub_refs(prod, _merged_assignments(raw, norm))
     return _literal_output(expanded)
+
+
+def _static_output(segs: list[tuple[str, str]], idx: int) -> str | None:
+    """R10 synthesis pillar: the statically-known stdout of segment *idx*
+    regardless of shape — herestring-fed passthrough, upstream pipe chain,
+    or a plain echo/printf. ONE reader for every synthesis consumer (procsub
+    interiors, $(<file), write-then-exec, coproc bodies)."""
+    seg = segs[idx][1]
+    if _is_passthrough(seg):
+        hs = _herestring_content(seg)
+        if hs and hs.strip():
+            return hs.strip()
+    if idx > 0 and "|" in segs[idx][0] and "||" not in segs[idx][0]:
+        return _pipe_literal(segs, idx)
+    if _is_passthrough(seg):
+        return None  # bare passthrough: stdout IS stdin, not a literal
+    return _literal_output(seg)
 
 
 def _pipe_remote_source(segs: list[tuple[str, str]], idx: int) -> bool:
@@ -1348,15 +1890,36 @@ def _fold_defaults(text: str) -> str:
     return _DEFAULT_RX.sub(_sub, text)
 
 
-def _sub_literal_subshells(text: str) -> str:
-    """Substitute ``$()``/backtick interiors whose output is a pure literal
-    echo/printf into operand position (R2 C3). Non-literal interiors are
-    left untouched for the fail-closed scan."""
+def _sub_literal_subshells(text: str, written: dict[str, str] | None = None) -> str:
+    """Substitute ``$()``/backtick interiors whose output is statically
+    literal into operand position (R2 C3). R10 synthesis pillar: the interior
+    is read through _static_output — herestring-fed passthroughs and FULL
+    pipe chains fold too (``$(cat <<< 'rm -rf /')``, ``$(echo … | cat)``),
+    and ``$(<file)`` folds from the written-file map (F11). Non-literal
+    interiors are left untouched for the fail-closed scan."""
 
     def _sub(m: re.Match[str]) -> str:
         inner = m.group(1) if m.group(1) is not None else (m.group(2) or "")
-        lit = _literal_output(inner)
-        return lit if lit is not None else m.group(0)
+        if written and inner.lstrip().startswith("<"):
+            path = inner.lstrip()[1:].strip()
+            if path in written:
+                return written[path]
+            return m.group(0)
+        isegs = _raw_segments(inner)
+        lit: str | None = None
+        if isegs:
+            lit = _static_output(isegs, len(isegs) - 1)
+        if lit is None:
+            lit = _literal_output(inner)
+        if lit is None:
+            return m.group(0)
+        # Assignment values are NOT word-split by the shell — a multi-word
+        # literal keeps its word integrity (X=$(echo 'rm -rf /') assigns ONE
+        # string; unquoted folding would truncate the tracked value).
+        if re.search(r"\s", lit) and re.search(
+                r"[A-Za-z_][A-Za-z0-9_]*=$", m.string[:m.start()]):
+            return "'" + lit.replace("'", "'\\''") + "'"
+        return lit
 
     return _SUBST_RX.sub(_sub, text)
 
@@ -1369,6 +1932,22 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
     segs = _raw_segments(text)
     if not segs:
         return text
+    # R10 F11: fold $(<file) read-substitutions from tracked written content
+    # BEFORE any downstream synthesis reads the text.
+    written = _written_files(segs)
+    folded = _fold_read_subst(text, written)
+    if folded != text:
+        text = folded
+        segs = _raw_segments(text)
+    # R10 synthesis closure: _raw_segments is NOT paren-aware — a pipe inside
+    # $() splits into bogus segments and the per-seg fold below never sees the
+    # whole interior. Pre-fold literal substitutions on the WHOLE text first.
+    folded = _sub_literal_subshells(text, written)
+    if folded != text:
+        text = folded
+        segs = _raw_segments(text)
+    # R10 F12: function definitions in scope — a call executes the body.
+    funcs = _function_bodies(text)
     pos = list(positionals or [])
     for _sep, seg in segs:
         toks = seg.split()
@@ -1378,8 +1957,14 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
     for idx, (sep, seg) in enumerate(segs):
         s = _expand_positionals(seg, pos)
         s = _fold_defaults(s)
-        s = _sub_literal_subshells(s)
+        s = _sub_literal_subshells(s, written)
         toks = s.split()
+        if funcs and toks and toks[0].rsplit("/", 1)[-1] in funcs:
+            # R10 F12: the function body IS the executed command (positional
+            # args of the call are not threaded — the body's own words are
+            # the payload the gates must see).
+            out.append(sep + funcs[toks[0].rsplit("/", 1)[-1]])
+            continue
         if (toks and toks[0].rsplit("/", 1)[-1] == "xargs"
                 and "|" in sep and "||" not in sep and idx > 0):
             lit = _pipe_literal(segs, idx)
@@ -1398,7 +1983,13 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
                     flags = remainder[:len(remainder) - len(payload)]
                     s = head + flags + payload.replace(repl, lit)
                 else:
-                    s = s + " " + lit
+                    # R10 F10: -0/--null splits the producer on NUL, not
+                    # whitespace — printf '/\0' denotes the operand /.
+                    flags_region = remainder[:len(remainder) - len(payload)]
+                    if any(t == "-0" or t == "--null" for t in flags_region.split()):
+                        s = s + " " + " ".join(p for p in lit.split("\x00") if p)
+                    else:
+                        s = s + " " + lit
         elif toks:
             # R8 J2/J3 + R9 E1/E4: stdin synthesis for ANY shell interpreter —
             # a pipe RHS or herestring-fed sh/bash/dash/ash/zsh/ksh (incl.
@@ -1415,14 +2006,19 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
             payload = _strip_transparent_prefixes(" ".join(toks[i:]))
             ptoks = payload.split()
             pbase = ptoks[0].rsplit("/", 1)[-1].lower() if ptoks else ""
-            if pbase in _STDIN_SHELLS or pbase == "eval":
+            if pbase in _STDIN_SHELLS or pbase == "eval" or pbase in _DEFERRED_EXEC \
+                    or pbase in ("source", "."):
                 rest = ptoks[1:]
                 hs: str | None = None
                 if "<<<" in rest:
                     hi = rest.index("<<<")
-                    hs = " ".join(rest[hi + 1:])
+                    # R10 grammar closure: the herestring content IS the
+                    # command line — decode it through the ONE word parser
+                    # (a raw token join keeps a quote layer that downstream
+                    # word reading truncates to the first fragment).
+                    hs = _herestring_content(s)
                     rest = rest[:hi]
-                reads = _shell_reads_stdin(rest)
+                reads = True if pbase in _DEFERRED_EXEC else _shell_reads_stdin(rest)
                 if not reads:
                     # R9 E4: the -c payload boundary is quote-aware — read it
                     # from the RAW segment (deobfuscation splits multi-word
@@ -1439,6 +2035,17 @@ def _resolve_dynamic(text: str, positionals: list[str] | None = None) -> str:
                         lit = _pipe_literal(segs, idx)
                         if lit is not None and lit.strip():
                             s = head + lit
+                elif "-c" not in rest[:2] and (
+                        pbase in _SHELL_WRAPPERS or pbase in ("source", ".")):
+                    # R10 F11: script-file operand — when an earlier segment
+                    # WROTE the file, its content IS the executed command
+                    # (write-then-exec). Unknown files stay untouched.
+                    files = [t for t in rest if not t.startswith("-")]
+                    if files:
+                        content = written.get(_decode_word(files[0]))
+                        if content and content.strip():
+                            head = s[:len(s) - len(payload)] if s.endswith(payload) else ""
+                            s = head + content
         out.append(sep + s)
     return "".join(out)
 
@@ -1459,7 +2066,8 @@ _DOT_COMPONENT_RX = re.compile(r"(?:^|/)\.{1,2}(?:/|$)")
 _DOTDOT_COMPONENT_RX = re.compile(r"(?:^|/)\.\.(?:/|$)")
 
 
-def _collapse_destructive_seg(seg: str, cwd: str | None = None) -> str | None:
+def _collapse_destructive_seg(seg: str, cwd: str | None = None,
+                              *, cd_changed: bool = False) -> str | None:
     """R8 J1: normpath-collapse the path operands of a filesystem-destructive
     verb segment (assignment prefixes and transparent wrappers preserved).
     Returns the collapsed segment, or None when the verb is not destructive
@@ -1480,16 +2088,25 @@ def _collapse_destructive_seg(seg: str, cwd: str | None = None) -> str | None:
         return None
     if ptoks[0].rsplit("/", 1)[-1].lower() not in _COLLAPSE_VERBS:
         return None
+    verb = ptoks[0].rsplit("/", 1)[-1].lower()
     changed = False
     out: list[str] = []
     for tok in ptoks[1:]:
         if (tok.startswith("-") or "=" in tok
                 or "$" in tok or "`" in tok or "{" in tok
-                or not _DOT_COMPONENT_RX.search(tok)):
+                or not (_DOT_COMPONENT_RX.search(tok)
+                        or tok == "~+" or tok.startswith("~+/"))):
             out.append(tok)
             continue
         if tok.startswith("/"):
             new = posixpath.normpath(tok)
+        elif tok == "~+" or tok.startswith("~+/"):
+            # R10 F8: ~+ IS $PWD — resolve against the effective cwd (the
+            # tracked cd state). Unresolvable without a cwd: left untouched.
+            if not cwd or not cwd.startswith("/"):
+                out.append(tok)
+                continue
+            new = posixpath.normpath(cwd + tok[2:])
         elif tok.startswith("~"):
             # R9 E3: ~user/../… kernel-resolves against the user's HOME
             # (cd ~root/../etc && pwd → /etc). Named-user homes resolve via
@@ -1507,7 +2124,15 @@ def _collapse_destructive_seg(seg: str, cwd: str | None = None) -> str | None:
                 out.append(tok)
                 continue
             new = posixpath.normpath(home + (m.group(2) or ""))
-        elif cwd and cwd.startswith("/") and _DOTDOT_COMPONENT_RX.search(tok):
+        elif cwd and cwd.startswith("/") and (
+                _DOTDOT_COMPONENT_RX.search(tok)
+                or (cd_changed and verb in ("rm", "shred", "dd", "wipefs")
+                    and not tok.startswith(("/", "~")))):
+            # R10 F8: after a cd changed the effective cwd, rm/shred/dd/wipefs
+            # relative operands resolve against it (cd /etc; rm -rf . IS
+            # rm -rf /etc). find/chmod/chown keep their approvable relative
+            # spelling even after cd (Z13 over-block guard). Without a cd,
+            # workspace-relative cleanup keeps its legacy form.
             new = posixpath.normpath(posixpath.join(cwd, tok))
         else:
             out.append(tok)
@@ -1519,6 +2144,30 @@ def _collapse_destructive_seg(seg: str, cwd: str | None = None) -> str | None:
     prefix = orig[:len(orig) - len(payload)]
     head = " ".join(toks[:i])
     return ((head + " ") if head else "") + prefix + " ".join([ptoks[0]] + out)
+
+
+def _update_cd_state(seg: str, vdir: str | None, cdpath: str,
+                     changed: bool) -> tuple[str | None, str, bool]:
+    """R10 F8: track the effective cwd across segments — ``cd DIR`` (with
+    CDPATH search for relative dirs) updates it; CDPATH assignments update
+    the search path. Returns (vdir, cdpath, changed)."""
+    toks = seg.split()
+    for t in toks:
+        m = re.match(r"CDPATH=(.*)", t)
+        if m:
+            cdpath = m.group(1).strip("'\"")
+    if toks and toks[0] == "cd" and len(toks) >= 2 and not toks[1].startswith("-"):
+        target = toks[1]
+        if target.startswith("/"):
+            return posixpath.normpath(target), cdpath, True
+        if cdpath:
+            for entry in cdpath.split(":"):
+                cand = posixpath.normpath(posixpath.join(entry or ".", target))
+                if cand.startswith("/"):
+                    return cand, cdpath, True
+        if vdir and vdir.startswith("/"):
+            return posixpath.normpath(posixpath.join(vdir, target)), cdpath, True
+    return vdir, cdpath, changed
 
 
 def _is_find_delete(args: list[str]) -> bool:
@@ -1549,13 +2198,57 @@ def _destructive_brace_position(text: str) -> bool:
         base == "find" and "-delete" in ptoks[1:])
 
 
+def _catastrophic_shape_seg(seg: str) -> bool:
+    """R10 budget pillar: True when a segment is a CATASTROPHIC destructive
+    shape — a destructive verb at command position carrying a root-equivalent
+    or unresolvable operand. Workspace-relative destructive cleanup
+    (``find . -delete``, ``rm -rf ./build``) is NOT catastrophic: it keeps
+    its approvable standing contract even at depth exhaustion (H8/Z13).
+    _strip_tricks first: an exhaustion payload may still carry ONE quote
+    layer (herestring content joined from raw tokens) — the verb must be
+    read through the SAME word parser, not a naive split."""
+    toks = _strip_tricks(seg).split()
+    i = 0
+    while i < len(toks) and _ASSIGN_TOK_RX.match(toks[i]):
+        i += 1
+    payload = _strip_transparent_prefixes(" ".join(toks[i:]))
+    ptoks = payload.split()
+    if not ptoks:
+        return False
+    head = ptoks[0]
+    if "{" in head:
+        return True  # brace-built verb: the command itself is unknowable
+    base = head.rsplit("/", 1)[-1].lower()
+    args = ptoks[1:]
+    if base == "find":
+        if not _is_find_delete(args):
+            return False
+        # find's PATH operands precede the expression; only absolute or
+        # upward-traversal roots make a -delete catastrophic.
+        for a in args:
+            if a.startswith("-"):
+                break
+            if a.startswith(("/", "~")) or _DOTDOT_COMPONENT_RX.search(a):
+                return True
+            if _unresolvable_operand(a):
+                return True
+        return False
+    if base not in _DESTRUCTIVE_EXES:
+        return False
+    return any(_RM_ROOT_OPERAND_RX.match(a) or _unresolvable_operand(a)
+               for a in args)
+
+
 def _destructive_shape(payload: str, *, posix: bool = False) -> bool:
-    """R9 depth-exhaustion backstop: True when a filesystem-destructive verb
-    sits at COMMAND position in the payload or its one-pass dynamic resolution
-    (synthesized stdin included). Non-destructive commands NEVER fail closed."""
+    """R9 depth-exhaustion backstop, R10 refinement: True when a CATASTROPHIC
+    destructive shape (root-equivalent/unresolvable operand, brace-built verb,
+    absolute/upward find -delete) sits at COMMAND position in the payload or
+    its one-pass dynamic resolution (synthesized stdin included).
+    Non-destructive commands AND workspace-relative destructive cleanup NEVER
+    fail closed — the budget is destructive-only AND catastrophe-only."""
     for text in (payload, _resolve_dynamic(payload)):
         for _sep, seg in _raw_segments(text, posix=posix):
-            if _destructive_brace_position(seg):
+            if _catastrophic_shape_seg(seg):
                 return True
     return False
 
@@ -1593,6 +2286,18 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
     if depth > _RESCAN_MAX_DEPTH:
         return _destructive_shape(text, posix=posix)
     segs = _raw_segments(text, posix=posix)
+    # R10 F11: written-file content folds into $(<file) before the scan.
+    written = _written_files(segs)
+    folded = _fold_read_subst(text, written)
+    if folded != text:
+        text = folded
+        segs = _raw_segments(text, posix=posix)
+    # R10 synthesis closure: whole-text literal-substitution pre-fold (see
+    # _resolve_dynamic — pipes inside $() survive only before segment split).
+    folded = _sub_literal_subshells(text, written)
+    if folded != text:
+        text = folded
+        segs = _raw_segments(text, posix=posix)
     pos = list(positionals)
     for _sep, seg in segs:
         stripped = [_strip_tricks(t) for t in _tokens_raw(seg)]
@@ -1614,7 +2319,8 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
             ci = rtoks.index("-c")
             if ci + 1 < len(rtoks):
                 pargs = [_strip_tricks(t) for t in rtoks[ci + 2:]]
-                if _rescan_payload(_unquote_outer(rtoks[ci + 1]), pargs[1:],
+                cp = _sub_refs(_unquote_outer(rtoks[ci + 1]), _scope_values(text))
+                if _rescan_payload(cp, pargs[1:],
                                    depth + 1, posix=posix, stdin=feeding):
                     return True
             continue
@@ -1622,7 +2328,10 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
         if base == "eval":
             # R7 gate-fix (#119): recurse on the RAW remainder (outer quotes
             # stripped) so the interior assignment quoting survives.
-            if _rescan_payload(_unquote_outer(_raw_remainder(seg)), pos,
+            # R10 F2/F12: outer-scope values (X=…; eval "$X"/"${X@Q}") are
+            # substituted FIRST — the rescan payload alone loses the scope.
+            ep = _sub_refs(_unquote_outer(_raw_remainder(seg)), _scope_values(text))
+            if _rescan_payload(ep, pos,
                                depth + 1, posix=posix, stdin=feeding):
                 return True
             continue
@@ -1635,7 +2344,7 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
         norm = _sub_refs(norm, values)
         norm = _expand_positionals(norm, pos)
         norm = _fold_defaults(norm)
-        norm = _sub_literal_subshells(norm)
+        norm = _sub_literal_subshells(norm, written)
         # $HOME is always assigned in a real shell — it is resolvable, not
         # an unknown operand (R2 W6 balance: `rm $HOME/notes.txt` is benign).
         norm = norm.replace("$HOME", "~")
@@ -1659,11 +2368,9 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
         base = toks[i].rsplit("/", 1)[-1]
         args = toks[i + 1:]
         if base in _PRIV_WRAPPERS:
-            # sudo/doas are transparent: scan the real executable's operands
-            payload = _skip_wrapper_flags(
-                " ".join(args), req_short=_PRIV_REQ_SHORT,
-                req_long=_PRIV_REQ_LONG,
-            )
+            # sudo/doas/pkexec/su/runuser are transparent: scan the real
+            # executable's operands (R10 M1: ONE priv flag grammar).
+            payload = _skip_priv_flags(" ".join(args), base.lower())
             toks = payload.split()
             if not toks:
                 continue
@@ -1678,13 +2385,14 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
                 continue
             base = toks[0].rsplit("/", 1)[-1]
             args = toks[1:]
-        if base in _STDIN_SHELLS:
+        if base in _STDIN_SHELLS or base in _DEFERRED_EXEC:
             # R9 E2/E4: a stdin-reading shell EXECUTES its feeding content —
             # rescan it as a fresh command line (the meta-gap fix). curl/wget
             # producers fail closed across passthrough hops (curl|sh invariant
             # extended; rule 68 cannot cross intermediate pipes).
+            # R10 M3: at/batch ALWAYS execute their stdin (deferred job).
             sargs = args[:args.index("<<<")] if "<<<" in args else args
-            if _shell_reads_stdin(sargs):
+            if base in _DEFERRED_EXEC or _shell_reads_stdin(sargs):
                 if feeding and feeding.strip():
                     if _rescan_payload(feeding, pos, depth + 1, posix=posix):
                         return True
@@ -1718,7 +2426,12 @@ def _scan_unresolved(text: str, positionals: list[str], depth: int,
                 # R9 B11: append-lane parity with -I — the upstream literal
                 # becomes payload OPERANDS, so brace/glob/$ debris inside it
                 # fails closed exactly like the substituted form.
-                ptoks = ptoks + lit.split()
+                # R10 F10: -0/--null splits on NUL instead of whitespace.
+                flags_region = argtext[:len(argtext) - len(payload)]
+                if any(t == "-0" or t == "--null" for t in flags_region.split()):
+                    ptoks = ptoks + [p for p in lit.split("\x00") if p]
+                else:
+                    ptoks = ptoks + lit.split()
             if repl is not None:
                 if lit is not None:
                     ptoks = [t.replace(repl, lit) for t in ptoks]
@@ -1802,6 +2515,14 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                 inner = match.group(1) or match.group(2) or match.group(3) or ""
                 if inner.strip():
                     walk(inner, depth + 1)
+        # R10 synthesis pillar: coproc bodies (F1) and function definitions
+        # (F12) execute their bodies as code — walk them as command input.
+        # Quote-masked extraction keeps echo strings inert.
+        if depth < _RESCAN_MAX_DEPTH:
+            for body in _coproc_bodies(text):
+                walk(body, depth + 1)
+            for body in _function_bodies(text).values():
+                walk(body, depth + 1)
         segments = [s.strip() for s in _SPLIT_RX.split(norm) if s.strip()]
         # R7 gate-fix (#119): the EXPANDED form's segments must surface at
         # every depth — wrapper recursion (depth >= 1) does not re-walk the
@@ -1810,6 +2531,11 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
         # anchored deny globs and the catastrophic gate.
         if braced != norm:
             segments += [s.strip() for s in _SPLIT_RX.split(braced) if s.strip()]
+        # R10 F8: track the effective cwd across segments (cd/CDPATH) so
+        # ~+ and post-cd relative operands collapse against the REAL cwd.
+        vdir: str | None = cwd
+        cdpath = ""
+        cd_changed = False
         for seg in segments:
             add(seg)
             add(_compact(seg))
@@ -1817,11 +2543,13 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
             if folded != seg:
                 add(folded)
                 add(_compact(folded))
+            vdir, cdpath, cd_changed = _update_cd_state(seg, vdir, cdpath, cd_changed)
             # R8 J1: kernel-resolution collapse of destructive operands —
             # /home/../etc IS /etc, so the collapsed spelling must reach the
             # deny floor and the catastrophic gate too (both flag forms).
             for base_seg in (seg, folded):
-                collapsed = _collapse_destructive_seg(base_seg, cwd)
+                collapsed = _collapse_destructive_seg(base_seg, vdir,
+                                                      cd_changed=cd_changed)
                 if collapsed and collapsed != base_seg:
                     add(collapsed)
                     add(_compact(collapsed))
@@ -1843,7 +2571,8 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                 if payload.strip():
                     walk(payload, depth + 1)
             elif base == "eval":
-                payload = _raw_remainder(seg)
+                payload = _sub_refs(_raw_remainder(seg),
+                                    _merged_assignments(text, norm))
                 if payload.strip():
                     walk(payload, depth + 1)
             elif base == "env":
@@ -1877,22 +2606,52 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
             # R9: the budget matches the rescan bound so nested synthesis
             # fixpoints (echo "…" | sh chains) stay visible to the floor.
             raw_segs = _raw_segments(text)
+            written = _written_files(raw_segs)
             for idx, (sep, rseg) in enumerate(raw_segs):
                 rtoks = _tokens_raw(rseg)
                 if not rtoks:
                     continue
                 rbase = _strip_tricks(rtoks[0]).rsplit("/", 1)[-1]
                 feeding = _seg_feeding(raw_segs, idx, sep, rseg, stdin)
+                # R10 F1: procsub interiors EXECUTE regardless of consumer —
+                # every interior is a real command boundary (ONE grammar).
+                for inner in procsub_interiors(rseg):
+                    walk(inner, depth + 1)
+                    # An exec consumer (shell/eval/source/dot) runs the
+                    # procsub's static stdout AS CODE — synthesize it through
+                    # the ONE output reader (herestring/pipe/echo/printf).
+                    if rbase in _STDIN_SHELLS or rbase in ("eval", "source", "."):
+                        isegs = _raw_segments(inner)
+                        if isegs:
+                            lit = _static_output(isegs, len(isegs) - 1)
+                            if lit and lit.strip():
+                                walk(lit, depth + 1)
+                # R10 F11: source/./sh FILE executes the file's content —
+                # when an earlier segment WROTE it, the payload is known.
+                if rbase in ("source", ".") or (
+                        rbase in _SHELL_WRAPPERS
+                        and not _shell_reads_stdin(rtoks[1:])):
+                    rest0 = rtoks[1:]
+                    if rbase in _SHELL_WRAPPERS:
+                        rest0 = [t for t in rest0 if not t.startswith("-")]
+                    if rest0:
+                        script = _decode_word(rest0[0])
+                        content = written.get(script)
+                        if content and content.strip():
+                            walk(content, depth + 1)
                 if rbase in _SHELL_WRAPPERS and "-c" in rtoks[1:3]:
                     ci = rtoks.index("-c")
                     if ci + 1 < len(rtoks):
                         pargs = [_strip_tricks(t) for t in rtoks[ci + 2:]]
-                        walk(_unquote_outer(rtoks[ci + 1]), depth + 1, pargs[1:],
-                             stdin=feeding)
+                        walk(_sub_refs(_unquote_outer(rtoks[ci + 1]),
+                                       _scope_values(text)),
+                             depth + 1, pargs[1:], stdin=feeding)
                 elif rbase == "eval":
                     # R7 gate-fix (#119): raw eval payload keeps its interior
                     # quoting for the assignment extractor (Alex H1 family).
-                    payload = _unquote_outer(_raw_remainder(rseg))
+                    # R10 F2/F12: outer-scope values substitute first.
+                    payload = _sub_refs(_unquote_outer(_raw_remainder(rseg)),
+                                        _scope_values(text))
                     if payload.strip():
                         walk(payload, depth + 1, positionals, stdin=feeding)
                 elif rbase == "xargs":
@@ -1917,29 +2676,39 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                                 # deny floor sees the real payload command.
                                 walk(payload.replace(repl, lit), depth + 1, positionals)
                             else:
+                                # R10 F10: -0/--null splits on NUL, not space.
+                                flags_region = remainder[:len(remainder) - len(payload)]
+                                if any(t == "-0" or t == "--null"
+                                       for t in flags_region.split()):
+                                    lit = " ".join(p for p in lit.split("\x00") if p)
                                 walk(payload + " " + lit, depth + 1, positionals)
                     else:
                         walk(payload, depth + 1, positionals)
-                elif rbase in _STDIN_SHELLS:
+                elif rbase in _STDIN_SHELLS or rbase in _DEFERRED_EXEC:
                     # R8 J2/J3 + R9 E1/E2/E4: quote-aware raw pass — herestring
                     # content, literal piped stdin (through passthrough chains)
                     # and INHERITED stdin are EXECUTED by the shell; walk them
                     # as command input so a quoted multi-command payload
                     # (sh <<< "rm -rf /; echo done") exposes its inner segments
                     # to the deny floor and the catastrophic gate.
+                    # R10 F4: herestring content goes through the ONE word
+                    # parser (exactly ONE decode layer per rescan — closure).
+                    # R10 M3: at/batch always execute their stdin.
                     rest = rtoks[1:]
-                    hs_raw: str | None = None
+                    hs_raw = _herestring_content(rseg)
                     if "<<<" in rest:
-                        hi = rest.index("<<<")
-                        hs_raw = _unquote_outer(" ".join(rest[hi + 1:]))
-                        rest = rest[:hi]
-                    if _shell_reads_stdin(rest):
+                        rest = rest[:rest.index("<<<")]
+                    if rbase in _DEFERRED_EXEC or _shell_reads_stdin(rest):
                         content = hs_raw if hs_raw and hs_raw.strip() else None
                         if content is None and "|" in sep and "||" not in sep and idx > 0:
                             content = _pipe_literal(raw_segs, idx)
                         if content is None:
                             content = stdin
                         if content and content.strip():
+                            # R10 F11: synthesized stdin carries the OUTER
+                            # written-file context — $(<file) folds here too.
+                            content = _sub_literal_subshells(
+                                _fold_read_subst(content, written), written)
                             walk(content, depth + 1, positionals)
                 elif rbase == "env":
                     # R6 E3: quote-aware raw pass — the -S nested command keeps
@@ -1948,14 +2717,10 @@ def command_variants(command: str, cwd: str | None = None) -> list[str]:
                     if payload.strip():
                         walk(payload, depth + 1, positionals, stdin=feeding)
                 elif rbase in _PRIV_WRAPPERS:
-                    # R4-S1: sudo/doas are transparent — walk the real payload
-                    # from the RAW remainder so quoted multi-word flag args
-                    # (``sudo -p 'x y' rm -rf /home``) cannot hide it from the
-                    # deny floor or the catastrophic gate.
-                    payload = _skip_wrapper_flags(
-                        _raw_remainder(rseg),
-                        req_short=_PRIV_REQ_SHORT, req_long=_PRIV_REQ_LONG,
-                    )
+                    # R4-S1 + R10 M1: privilege wrappers are transparent —
+                    # walk the real payload from the RAW remainder through
+                    # the ONE priv flag grammar (su USER -c nested included).
+                    payload = _skip_priv_flags(_raw_remainder(rseg), rbase.lower())
                     if payload.strip():
                         walk(payload, depth + 1, positionals, stdin=feeding)
                 elif rbase in _TRANSPARENT_WRAPPERS:
@@ -1994,8 +2759,12 @@ def normalize_command(command: str) -> str:
     segs = _raw_segments(resolved)
     if segs:
         parts: list[str] = []
+        vdir: str | None = None
+        cdpath = ""
+        cd_changed = False
         for sep, seg in segs:
-            collapsed = _collapse_destructive_seg(seg)
+            vdir, cdpath, cd_changed = _update_cd_state(seg, vdir, cdpath, cd_changed)
+            collapsed = _collapse_destructive_seg(seg, vdir, cd_changed=cd_changed)
             parts.append(sep + (collapsed if collapsed else seg))
         resolved = "".join(parts)
     return _semantic_flags(resolved)

@@ -30,6 +30,7 @@ from .normalize import (
     command_variants,
     nesting_exceeds_budget,
     normalize_command,
+    procsub_interiors,
     unresolved_destructive_operands,
 )
 from .risk import RiskScorer, _basename, level_for
@@ -71,72 +72,9 @@ def _redirect_targets(cmd: str) -> list[str]:
     return targets
 
 
-def procsub_interiors(text: str) -> list[str]:
-    """Interior commands of process substitutions ``>(…)``/``<(…)`` (R5
-    A20-A21), quote-aware with balanced-paren scanning. ``$((…))`` arithmetic
-    is NOT a procsub (the preceding ``$`` disqualifies it). Interiors are
-    real command boundaries: their writers and verbs must be gated."""
-    out: list[str] = []
-    quote: str | None = None
-    escaped = False
-    i = 0
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if escaped:
-            escaped = False
-            i += 1
-            continue
-        if quote == "'":
-            if ch == "'":
-                quote = None
-            i += 1
-            continue
-        if ch == "\\":
-            escaped = True
-            i += 1
-            continue
-        if quote == '"':
-            if ch == '"':
-                quote = None
-            i += 1
-            continue
-        if ch in "'\"":
-            quote = ch
-            i += 1
-            continue
-        if ch in "<>" and i + 1 < n and text[i + 1] == "(" \
-                and (i == 0 or text[i - 1] != "$"):
-            depth = 1
-            j = i + 2
-            q2: str | None = None
-            esc2 = False
-            while j < n and depth:
-                c2 = text[j]
-                if esc2:
-                    esc2 = False
-                elif q2 == "'":
-                    if c2 == "'":
-                        q2 = None
-                elif c2 == "\\":
-                    esc2 = True
-                elif q2 == '"':
-                    if c2 == '"':
-                        q2 = None
-                elif c2 in "'\"":
-                    q2 = c2
-                elif c2 == "(":
-                    depth += 1
-                elif c2 == ")":
-                    depth -= 1
-                j += 1
-            inner = text[i + 2:j - 1] if depth == 0 else text[i + 2:]
-            if inner.strip():
-                out.append(inner)
-            i = j
-            continue
-        i += 1
-    return out
+# R10 structural synthesis: the ONE procsub grammar lives in normalize
+# (procsub_interiors, re-exported above) — the redirect scan, the variant
+# walk and the scorer all share it; the grammars cannot desync.
 
 
 def _quote_segments(text: str) -> list[str] | None:

@@ -717,13 +717,18 @@ class Handler(BaseHTTPRequestHandler):
                 sess = self.state.svc.sessions.get(sid)
                 if sess:
                     export(self.state.svc.sessions, sess, "markdown")
-            trash = self.state.svc.sessions.delete(sid)
-            if trash:
-                # D8: tombstone the id so an in-flight turn's finally-save
-                # cannot resurrect the chat; cancel it if it is still running.
-                self.state.deleted_sessions.add(sid)
-                if self.state.session_id == sid and self.state.busy:
-                    self.state.cancel_active()
+            # R10 N-R10-6: trash + tombstone under turn_lock — atomic vs the
+            # turn's under-lock finally-save/rename (D8 check-then-act race).
+            # cancel_active stays OUTSIDE (it takes turn_lock itself).
+            with self.state.turn_lock:
+                trash = self.state.svc.sessions.delete(sid)
+                if trash:
+                    # D8: tombstone the id so an in-flight turn's finally-save
+                    # cannot resurrect the chat; cancel it if it is still running.
+                    self.state.deleted_sessions.add(sid)
+                cancel_it = bool(trash) and self.state.session_id == sid and self.state.busy
+            if cancel_it:
+                self.state.cancel_active()
             if self.state.session_id == sid:
                 self.state.session_id = None
             return self._json(200, {"trashed": str(trash) if trash else None})
@@ -973,24 +978,30 @@ class Handler(BaseHTTPRequestHandler):
         from .providers import get as _pg
         from .providers import is_custom
 
-        # arbitrary pids would land in the TOML as exotic table keys and — before
-        # the serializer hardening — could corrupt the whole config file
-        if _pg(pid) is None and not (is_custom(pid) and pid in self.state.svc.config.cloud.customs):
-            return 400, {"error": f"unknown provider {pid!r} — connect customs first"}
-        cl = self.state.svc.config.cloud
-        models = str(body.get("models") or "").strip()
-        if models:
-            cl.model_lists[pid] = models
-        if key:
-            cl.keys[pid] = key
-            if not cl.provider:
-                cl.provider = pid
-        else:
-            cl.keys.pop(pid, None)
-            if cl.provider == pid:
-                cl.provider = ""
-            self._revert_cloud_default_if_orphaned()
-        self.state.svc.save_config()
+        # R10 N-R10-2: read-check + mutation + save share the config-mutation
+        # mutex so a concurrent echo/reload can never apply a stale copy over
+        # this save (M4b/M6/M11). NEVER turn_lock; the network probe and the
+        # payload build stay OUTSIDE the mutex.
+        cm = getattr(self.state, "config_mutex", None)
+        with cm if cm is not None else contextlib.nullcontext():
+            # arbitrary pids would land in the TOML as exotic table keys and — before
+            # the serializer hardening — could corrupt the whole config file
+            if _pg(pid) is None and not (is_custom(pid) and pid in self.state.svc.config.cloud.customs):
+                return 400, {"error": f"unknown provider {pid!r} — connect customs first"}
+            cl = self.state.svc.config.cloud
+            models = str(body.get("models") or "").strip()
+            if models:
+                cl.model_lists[pid] = models
+            if key:
+                cl.keys[pid] = key
+                if not cl.provider:
+                    cl.provider = pid
+            else:
+                cl.keys.pop(pid, None)
+                if cl.provider == pid:
+                    cl.provider = ""
+                self._revert_cloud_default_if_orphaned()
+            self.state.svc.save_config()
         payload = self._providers_state()
         # the GUI asks for a live /models probe (probe: true) so it only
         # falls back to asking for model ids when the gateway has no
@@ -1000,27 +1011,34 @@ class Handler(BaseHTTPRequestHandler):
 
     def _providers_use(self, body: dict) -> tuple[int, dict]:
         pid = str(body.get("pid") or "").strip()
-        cl = self.state.svc.config.cloud
         from .providers import get as _pg
         from .providers import is_custom, key_for
 
-        if _pg(pid) is None and not (is_custom(pid) and pid in cl.customs):
-            return 400, {"error": f"unknown provider {pid!r}"}
-        if not key_for(pid, cl.keys):
-            return 400, {"error": "connect a key for this provider first"}
-        cl.provider = pid
-        self.state.svc.config.default_backend = BackendName.CLOUD
-        self.state.svc.save_config()
+        # R10 N-R10-2: serialize read-check + mutation + save (see _providers_key).
+        cm = getattr(self.state, "config_mutex", None)
+        with cm if cm is not None else contextlib.nullcontext():
+            cl = self.state.svc.config.cloud
+            if _pg(pid) is None and not (is_custom(pid) and pid in cl.customs):
+                return 400, {"error": f"unknown provider {pid!r}"}
+            if not key_for(pid, cl.keys):
+                return 400, {"error": "connect a key for this provider first"}
+            cl.provider = pid
+            self.state.svc.config.default_backend = BackendName.CLOUD
+            self.state.svc.save_config()
         return 200, self._providers_state()
 
     def _providers_forget(self, body: dict) -> tuple[int, dict]:
         pid = str(body.get("pid") or "").strip()
-        cl = self.state.svc.config.cloud
-        cl.keys.pop(pid, None)
-        if cl.provider == pid:
-            cl.provider = ""  # a provider without a key is not "active"
-        self._revert_cloud_default_if_orphaned()
-        self.state.svc.save_config()
+        # R10 N-R10-2: a forget must not be resurrected by a stale echo/reload
+        # applying a pre-forget copy (M11) — mutate + save under the mutex.
+        cm = getattr(self.state, "config_mutex", None)
+        with cm if cm is not None else contextlib.nullcontext():
+            cl = self.state.svc.config.cloud
+            cl.keys.pop(pid, None)
+            if cl.provider == pid:
+                cl.provider = ""  # a provider without a key is not "active"
+            self._revert_cloud_default_if_orphaned()
+            self.state.svc.save_config()
         return 200, self._providers_state()
 
     def _providers_custom(self, body: dict) -> tuple[int, dict]:
@@ -1039,18 +1057,22 @@ class Handler(BaseHTTPRequestHandler):
         if _up(base).path in ("", "/"):  # only a bare host gets the /v1 default;
             base += "/v1"                # /v2 or /api/anthropic stay as typed
         slug = _re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "provider"
-        pid = f"custom-{slug}-{int(_t.time()) % 100000}"
-        n = 2
-        while pid in self.state.svc.config.cloud.customs:
-            pid = f"custom-{slug}-{int(_t.time()) % 100000}-{n}"
-            n += 1
-        cl = self.state.svc.config.cloud
-        cl.customs[pid] = name
-        cl.bases[pid] = base
-        models = str(body.get("models") or "").strip()
-        if models:
-            cl.model_lists[pid] = models
-        self.state.svc.save_config()
+        # R10 N-R10-2: pid-uniqueness read + mutation + save under the mutex;
+        # URL validation above stays outside (no config access).
+        cm = getattr(self.state, "config_mutex", None)
+        with cm if cm is not None else contextlib.nullcontext():
+            pid = f"custom-{slug}-{int(_t.time()) % 100000}"
+            n = 2
+            while pid in self.state.svc.config.cloud.customs:
+                pid = f"custom-{slug}-{int(_t.time()) % 100000}-{n}"
+                n += 1
+            cl = self.state.svc.config.cloud
+            cl.customs[pid] = name
+            cl.bases[pid] = base
+            models = str(body.get("models") or "").strip()
+            if models:
+                cl.model_lists[pid] = models
+            self.state.svc.save_config()
         return 200, self._providers_state()
 
     async def _voice_transcribe(self, body: dict) -> tuple[int, dict]:
@@ -1400,6 +1422,16 @@ class Handler(BaseHTTPRequestHandler):
                                      if k in incoming and incoming[k] != live_agent.get(k))
                     if regated and body.get("confirm") is not True:
                         return self._json(403, {"error": "agent policy change requires confirm=true: " + ", ".join(regated)})
+                # R10 N-R10-1: merge + validate BEFORE any yolo arm — a
+                # 400-rejected save must have ZERO side effects (no live arm,
+                # no deferred _yolo_pending, no retire, no audit). The arm
+                # below still shares this SAME turn_lock acquisition (R6 C3).
+                merged = _carry_runtime_flags(svc.config, deep_merge(live, {"agent": incoming}))
+                try:
+                    new = Config.model_validate(merged)
+                except Exception as exc:  # noqa: BLE001
+                    return self._json(400, {"error": _validation_sentence(exc)})
+                if lock is not None:
                     # R7: route EVERY yolo delta through request_yolo so the LIVE
                     # flag is the single authoritative next-prompt state — an idle
                     # arm sets it now, a busy arm defers it to settle. Stripping it
@@ -1407,14 +1439,13 @@ class Handler(BaseHTTPRequestHandler):
                     # preserve the live value, so no stale config copy can
                     # resurrect a consumed arm or wipe a settled/idle one
                     # (R7-Y1/Y2/Y3/Y5). request_yolo returns True only when deferred.
+                    # R10 N-R10-1: only on an ACCEPTED config — the validated
+                    # `new` may carry the incoming yolo, but the apply-time live
+                    # carry (core, under _runtime_lock) overwrites it from the
+                    # just-armed live flag, keeping idle-arm/busy-defer semantics.
                     if "yolo" in incoming and request is not None:
                         deferred = request(bool(incoming["yolo"]), busy=busy)
                         incoming = {k: v for k, v in incoming.items() if k != "yolo"}
-                merged = _carry_runtime_flags(svc.config, deep_merge(live, {"agent": incoming}))
-                try:
-                    new = Config.model_validate(merged)
-                except Exception as exc:  # noqa: BLE001
-                    return self._json(400, {"error": _validation_sentence(exc)})
             # R8 G3: apply OUTSIDE turn_lock (unified echo pattern) — core takes
             # the lock itself for the atomic runtime snapshot; holding it across
             # a gated apply would deadlock work()'s under-lock settle.
@@ -1635,10 +1666,15 @@ class Handler(BaseHTTPRequestHandler):
                     cancel=self.state.cancel, user_requested_memory=bool(body.get("memory_directive")),
                     interjections=self.state.interjections,
                 )
-                if sess.id not in self.state.deleted_sessions and sess.title in ("New chat", "", None):
-                    new_title = make_title(text)
-                    self.state.svc.sessions.rename(sess.id, new_title)
-                    sess.title = new_title
+                # R10 N-R10-6: the auto-rename is a check-then-write on the
+                # session file too — same turn_lock as the finally-save and
+                # do_DELETE's trash+tombstone so a DELETE cannot land inside
+                # the window (brief local fs only, never across the turn).
+                with self.state.turn_lock:
+                    if sess.id not in self.state.deleted_sessions and sess.title in ("New chat", "", None):
+                        new_title = make_title(text)
+                        self.state.svc.sessions.rename(sess.id, new_title)
+                        sess.title = new_title
                 self.state.tok_s = res.tokens_per_s or self.state.tok_s
                 final_kind = "done"
                 final_payload = {"text": res.text, "error": res.error, "steps": res.steps,
@@ -1655,14 +1691,20 @@ class Handler(BaseHTTPRequestHandler):
                 where = f" (at {tb[-1].filename.rsplit('/', 1)[-1]}:{tb[-1].lineno})" if tb else ""
                 final_payload = {"message": f"{type(exc).__name__}: {exc}{where}"}
             finally:
-                if sess.id not in self.state.deleted_sessions:
-                    # D8: a chat deleted mid-turn must never be written back.
-                    try:
-                        self.state.svc.sessions.save(sess)
-                    except Exception as exc:
-                        final_kind = "done"
-                        final_payload["error"] = f"Session save failed: {exc}"
-                        final_payload["saved"] = False
+                # R10 N-R10-6: tombstone RE-CHECK + save are ONE critical
+                # section under turn_lock — do_DELETE takes the same lock for
+                # trash+tombstone, so a DELETE can no longer land between the
+                # check and the write and have the save resurrect the chat
+                # (D8). turn_lock-only: no config mutex here (lock law).
+                with self.state.turn_lock:
+                    if sess.id not in self.state.deleted_sessions:
+                        # D8: a chat deleted mid-turn must never be written back.
+                        try:
+                            self.state.svc.sessions.save(sess)
+                        except Exception as exc:
+                            final_kind = "done"
+                            final_payload["error"] = f"Session save failed: {exc}"
+                            final_payload["saved"] = False
                 with self.state.turn_lock:
                     # R5 F1: settle a deferred yolo delta AFTER the runtime's
                     # finally-disarm and BEFORE busy clears — the finished

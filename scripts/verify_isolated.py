@@ -6,6 +6,7 @@ The audit hook is defense in depth, not an OS sandbox for untrusted code.
 from __future__ import annotations
 
 import json
+import math
 import os
 import runpy
 import socket
@@ -15,6 +16,11 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+# R3 (Task 139): the per-step budget is a finite parameter, not a hardcoded
+# 600s. The guarded census grew past 600s (R9: ~617s), which forced an
+# identical second full run every gate. Default 1500s keeps a genuine hang
+# caught while letting the census complete ONCE in-process.
+DEFAULT_STEP_TIMEOUT = 1500.0
 EXCLUDED = (
     "test_run_command_output_and_timeout",
     "test_shell_uses_resolved_cwd_sanitized_environment_and_output_cap",
@@ -65,13 +71,47 @@ def guarded(kind: str, args: list[str]) -> int:
         return 0
 
 
+def parse_step_timeout(argv: list[str]) -> tuple[float, list[str]]:
+    """Extract ``--step-timeout SECONDS`` (or ``--step-timeout=SECONDS``).
+
+    Returns (budget, remaining argv). The budget must be finite and positive
+    so a genuine hang is still caught; default DEFAULT_STEP_TIMEOUT (1500s).
+    """
+    budget = DEFAULT_STEP_TIMEOUT
+    rest: list[str] = []
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        value: str | None = None
+        if arg == "--step-timeout":
+            if i + 1 >= len(argv):
+                raise SystemExit("--step-timeout requires a value in seconds")
+            value = argv[i + 1]
+            i += 2
+        elif arg.startswith("--step-timeout="):
+            value = arg.split("=", 1)[1]
+            i += 1
+        else:
+            rest.append(arg)
+            i += 1
+            continue
+        try:
+            budget = float(value)
+        except ValueError:
+            raise SystemExit(f"--step-timeout: not a number: {value!r}") from None
+    if not math.isfinite(budget) or budget <= 0:
+        raise SystemExit("--step-timeout must be a finite positive number of seconds")
+    return budget, rest
+
+
 def main() -> int:
     os.chdir(ROOT)
     evidence = ROOT / ".validation"
     evidence.mkdir(exist_ok=True)
-    if len(sys.argv) > 1 and sys.argv[1] == "--guard":
-        return guarded(sys.argv[2], sys.argv[3:])
-    phase = sys.argv[1] if len(sys.argv) > 1 else "final"
+    budget, argv = parse_step_timeout(sys.argv[1:])
+    if argv and argv[0] == "--guard":
+        return guarded(argv[1], argv[2:])
+    phase = argv[0] if argv else "final"
     python = str(ROOT / ".venv/bin/python")
     steps = [
         ([python, "-m", "ruff", "check", "src", "tests", "scripts"], ROOT),
@@ -85,13 +125,14 @@ def main() -> int:
     results = []
     for i, (cmd, cwd) in enumerate(steps):
         try:
-            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=600)
+            result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, timeout=budget)
             code, output = result.returncode, result.stdout + result.stderr
         except subprocess.TimeoutExpired as exc:
             code, output = 124, str(exc)
         log = evidence / f"{phase}-{i}.log"
         log.write_text(output)
-        results.append({"command": cmd, "cwd": str(cwd), "exit": code, "log": str(log)})
+        results.append({"command": cmd, "cwd": str(cwd), "exit": code,
+                        "step_timeout_s": budget, "log": str(log)})
         print(json.dumps(results[-1]), flush=True)
         print(output[-2500:], flush=True)
     (evidence / f"{phase}.json").write_text(json.dumps(results, indent=2))

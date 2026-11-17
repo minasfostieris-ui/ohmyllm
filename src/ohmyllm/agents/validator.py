@@ -37,7 +37,10 @@ def _coerce(value: Any, spec: ParamSpec) -> tuple[Any, str | None]:
             num = (value if isinstance(value, int) else int(round(float(value)))) \
                 if want == "integer" else float(value)
             return num, None
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # R10 N-R10-5: int(round(float(inf))) raises OverflowError (JSON
+            # 1e999 / "1e999") — a validation error for the D7 retry path,
+            # never a turn-aborting crash. nan stays ValueError-rejected.
             return None, f"parameter '{spec.name}' must be {want}, got {value!r}"
     if want == "boolean":
         if isinstance(value, bool):
