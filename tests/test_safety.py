@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 import pytest
 
@@ -127,6 +128,7 @@ def test_dangerous_needs_approvals(cfg):
     assert pe.evaluate("http_fetch", {"url": "https://example.com"}).requires_approval
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX root / sensitive-path semantics")
 def test_full_access_phrase_gated_and_catastrophic(cfg):
     pe = engine(cfg, PermissionMode.FULL_ACCESS)
     assert pe.evaluate("run_command", {"command": "pytest -q"}).allowed

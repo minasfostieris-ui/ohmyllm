@@ -14,6 +14,7 @@ with another spelling. Held controls + FP guards keep R3/R4/R5 verdicts intact.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -209,11 +210,13 @@ def test_r6_e4_expands_full_reference():
     "sed -ni.bak s/a/b/ /etc/passwd",
     "sed -i.bak s/a/b/ /etc/passwd",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r6_e5_sed_cluster_inplace_approval(tmp_path, cmd):
     _approval(_sh(FA, tmp_path, cmd), cmd)
 
 
 @pytest.mark.parametrize("pre", ["", "n", "E", "nE", "En", "r", "s", "u", "z"])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r6_e5_fuzz_sed_clusters(tmp_path, pre):
     cmd = f"sed -{pre}i s/a/b/ /etc/passwd"
     _approval(_sh(FA, tmp_path, cmd), cmd)
@@ -231,12 +234,14 @@ def test_r6_e5_fuzz_sed_clusters(tmp_path, pre):
     "cp -rt/etc probe_src",
     "cp --target-directory=/etc probe_src",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r6_e6_copy_cluster_target_approval(tmp_path, cmd):
     _approval(_sh(FA, tmp_path, cmd), cmd)
 
 
 @pytest.mark.parametrize("verb", ["cp", "mv", "ln"])
 @pytest.mark.parametrize("pre", ["", "r", "v", "a", "rv", "fa", "n"])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r6_e6_fuzz_copy_clusters(tmp_path, verb, pre):
     cmd = f"{verb} -{pre}t /etc probe_src"
     _approval(_sh(FA, tmp_path, cmd), cmd)
@@ -252,6 +257,7 @@ def test_r6_e6_fuzz_copy_clusters(tmp_path, verb, pre):
     "install --directory /etc/probe_dir",
     "install -m 755 -t /etc probe_src",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r6_e7_install_target_approval(tmp_path, cmd):
     _approval(_sh(FA, tmp_path, cmd), cmd)
 
@@ -287,6 +293,7 @@ def test_r6_held_catastrophic_controls(tmp_path, cmd):
     assert not d.allowed, f"{cmd!r} allowed: {d.summary()}"
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r6_held_exec_fd_redirect_approval(tmp_path):
     # N11: fd-prefixed redirects ARE extracted.
     _approval(_sh(FA, tmp_path, "exec 3>/etc/passwd"), "exec 3>/etc/passwd")
@@ -304,11 +311,13 @@ def test_r6_held_fullwidth_inert(tmp_path):
     _silent(_sh(FA, tmp_path, "ｒｍ -rf /"), "fullwidth")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r6_held_attached_cp_target_approval(tmp_path):
     # C10: attached -t/etc was already correct in R5.
     _approval(_sh(FA, tmp_path, "cp -t/etc probe_src"), "cp -t/etc")
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r6_held_separated_sed_inplace_approval(tmp_path):
     # N08c: separated -n -i was already correct in R5.
     _approval(_sh(FA, tmp_path, "sed -n -i s/a/b/ /etc/passwd"), "sed -n -i")
@@ -338,6 +347,7 @@ def test_r6_held_separated_sed_inplace_approval(tmp_path):
     "xargs -a /tmp/feed echo",          # non-destructive payload
     "xargs -a /tmp/feed ls",            # non-destructive payload
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r6_fp_guards_silent(tmp_path, cmd):
     if cmd == "cp -rT x /etc":
         _approval(_sh(FA, tmp_path, cmd), cmd)

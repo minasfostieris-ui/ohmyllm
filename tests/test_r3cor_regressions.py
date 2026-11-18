@@ -11,6 +11,7 @@ Falsifiability: each test was observed FAILING on pristine f8d6952 (git archive
 import asyncio
 import io
 import json
+import os
 import random
 import string
 import subprocess
@@ -184,6 +185,7 @@ async def test_c3_offline_backend_first_message_keeps_repl_alive(svc, monkeypatc
 # --------------------------------------------------------------------- C4
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX busy-turn timing contract")
 def test_c4_busy_new_chat_409_no_swap(bridge):
     MockBackend.delay = 0.3
     try:
@@ -810,6 +812,7 @@ def test_c21_boolean_unknown_string_rejected():
 # --------------------------------------------------------------------- U4
 
 
+@pytest.mark.skipif(os.name != "posix", reason="LF newline contract (Windows CRLF)")
 def test_u4_skill_cast_args_additive(bridge, oml_env):
     skill_dir = oml_env["home"] / "skills" / "demo"
     skill_dir.mkdir(parents=True)

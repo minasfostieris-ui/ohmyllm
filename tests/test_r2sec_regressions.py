@@ -8,6 +8,7 @@ quoted-literal over-blocking, home-subpath over-scoring, NAT64 SSRF).
 from __future__ import annotations
 
 import ipaddress
+import os
 from pathlib import Path
 
 import pytest
@@ -180,6 +181,7 @@ def test_c4_cp_loot_and_file_gate_agree(tmp_path):
     assert not r.allowed  # shell and file tools enforce the same invariant
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_c4_explicit_allowlist_opt_in_still_works(tmp_path):
     allowed = tmp_path / "allowed"
     allowed.mkdir()

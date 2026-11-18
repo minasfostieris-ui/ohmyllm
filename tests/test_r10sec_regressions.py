@@ -43,6 +43,7 @@ X1 stays superseded by X1b (one-word ENOENT, non-destructive).
 """
 from __future__ import annotations
 
+import os
 import shlex
 from pathlib import Path
 
@@ -401,6 +402,7 @@ def test_f8_held_tilde_controls(cmd, tmp_path):
 
 
 @pytest.mark.parametrize("cmd", ["rm -rf *", "rm -rf ."])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_f8_root_cwd_controls_held(cmd, tmp_path):
     d = _sh(FA, tmp_path, cmd, cwd=Path("/"))  # T10/T11 held
     assert not d.allowed, f"{cmd!r} at cwd=/ allowed: {d.summary()}"
@@ -683,6 +685,7 @@ def test_s4_standing_benign_controls_held(cmd, tmp_path):
     _silent(_sh(FA, tmp_path, cmd), cmd)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_s4_system_sed_approval_contract_held(tmp_path):
     cmd = "sed -ni '1d' /etc/passwd"                    # Z3 held APPROVAL
     d = _sh(FA, tmp_path, cmd)

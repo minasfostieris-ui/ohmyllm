@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import httpx
@@ -115,6 +116,7 @@ def test_j1_dotdot_inside_shc_payload(tmp_path):
     ("rm -rf home/../etc", "/"),
     ("rm -rf ../etc", "/home"),
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_j1_dotdot_relative_operand_resolved_against_cwd(cmd, cwd, tmp_path):
     _deny(_sh(FA, tmp_path, cmd, cwd=Path(cwd)), cmd)
 

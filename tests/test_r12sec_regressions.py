@@ -62,6 +62,8 @@ Deviations (documented, doctrine-consistent):
 """
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -530,6 +532,8 @@ M1_LEGS = [
 
 
 @pytest.mark.parametrize("cmd", M1_LEGS)
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
+@pytest.mark.skipif(sys.platform == "darwin", reason="Linux path semantics (/home/../etc)")
 def test_m1_system_writes_never_silent(cmd, tmp_path):
     _not_silent(_sh(FA, tmp_path, cmd), cmd)
     _not_silent(_sh(SB, tmp_path, cmd), cmd)
@@ -558,6 +562,8 @@ S7_LEGS = [
 
 
 @pytest.mark.parametrize("cmd", S7_LEGS)
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
+@pytest.mark.skipif(sys.platform == "darwin", reason="Linux path semantics (/home/../etc)")
 def test_m1_s7_parity_held(cmd, tmp_path):
     _not_silent(_sh(FA, tmp_path, cmd), cmd)
 

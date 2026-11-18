@@ -8,6 +8,7 @@ S8 validator round-before-int, S9 cross-session busy 409.
 
 import asyncio
 import json
+import os
 import threading
 import time
 
@@ -185,6 +186,7 @@ def test_w4_set_model_switches_default_backend(bridge):
     assert bridge.post("/api/model", {"backend": "mock", "model": ""}).get("__status__") == 400
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX busy-turn timing contract")
 def test_s9_cross_session_message_while_busy_409(bridge):
     MockBackend.delay = 0.3
     try:

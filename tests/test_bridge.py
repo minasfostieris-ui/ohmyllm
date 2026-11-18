@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import http.client
 import json
+import os
 import pathlib
 import socket
 import stat
@@ -97,6 +98,8 @@ def _recv_http_response(conn: socket.socket, timeout: float) -> bytes:
 @pytest.fixture()
 def bridge(oml_env, svc, monkeypatch):
     """Boot the bridge against the isolated home; default backend is mock."""
+    if os.name != "posix":
+        pytest.skip("POSIX 0o600 port-file mode contract")
     holder: dict = {}
     stop = threading.Event()
     captured: dict = {}
@@ -265,7 +268,7 @@ def test_gui_uses_styled_modals_not_native_dialogs():
     design system and block automation. The app must use its own modals."""
     import re
     from pathlib import Path
-    js = (Path(__file__).parent.parent / "src/ohmyllm/gui_static/app.js").read_text()
+    js = (Path(__file__).parent.parent / "src/ohmyllm/gui_static/app.js").read_text(encoding="utf-8")
     offenders = re.findall(r"(?<!\w)(?:window\.)?(?<!Modal)(prompt|confirm)\s*\(", js)
     assert not offenders, f"native dialogs in app.js: {offenders}"
     assert "function promptModal" in js and "function confirmModal" in js

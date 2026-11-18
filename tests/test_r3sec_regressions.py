@@ -12,6 +12,7 @@ xargs_probe.py; report .validation/mark-r3sec-report.md @ f8d6952).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -95,6 +96,7 @@ def test_s1_benign_relative_operands_stay_allowed(tmp_path):
     "echo pwn | tee /etc/cron.d/oml-r3",
     "sudo sed -i s/a/b/ /etc/hosts",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_s2_system_shell_writes_never_silent_in_full_access(tmp_path, cmd):
     d = _sh(PermissionMode.FULL_ACCESS, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd  # approval, mirroring WRITE
@@ -102,12 +104,14 @@ def test_s2_system_shell_writes_never_silent_in_full_access(tmp_path, cmd):
     assert any("system location" in r for r in d.reasons), cmd
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_s2_sandboxed_piped_tee_blocked_like_redirect(tmp_path):
     s = PermissionMode.SANDBOXED
     assert not _sh(s, tmp_path, "echo pwn | tee /etc/cron.d/oml-r3").allowed
     assert not _sh(s, tmp_path, "echo pwn > /etc/cron.d/oml-r3").allowed
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_s2_write_file_invariant_holds(tmp_path):
     e = PolicyEngine(_cfg(PermissionMode.FULL_ACCESS), tmp_path)
     d = e.evaluate("write_file", e.prepare_args(
@@ -308,6 +312,7 @@ def test_s7_benign_xargs_still_allowed(tmp_path):
     "echo ok; sudo mv x /etc/oml-r3",
     "echo hi | cp /dev/stdin /etc/oml-r3",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_s2g_write_vectors_never_silent_in_full_access(tmp_path, cmd):
     d = _sh(PermissionMode.FULL_ACCESS, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd  # approval, mirroring WRITE
@@ -365,6 +370,7 @@ def test_s2g_system_source_copy_into_workspace_stays_silent(tmp_path):
     'cp x "/etc/my;dir"',
     'true && mv x "/etc/my dir/f"',
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_s2q_quoted_system_dest_never_silent(tmp_path, cmd):
     d = _sh(PermissionMode.FULL_ACCESS, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd
@@ -398,6 +404,7 @@ def test_s2q_unclosed_quote_write_fail_closed(tmp_path, cmd):
     assert d.risk >= 9, cmd
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_s2q_escaped_space_system_dest_gated(tmp_path):
     d = _sh(PermissionMode.FULL_ACCESS, tmp_path, "cp x /etc/my\\ dir/f")
     assert d.allowed and d.requires_approval

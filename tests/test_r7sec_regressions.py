@@ -16,6 +16,7 @@ verdicts intact — fail-closed must NOT over-block.
 from __future__ import annotations
 
 import itertools
+import os
 from pathlib import Path
 
 import pytest
@@ -280,6 +281,7 @@ def test_s6_escape_parity_odd_inside_string(tmp_path):
     "chown -R root /etc",
     "sudo truncate -s 0 /etc/passwd",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_s7_system_write_approval_fa(tmp_path, cmd):
     d = _sh(FA, tmp_path, cmd)
     _approval(d, cmd)
@@ -384,6 +386,7 @@ def test_r7_deny_floor_held(tmp_path, cmd):
     "cp -t /etc file.txt",
     "echo x > /etc/passwd",                        # Alex K1 redirect parity
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r7_held_approvals(tmp_path, cmd):
     _approval(_sh(FA, tmp_path, cmd), cmd)
 

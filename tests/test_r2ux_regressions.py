@@ -108,6 +108,8 @@ def spies(monkeypatch):
     isolation guard's C-level audit never observes a real signal. Nothing
     real is ever spawned or signalled.
     """
+    if os.name != "posix":
+        pytest.skip("POSIX process-group signals (os.killpg)")
     opened, calls, kills, killpgs = [], [], [], []
 
     def fake_open(url, *args, **kwargs):

@@ -7,9 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import types
 from pathlib import Path
+
+import pytest
 
 from ohmyllm import bridge
 from ohmyllm.agents import AgentRuntime
@@ -210,6 +213,7 @@ def test_h3_tone_create_approval_strict_block_and_delimiting(tmp_path):
 
 
 # ---------------------------------------------------------------- M1
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_m1_interpreter_git_hook_and_inline_write_gates(tmp_path):
     s = _cfg(PermissionMode.SANDBOXED)
     assert not _sh(s, tmp_path, 'python -c "import shutil; shutil.rmtree(chr(47))"').allowed

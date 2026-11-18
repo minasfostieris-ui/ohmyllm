@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 
 import pytest
@@ -92,6 +93,7 @@ def test_empty_query_and_limit_caps(store):
     assert len(store.search("deploy", 999)) <= 50
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file-mode bits (0o600)")
 def test_index_file_is_private(store, oml_env):
     _mk(store, "perm chat", "deploy private")
     found = list(oml_env["home"].rglob("search-index.sqlite3"))

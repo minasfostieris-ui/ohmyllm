@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import stat
 import time
+
+import pytest
 
 from ohmyllm import paths
 from ohmyllm.agents.runtime import AgentRuntime
@@ -36,6 +39,7 @@ def _shell_script():
     ]
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file-mode bits (0o600)")
 def test_lifecycle_schema_and_permissions(svc, tmp_path):
     ticks = iter([1000.0 + i for i in range(50)])
     sp = tmp_path / "state.json"

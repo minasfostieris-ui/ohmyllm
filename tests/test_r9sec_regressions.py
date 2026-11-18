@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import sys
 from pathlib import Path
 
 import httpx
@@ -196,6 +198,8 @@ def test_e3_tilde_traversal_variants_denied(cmd, tmp_path):
     _deny(_sh(FA, tmp_path, cmd), cmd)
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
+@pytest.mark.skipif(sys.platform == "darwin", reason="Linux path semantics (collapsed tilde)")
 def test_e3_collapsed_tilde_visible_to_floor_and_scorer():
     assert "rm -rf /etc" in command_variants("rm -rf ~root/../etc")
     assert "/etc" in normalize_command("rm -rf ~root/../etc")

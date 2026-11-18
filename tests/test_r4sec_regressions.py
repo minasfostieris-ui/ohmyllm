@@ -10,6 +10,7 @@ report .validation/ben-r4sec-report.md @ 87037b0).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -99,6 +100,7 @@ def test_r4_s1b_deny_floor_spares_benign_quoted_wrapper(tmp_path):
     "sudo --prompt 'x y' mv /tmp/a /etc/cron.d/pwn",
     "echo pwn | sudo -p 'x y' tee /etc/cron.d/pwn",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r4_s1c_quoted_wrapper_write_dest_gated(tmp_path, cmd):
     d = _sh(FA, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd
@@ -147,6 +149,7 @@ def test_r4_s3_xargs_benign_payload_not_overblocked(tmp_path):
     "echo pwn >> $'/etc/cron.d/pwn'",
     'echo pwn > "/etc/my dir/pwn"',
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r4_s2_obfuscated_redirect_system_gated(tmp_path, cmd):
     d = _sh(FA, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd
@@ -159,6 +162,7 @@ def test_r4_s2_obfuscated_redirect_system_gated(tmp_path, cmd):
     "echo pwn >& /etc/cron.d/pwn",
     "echo pwn >| /etc/cron.d/pwn",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r4_s2_obfuscated_redirect_sandbox_denied(tmp_path, cmd):
     d = _sh(SB, tmp_path, cmd)
     assert not d.allowed, cmd
@@ -188,12 +192,14 @@ def test_r4_s2_benign_redirects_stay_silent(tmp_path, cmd):
     "true\nsudo sed -i s/a/b/ /etc/hosts",
     "true\ndd if=/dev/zero of=/etc/oml-r4",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r4_s5_newline_write_system_gated(tmp_path, cmd):
     d = _sh(FA, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd
     assert d.risk >= 9, cmd
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r4_s5_newline_write_sandbox_denied(tmp_path):
     # echo leads (allowlisted); the newline-chained tee must still be seen
     # by the sandbox inline-write gate (risk>=9), not just the allowlist.

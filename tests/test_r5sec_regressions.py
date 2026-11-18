@@ -12,6 +12,7 @@ approval, never silent allow. Controls keep the R3/R4 verdicts intact.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -77,6 +78,7 @@ def test_r5_rmorder_catastrophic_any_position(tmp_path, cmd):
     assert d.risk >= 9, cmd
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r5_root_is_system_and_sensitive(tmp_path):
     e = PolicyEngine(_cfg(FA), tmp_path)
     assert e.is_system("/")
@@ -266,6 +268,7 @@ def test_r5_depth_benign_shallow_silent(tmp_path):
 
 # ---------------------------------------------------------------- cluster 5
 # A20-A21: process substitution must surface inner writers/verbs.
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r5_procsub_redirect_inner_writer_approval(tmp_path):
     d = _sh(FA, tmp_path, "echo x > >(tee /etc/passwd)")
     assert d.allowed and d.requires_approval
@@ -283,6 +286,7 @@ def test_r5_procsub_inner_verb_deny_floor(tmp_path):
     assert not d.allowed
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r5_procsub_input_redirect_inner_writer(tmp_path):
     d = _sh(FA, tmp_path, "cat < <(tee /etc/passwd)")
     assert d.allowed and d.requires_approval
@@ -312,12 +316,14 @@ def test_r5_procsub_scorer_inner_destruction():
     "mv -t/etc x",
     "install --target-directory=/etc x",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r5_copyt_attached_target_approval(tmp_path, cmd):
     d = _sh(FA, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd
     assert d.risk >= 9, cmd
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r5_copyt_separated_control_unchanged(tmp_path):
     # A53 control: separated -t already worked.
     d = _sh(FA, tmp_path, "mv -t /etc x")
@@ -345,6 +351,7 @@ def test_r5_copyt_sensitive_target_denied(tmp_path):
     "sed -i -e 's/x/y/' /etc/passwd",
     "sed -i 's/x/y/' /etc/hosts",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r5_sedi_system_edit_approval(tmp_path, cmd):
     d = _sh(FA, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd
@@ -378,6 +385,7 @@ def test_r5_sedi_sensitive_target_denied(tmp_path):
     "perl -pi -e 's/x/y/' /etc/passwd",
     "sponge /etc/hosts",
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r5_writers_system_write_approval(tmp_path, cmd):
     d = _sh(FA, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd
@@ -452,12 +460,14 @@ def test_r5_controls_fp_guards_silent(tmp_path, cmd):
     "mv x /etc/",
     'cp x "/etc/my dir"',
 ])
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r5_controls_system_redirect_approval(tmp_path, cmd):
     d = _sh(FA, tmp_path, cmd)
     assert d.allowed and d.requires_approval, cmd
     assert d.risk >= 9, cmd
 
 
+@pytest.mark.skipif(os.name != "posix", reason="Unix binaries / POSIX shell semantics")
 def test_r5_controls_other_modes_gate(tmp_path):
     for mode in (DA, SB):
         d = _sh(mode, tmp_path, "rm -rf /")
