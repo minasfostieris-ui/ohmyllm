@@ -4,44 +4,61 @@ All notable changes to OhMyLLM are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/). Newest first.
 
-## [Unreleased] — R13 quality loop
+## [0.1.2] - 2026-11-18
 
-### Security
+Quality + security release consolidating the R6–R13 verification loops since 0.1.1:
+bash-ground-truth oracle + generative mega-corpus verification, shared-grammar shell
+normalization closing all 15 synthesized-payload sites plus the 9th substitution-stdout
+exec site, MED DESTRUCTIVE_UNRESOLVABLE GATED floor codification, config persistence
+rollback (`Services._persist_with_rollback`), and GUI/TUI hardening. The GUI overhaul
+shipped in 0.1.1 stays in the 0.1.1 section below.
+
+Ship verification (full pre-ship battery, 2026-11-18): guarded census **3033 collected /
+3028 passed / 0 failed / 5 deselected**; mega-corpus sha-trust **VALID 41/41** —
+**302400 evaluations**, exec-silent **0**, unexplained **0**, determinism **3x**;
+GUI headless **530/530** at 320/420/768/1280/1720/2560 px; ruff **0** findings, mypy
+**83 files, 0 errors**; cargo fmt/check/test offline green; L3 deep security review
+**0 findings** (R13 handoff 9defd63). R13 final gate **PASS 8/8**
+(`.validation/chris-r13gate-report.md`). Per-round details follow.
+
+### R13 quality loop
+
+#### Security
 - **9th exec-payload site + MED unresolvable-source floor + LOW over-block/fail-closed repairs** (`safety/normalize.py`, feeding all three lanes via `_exec_payloads`): bare command-position substitution-stdout (backtick / `$()` / `${ …; }` RAW-segment head match with `_static_output` decode) now enumerates through decision, exposure and scorer — G26 (`\`echo -e '\0145cho PWNED'\``-class) and echo-e/printf-%b twins deny risk 10 in ALL modes while harmless decoded stdout stays full-access silent-ALLOW. MED DESTRUCTIVE_UNRESOLVABLE codified GATED floor: single-`cat` no-flags read-source substitution feeding exec (`$(cat FILE)` / `$(<FILE)`, L02/L20) raises sandboxed→deny r9 and dangerous→approval r9 via `unresolved_exec_read_source`, with the full-access silent-ALLOW r4 exemption preserved (scorer floor FORBIDDEN — would flip GT-proven catastrophic controls); non-exec consumers never fire. LOWs: IFS-no-match stays ONE `\ue002`-masked word (no over-block, GT rc=127), `@U` case-sensitive executable basename (`RM` ENOENT; lowercase values still deny), `@Q` multi-word stays ONE quoted word (single-word X1b keeps deny), bare `cd`/`cd --` land HOME tracked (`~` relative-inert), `$$` complete-PID parameter desync fails closed on imbalanced quotes (`$$'it\'s fine'` GT rc=2 parity) while valid `eval $$'rm -rf /'` stays silent (GT rc=127). Pinned by 123 new guarded regressions (`tests/test_r13sec_regressions.py`); boundaries codified in `.validation/felix-r13sec/invariants.md` (security loop CLOSED by user directive).
 
-### Fixed
+#### Fixed
 - **`_tone_create` persistence atomicity** (`core.py`, `agents/runtime.py`, `tools/registry.py`, `tools/spec.py`, services wiring): tone creation now runs under `config_mutex` via the shared `Services._persist_with_rollback` seam (validation-first preserved; snapshot after read-check 400s; save failure restores prior config, clears backend cache, re-raises 500 — live state can never diverge from disk); unwired contexts fall back to a saver restoring ONLY `custom_tones`+`tone` (runtime exclude flags never restored). Pinned by 8 new guarded regressions (`tests/test_r13cor_regressions.py`).
 - **Mega-corpus generator `@L` mislabel** (`.validation/corpus/mega_generator.py`, manifest re-pin 5592b875): `@L` deny r10 is spec-CORRECT — generator expectation fixed; harness KG7 control tuple flipped to `catastrophic: True` (task 157 §9), retiring the R12 gate-local tolerance (raw selfcheck 8/8).
 
-### Verified
+#### Verified
 - R13 FINAL gate (HEAD 9439cd1 + uncommitted Felix 153 / Taylor 159 / Owen 160-161 waves): guarded census ONCE **3028 passed / 0 failed / 5 deselected** (3033 collected, 655 s, `--step-timeout 1500`); ledger ALL_ZERO (ruff/compileall/mypy 83 files/pytest). e2e OK. `/api/status` p95 **0.897 ms** IN band 0.86–0.94 (n=300, p50 0.715, load 3.75→3.69 on 16 CPUs — R13's earlier 1.12–1.20 ms out-of-band reading was the user's game at 406% CPU; no environmental excuse needed now).
 - MEGA standing leg via SHA-TRUST (molab post-fix run, NO local mega): **41/41 checks VALID** — 8 src + 9 corpus/harness/manifest file shas match the worktree, diff-scope proof extends coverage to 83/83 src files, triage copy sha f86ce941 matches the remote pin; tallies **302400 evaluations / 302264 OK / 136 gaps** (48 known_artifact + 88 codified FA silent-ALLOW L02/L20 controls), exec-silent 0, overblock 0, UNEXPLAINED 0, open_boundary 0, determinism 3× byte-identical, GT primitives 115/115 + samples 296/296, remote selfcheck 8/8 GREEN.
 - REFUTED independently re-executed post-fix: Chris 168-check refute ledger (R12 carried + R13 shapes) **168/168 GREEN**; Jude dollar probes 6/6 deny r10 all modes, hand probes P3 401/401/200, dshapes D-C15 carried flip; Felix repro_r13 110 rows + tmp-normalized parity 120/120 identical vs fixer log; Taylor probes 3/3 NOT-REPRODUCED + 5/5 CONTROL-GREEN + 0 PROBE-ERROR; Terry exact verifiers fail=0; bash-GT oracle 118 legs sha-deterministic vs R12.
 - Batteries: 18 selected / 2 trust-skips (logged); GUI headless force-fresh per diff scope (Taylor core/services): **530/530 checks PASSED** (script grown since the 178-check R3 baseline); Jason A–I 0 CONFIRMED (report sha unchanged), Ethan 56 REFUTED / SSRF 27 HELD+5 INFO / bridge 26 HELD / sem green, Alex 28/28, Emily 71/72 mandated C15 flip + K6/P3 carried framing artifacts, Noah 3 NR+8 CG, Sam 0/36/0/6, Cindy 5 NR+7 CG; protected pins fresh: sec-official 1167 + sec-ext 287 + emily-extended 1454 + r9 114 + r6r7-cor 20 + r4r5-cor 25 (newly diff-selected) + r10 240 + r12 240 + r13 131 (= 725 r9–r13 pins); corpus-r5 1881/1863/18 same known artifacts, entries byte-identical, determinism 3/3, pin-sanity 8/8; cargo/TUI skipped (zero diff).
 - Legitimacy: tracked-test diff 0 (only the two new r13 pin files, 131 collected); no pin weakening; harmless twins stay FA-silent (no new over-blocks); no fail-closed regressions on benign shapes; version stays 0.1.1 (no bump); 5 canonical exclusions unchanged.
 
-## [Unreleased] — R12 quality loop
+### R12 quality loop
 
-### Security
+#### Security
 - **R11 ledger closure F1–F8 + T-NEW1 + M1 + OB1–OB4** (`safety/normalize.py`, `safety/policy.py`): ONE bash-faithful escape decoder (`_decode_escapes`) over four grammars (ansi / printf-%b / printf-format / echo) — short `\u`/`\U` widths, per-grammar octal rules (`\0162`→r in b/echo, 0x0E+'2' in format), `\c` suppression; printf scanner format-reuse-until-exhausted (budget 64) + width/precision + `%s` RAW / `%b` one-decode; ONE 8-site exec-payload enumerator (`_exec_payloads`) wired through ALL THREE lanes (decision `_scan_unresolved` handled-set, exposure `command_variants` payload_seen, scorer `normalize_command` append) closing the unresolvable-operand decision-lane unwiring (coproc/function/procsub/`-c`); stdin-shell set += `source`/`.` + `/dev/stdin`//dev/fd/0; cd assignment-prefix/dash-flag/`--` tracking; forwarder tier-2 algebra (tr/grep/sed/awk/cat). M1: `touch`/`mkdir` join write-verbs, `mv` gates sources AND destination, S-2 system-write risk floor >=9 computed once across lanes. OB1–OB4 control repairs: executable-gated `sh -c` ANSI-C quote-balance (eval NOT over-blocked), IFS None-vs-empty + no-split sentinel, echo non-zero-octal literal, escaped-quote sentinels + pre-decode before splice fixpoint. Pinned by 230 new guarded regressions (`tests/test_r12sec_regressions.py`, incl. 6 KG7 pins codifying the intended scorer-unification delta: `printf "rm -rf /\057" | sh` keeps deny r10 while the scorer now sees the GT-proven catastrophic payload; invariants §9).
 
-### Fixed
+#### Fixed
 - **Config persistence rollback** (`core.py`, `bridge.py`): shared `Services._persist_with_rollback` — save failure restores the prior config in place, clears the backend cache and re-raises (HTTP 500), so live state can never diverge from disk (Miles C5); mode/providers key/use/forget/custom routes unified; snapshot taken under the same config-mutex acquisition after read-check 400s; runtime exclude flags never restored; retire fail-closed pre-save. Pinned by 10 new guarded regressions (`tests/test_r12cor_regressions.py`).
 
-### Verified
+#### Verified
 - R12 combined gate (HEAD 6d58614 + uncommitted R12 waves): guarded census ONCE **2897 passed / 0 failed / 5 deselected** (2902 collected, 644 s, `--step-timeout 1500`). ruff clean + mypy 83 files clean (census ruff step caught 2 cosmetic IDE-recovery artifacts in the new r12cor pin file; owner micro-fix post-census, standalone re-verify 0 — census NOT rerun). e2e OK; `/api/status` p95 **0.87 ms** in band 0.86–0.94 (Noah N-CG7 fresh bridge; Chris in-process 0.780 ms, guard <2.0). GUI/cargo/TUI conditionally skipped (zero diff).
 - Calibrated R12 ledger ALL REFUTED post-fix: 9 HIGH (Vera F1–F8 + Terry T-NEW1 echo-octal) + M1 MED + OB1–OB4 + Miles C5 — Chris sha-pinned-harness refute 61/61 (incl. OB benigns allowed all modes, eval depth-5 FA silent, C5 fail-path 500/live==disk/locks-free), Terry exact verifiers 123+14 assertions OK, Felix repro 86 rows + tnew1/ob1 21 rows, bash-GT oracle 118 legs sha-deterministic.
 - Corpus: 1881 evaluations / 1863 OK / 18 residual gaps VERIFIED as GT-proven pre-existing construction artifacts (printf_reuse 9 missing-payload-quotes, unres_coproc dd-core 9 relative-operand STUBEXEC), open_boundary 0, entry commands byte-identical pre/post (append-only, 1611 common), determinism 3/3, pin-sanity 8/8.
 - Batteries: 16 selected / 3 trust-skips (logged); Jason A–I 0 CONFIRMED (report sha unchanged), Ethan 56 REFUTED / SSRF 27 HELD+5 INFO / bridge 26 HELD / sem green, Alex 28/28, Emily 71/72 with the MANDATED C15 flip (mv-source now APPROVAL risk=9; probe sha unchanged, flip codified in new M1 pins), Noah 3 NR+8 CG, Sam 0/36/0/6, Cindy 5 NR+7 CG; protected pins fresh: sec-official 1167 + sec-ext 287 + r9 114 + r6r7 20 + r12 240.
 - Legitimacy: tracked-test diff 0; lane disjointness (Felix safety-only, Taylor core/bridge-only); version 0.1.1 (no bump); 5 canonical exclusions unchanged. Additive PRE-EXISTING base findings surfaced for R13 (not R12 regressions): bare command-position backtick substitution (G26) and unknown-content `cat`-source procsub/`-c` laundering (L02/L20) execute in bash GT while the product stays silent — beyond the calibrated R12 ledger and the documented 15-site spec; GT-invalid Vera nest framings (B03/BB04/BB07/BB09, rc=2) attributed to probe construction.
 
-## [Unreleased] — R10 quality loop
+### R10 quality loop
 
-### Security
+#### Security
 - **F1–F12 + M1–M3 structural grammar closure** (`safety/normalize.py`, `safety/risk.py`, `safety/policy.py`): ONE shell-word parser and ONE escape decoder (`_decode_word` / `_decode_escape_body`) with proven quote/escape closure at depths 1–6; all 15 synthesized-payload sites (procsub, coproc, function bodies, `$()`/backtick interiors, read-substitution, write-then-exec, pipe/herestring stdin, eval/`-c`, assignment sources incl. `printf -v`/`read`/nameref, parameter transforms `@Q/@E/@P`, xargs, at/batch, transparent/priv wrappers, cd/CDPATH effective-cwd) wired through ALL THREE lanes (decision, exposure, scorer). The pipe producer walk is FULL-linear (hop count alone never fails closed); the depth-exhaustion backstop is destructive-only AND catastrophe-only fail-closed. Decision ceilings preserved: pkexec/su/runuser/systemd-run/chroot/nsenter (M1), script pty (M2), at/batch (M3) are never silent-ALLOW with a destructive payload. Pinned by 221 new guarded regressions (`tests/test_r10sec_regressions.py`).
 - The generative corpus battery's 72 open-boundary gaps (printf `%b` escape synthesis 27, function-body hiding 27, 7-hop literal pipes 18) are ALL closed post-fix: 1251/1251 evaluations OK across 3 fixed seeds × 139 cases × 3 modes, determinism 3/3, pin-sanity 8/8.
 
-### Fixed
+#### Fixed
 - **N-R10-1 yolo arm-before-validate**: `/api/config/agent` validates BEFORE arming yolo (idle and busy paths); a 400-rejected save can no longer leave yolo live without apply/retire/audit.
 - **N-R10-2 unlocked mutators**: `set_mode`/providers echo paths merge→validate→apply under `config_mutex` (M4b/M5b/M6/M11 fail-open reverts closed).
 - **N-R10-3 cloud id-fallback positive collision**: `last_key = min(min(pending, default=0), 0) - 1` clamps at 0 first, so a fallback slot can never collide with a later real index (tool loss + argument concatenation closed; R9 E7 negative-namespace control intact).
@@ -49,47 +66,47 @@ All notable changes to OhMyLLM are documented here. Format follows
 - **N-R10-5 parser/validator shape crashes**: non-dict `function` values take the malformed-parse retry path (no raw AttributeError); integer coercion catches OverflowError (inf/`1e999` → validation retry, not turn abort).
 - **N-R10-6 D8 tombstone race**: delete-vs-finally-save re-checks the tombstone under the lock (no session resurrection); M8 exception path hardened. Pinned by 19 new guarded regressions (`tests/test_r10cor_regressions.py`).
 
-### Added (verification infra)
+#### Added (verification infra)
 - `scripts/verify_isolated.py --step-timeout SECONDS`: finite per-step budget (default 1500 s) — the guarded census completes ONCE in-process (no identical rerun after a hardcoded-cap timeout).
 - `.validation/select_batteries.py` + `coverage-manifest.json`: diff-scoped battery selection (protected safety surfaces always selected; every skip logged to `battery-skips.log` with diff evidence; untouched batteries trust their last-green sha; FULL battery at the pre-ship checkpoint).
 - `.validation/agent_lock.py` + `orchestration-registry.json`: single-writer stamp + O_EXCL `.writer.lock`, ps-proof stale clearing, survivor-counted dispatch cap (leader+3).
 - `.validation/harness/harness.py` (sha256-pinned in the manifest, `--selfcheck` gate): ONE reviewed probe boot path — temp HOME with OMLLM_HOME as a child, PYTHONPATH export + import-origin asserts, mock pre-seed asserted, ephemeral loopback bridge, explicit policy-vs-scorer control tuples, printf-only stub exec, fake root.
 - `.validation/corpus/` (spec/generator/battery): generative command-synthesis battery with expectations from the DOCUMENTED invariant spec (never current output), fixed seeds [139001, 139002, 139003], additive open-boundary reporting.
 
-### Verified
+#### Verified
 - R10 combined gate (HEAD 47a8457 + uncommitted R10 waves): guarded census ONCE **2657 passed / 0 failed / 5 deselected** (2662 collected, 633 s, `--step-timeout 1500`). ruff clean; mypy 83 files clean; e2e OK; `/api/status` p95 **0.878 ms** (n=200, baseline 0.86–0.94 ms). GUI/cargo/TUI legs conditionally skipped (zero gui/tui/rust diff).
 - ALL R10 findings REFUTED post-fix: Felix repro 148/148 (pre-fix 77 FAIL); Ruby supp mismatches reduced to the two dismissed artifacts (AL1 same-line alias, SW3 sed -ni workspace contract), stub exec-proofs carried (shell semantics unchanged); Noel M1/M2/M6/M8/M4b/M5b/M11 NOT-REPRODUCED, surface S1/S2/S4 crashes closed, controls green; Terry's three exact verifiers VERIFY_OK (19/19 REAL pre-fix evidence chain intact); independent harness-booted backend refutation 7/7.
 - Batteries: Jason R5 0 CONFIRMED / 101 HELD / 31 REFUTED (report sha unchanged); Ethan 56 REFUTED / SSRF 27 HELD / bridge 26 HELD + sem green; Alex 28/28 REFUTED; Sam 6 NR + 36 CG; Cindy 5 NR + 7 CG; Noah 3 NR + 8 CG; Emily backends 12 / bridge 21 (K6/P3 = carried probe-framing artifacts, P3b/c/d 401/200/401); r9-pins 114 + r6r7-cor 20 green. Sha-trusted fresh critic greens: Ruby sec-official 1167 + sec-ext 287 + Emily 72, Noel selective 309, Felix 1771, Taylor 317.
 - Legitimacy: tracked-test diff = 0 (only the two new r10 test files added, 240 pins collected); lane disjointness held (Felix safety-only, Taylor core/bridge/backends/agents-only, Owen scripts+.validation-only); version stays 0.1.1; the 5 standing subprocess exclusions unchanged.
 
-## [Unreleased] — R9 quality loop
+### R9 quality loop
 
-### Security
+#### Security
 - **E1–E5 + B11 structural rescan** (`safety/normalize.py`): ONE recursive entry point (`_rescan_payload`) now routes EVERY synthesized-payload site — herestring/heredoc stdin, passthrough pipe chains (cat/tee/sed/awk/head/tail, ≤6 hops), echo/printf literal output, octal/hex escape-decoded strings, `-c`/`eval`/env stdin inheritance, and the xargs append lane — through the full normalize→expand→unresolved-scan pipeline, bounded at depth 6 and fail-closed on depth exhaustion for DESTRUCTIVE shapes only. Multi-hop pipe laundering (`echo "rm -rf /" | cat | tee | sh`), brace ranges via synthesized stdin (`sh <<< "rm -rf /{a..z}"`), `-c` stdin inheritance (`echo "rm -rf /" | sh -c sh`), escape-decoded operands (`printf "rm -rf /\057" | sh`) and xargs append braces (`echo "/{a..z}" | xargs rm -rf`) are all gated; non-destructive pipelines are NEVER gated and full-access silent-ALLOW is preserved. The `curl | sh` invariant extends across intermediate passthrough pipes.
 - **E3 tilde dotdot parity**: dotdot collapse now covers `~`-prefixed operands (`rm -rf ~root/../etc` gates as `/etc`); non-destructive `~` traversal stays silent.
 - **E6 lmstudio early stream-end terminal** (D7 parity): a stream ending WITHOUT finish_reason or `[DONE]` flushes the splitter and delivers ONE done chunk (partial tool args ride the pre-existing `_raw` dict contract) instead of silently re-requesting and duplicating content. **E7 cloud negative-namespace fallback**: id-fallback tool-call keys for index-less/negative-index deltas no longer clobber later index=0 continuations. `safety/policy.py` and `safety/risk.py` unchanged.
 - Pinned by 96 new guarded regressions (`tests/test_r9sec_regressions.py`); Emily's 72-leg decision-only battery flips 24 pre-fix FAILs to **0 post-fix**, backends 17 legs and bridge live 24/24 effective (K6/P3 residuals = probe-framing artifacts, independently attributed).
 
-### Fixed
+#### Fixed
 - **N-R9-1 under-lock sensitive re-gate**: the `/api/config/agent` echo re-gates ALL sensitive keys against the live config under the lock — a stale echo can no longer revert a confirmed sensitive field (tone, op-mode, memory) without confirm.
 - **N-R9-2a/2b config-mutex serialization**: a dedicated `config_mutex` RLock (NEVER `turn_lock`; lock order config_mutex → turn_lock, re-entrant so the r6cor-C3 status→reload path cannot self-deadlock) serializes the FULL merge→validate→apply at all 5 bridge echo sites, with `core.apply_config`/reload entry serialization; apply stays OUTSIDE `turn_lock`. Concurrent disjoint config echoes no longer lose updates, stale generic echoes no longer revert confirmed fields or spurious-retire runtimes.
 - Pinned by 18 new guarded regressions (`tests/test_r9cor_regressions.py`); Noah's N-R9-1/2a/2b gated-race repros are NOT-REPRODUCED post-fix with 8/8 controls green (`/api/status` p95 0.86 ms vs 1.1 ms baseline).
 
-### Verified
+#### Verified
 - R9 combined gate (fresh runs at 5612ecf + uncommitted R9 waves): guarded suite **2417 passed / 0 failed / 5 deselected** (2422 collected; the same 5 standing subprocess exclusions). GUI headless check **530/530** at 320/420/768/1280/1720/2560 px, Chromium sandbox retained. mypy: 83 files clean. ruff clean. cargo fmt/check/test offline green (7/7). TUI smoke green at 80x24, 100x30, 140x46. e2e check OK.
 - Batteries: Jason R5 **0 CONFIRMED / 101 HELD / 31 REFUTED** (report sha256 unchanged); Ethan **56/56 REFUTED**; SSRF **27 HELD / 5 INFO**; bridge auth **26 HELD**; Alex S1–S7 **28/28 REFUTED** + controls; Sam R7 **6 NR + 36 CG**; Cindy R6 **5 NR + 7 CG**; Mark R3 + Ben R4 green. Security stack official **1167** + extended **287** = **1430/0**; Emily extended 15-file selection **1454/0**.
 - Gate structural spots: nested synthesis n=3/5/7/8 destructive DENY (depth-6 exhaustion fail-closed), non-destructive n=3/8 silent; config-mutex concurrent echoes both survive with retire-count stable and apply never under turn_lock; marker never persisted; F1/Y1/G1 lineage intact. Legitimacy: tracked test diff = 0 (new files only the two r9 test files); lane discipline held (security wave in normalize/lmstudio/cloud only; correctness wave in bridge/core only).
 - Terry R9 independent authenticity audit: **5/5 REAL**, HIGH upheld (audit streak 55/55; `.validation/terry-r9audit-report.md`).
 
-## [Unreleased] — R8 quality loop
+### R8 quality loop
 
-### Security
+#### Security
 - **J1–J3 normalization hardening** (`safety/normalize.py` + `safety/policy.py`): dotdot mid-path operands of filesystem-destructive verbs are now lexically collapsed (`_collapse_destructive_seg` — absolute operands always, relative operands against the supplied cwd), so `rm -rf /home/../etc` is gated as `/etc` with kernel-resolution parity; literal pipe-to-shell (`echo "rm -rf /" | sh`) and herestring (`sh <<< "rm -rf /"`) inputs synthesize the upstream literal output as the executed command (`_STDIN_SHELLS` / `_shell_reads_stdin`, quote-aware raw pass included). The `curl | sh` invariant is preserved (non-literal LHS keeps the existing pipe-to-shell rule), and non-destructive verbs are never collapsed or fail-closed.
 - **J4 command-position-aware brace fail-closed**: unresolvable brace ranges fire only when the segment's COMMAND verb is destructive (rm/shred/dd, find -delete) — `git rm --cached`, `docker rm`, and argument-position braces (`echo rm -rf /{a..z}`) no longer over-block; the R7 S1 destructive fail-closed family is preserved.
 - **J5/J6 backend robustness**: cloud stream keying is index-first when an index is present (lmstudio parity, id-only continuations unchanged); lmstudio/ollama gain payload shape guards (stream chunks, choices/delta/tool-call dicts, list-models rows) — bad shapes degrade to `BackendError` or a skipped chunk, never a raw `AttributeError`. `safety/risk.py` unchanged.
 - Pinned by 108 new guarded regressions (`tests/test_r8sec_regressions.py`); the 67 pre-fix repro legs (decision-only + printf-stub exec + MockTransport, zero network) all flip post-fix (POSTCHECK-FAILURES 0).
 
-### Fixed
+#### Fixed
 - **G2 confirm-gate freshness**: the `/api/config/agent` yolo gate now compares against the live SETTLED next-prompt baseline (`_settled_yolo_baseline` — an armed busy turn's one-prompt grant projects to False) plus an under-lock freshness re-check before `request_yolo` — a no-confirm yolo echo during an armed turn can no longer extend or resurrect a consumed grant. Legitimate confirmed arms (idle + busy defer) and idle True==True echoes are unchanged.
 - **G3 atomic carry snapshot**: `core.apply_config` reads the live runtime flags and old security snapshot ONCE under `Services._runtime_lock` (the bridge `turn_lock` is now an `RLock`, so the r6cor-C3 status→reload path on a lock-holding thread cannot self-deadlock); old-snapshot runtime entries are pinned to that same read, and the carry field-copy updates exclude-bearing sections in place, never writing runtime flags. Reload is unified through the marked carry — a settle landing mid-apply can no longer resurrect a consumed yolo or spurious-retire the runtime.
 - **G1 TUI settings save**: the save tail (`_commit_settings`) marks the rebuild `_omllm_carry_runtime` (a pure echo — the form has no yolo field) and rides the unified atomic carry: an armed yolo survives a settings save, with no spurious security retire and no mid-turn cancel. The marker is never persisted.
@@ -97,19 +114,19 @@ All notable changes to OhMyLLM are documented here. Format follows
 - **J7 GUI poison-session brick**: `md()` bounds-guards forged NUL code-block placeholders (out-of-range/zero-block render as escaped text, never throw); session replay wraps each message in try/catch with a renderer-safe note; boot catches replay failures; idempotent `installPolling()` runs on both the success and failure paths — a poisoned persisted session boots with polling alive instead of bricking the GUI until the session is deleted.
 - G1–G4 pinned by 16 new guarded regressions (`tests/test_r8cor_regressions.py`); J7 by 12 (`tests/test_r8ux_regressions.py`) and 54 new live checker checks (9 per width: md-bounds, poison-boot, replay-catch).
 
-### Verified
+#### Verified
 - R8 combined gate (fresh runs at e263d12 + uncommitted R8 waves): integration gate **2303 passed / 0 failed / 5 deselected** (2308 collected; the same 5 standing subprocess exclusions). GUI headless check **530/530** at 320/420/768/1280/1720/2560 px, Chromium sandbox retained. mypy: 83 files clean. ruff clean. cargo fmt/check/test offline green (7/7). TUI smoke green at 80x24, 100x30, 140x46. e2e check OK.
 - Batteries: Jason R5 re-run **0 CONFIRMED / 101 HELD / 31 REFUTED** (report sha256 unchanged); Ethan E1–E8 **56/56 REFUTED**; SSRF **27 HELD / 5 INFO**; bridge auth **26 HELD** (B24 = known safe 403-no-ACAO artifact); Alex S1–S7 **28/28 REFUTED** + 6/6 controls; Sam R7 **6 NOT-REPRODUCED + 36 CONTROL-GREEN**; Cindy R6 **5 NOT-REPRODUCED + 7 CONTROL-GREEN**; Mark R3 + Ben R4 green.
 - R8 post-fix spot-verification: J1 dotdot / J2 pipe-to-shell / J3 herestring DENY (root-collapse catastrophic risk 10; system-location writes keep the S7 approval-at-risk≥9 contract); J4 + chmod-mode / relative find -delete / non-destructive stdin controls ALLOWED; family posture intact (bash-parity H1 baseline, deny floor, S7 sed -ni approval-not-deny, curl|sh invariant, S1 destructive brace). Security stack official **1167** + extended **287** = **1430/0**. Legitimacy: tracked test diff = 0 (new files only the three r8 test files); marker never persisted; r6cor-C3 deadlock-law pin green; intentional yolo deltas still retire runtimes (no Y1 regression).
 - Terry R8 independent authenticity audit: **5/5 HIGH REAL** (J1/J2/J3/G2/G3; audit streak 50/50), reproduced on a pristine detached worktree at e263d12 (`.validation/terry-r8audit-report.md`).
 
-## [Unreleased] — R7 quality loop
+### R7 quality loop
 
-### Security
+#### Security
 - **S1–S7 expansion-grammar family fix (shared grammars, third normalization round)** in `safety/normalize.py`: bounded brace expansion (innermost-first comma lists, `{a..b}` ranges, >64 words / depth>4 → unresolvable), first-component absolute root globs (`rm -rf /etc/*` gated; `/tmp/*` and relative globs stay ungated), assigned-`IFS` word-splitting inside substituted values, completed root dirs (bin/sbin/lib64/lib/root/sys/proc/dev/run — `/dev/null`, `/proc/self`, `/home/user` stay non-root), `~root`/`$HOME` root-equivalence plus unknown `~user` whole-home fail-closed, E4 extractor extension (`export`/`declare`/`typeset`/`local`/`readonly` assignment prefixes + backslash-parity quote-close), and write-verb alignment (`truncate`/`chmod`/`chown` now gate system locations: approval at risk≥9 in full_access, deny in sandboxed — redirect parity; `sed -ni … /etc/passwd` stays approval, not deny). Destructive verbs with unresolvable operands (`$`/backtick, root glob, `~user` whole-home, unresolvable brace) fail closed via `_unresolvable_operand`; non-destructive verbs never fail-closed. Pinned by 338 new guarded regressions (`tests/test_r7sec_regressions.py`); pre-fix controls 261 FAIL / 76 PASS at pristine c8ed95d → 338/338 post-fix.
 - **Gate-fix addendum (task #119) — unclosed-tail `/bin/sh` parity**: an odd backslash run + non-special lead closes the quote in POSIX sh, exposing hidden tails (`echo "a\"; X="rm -rf /"; $X` executes under the product's `/bin/sh`). POSIX and bash interpretations are now ORed for `unresolved_destructive_operands`, so both H1 sibling shapes fail closed (allowed=False, risk 10) while the bash-parity default path stays byte-identical and non-destructive commands never fail-closed. 49 new pins (`tests/test_r7gatefix_regressions.py`, incl. 8 non-destructive controls).
 
-### Fixed
+#### Fixed
 - **Y1/Y2/Y3/Y5 unified yolo carry**: all five config-mutation endpoints (`/api/model`, `/api/backend`, `/api/config`, `/api/agent`, `/api/memory`) now run busy-check + live re-read + carry + validate + apply under one `turn_lock` — a stale config echo can no longer resurrect a disarmed yolo or drop a fresh arm.
 - **Gate-fix addendum (task #118) — provenance-aware opt-in carry**: `apply_config` defaults `carry_runtime=False`, so an intentional yolo delta is visible to the security snapshot and retires runtimes; runtime carry happens only via the `_omllm_carry_runtime` cfg marker set by the bridge's `_apply_runtime_echo` at all 5 echo sites. 9 new pins (`tests/test_r7gate_regressions.py`) pin retirement AND Y1 carry together (intentional→retire, stale echo→no-resurrect/no-spurious-retire, ordering chain, marker mechanism).
 - **T5/T12 usage-on-line-64**: `lmstudio` and `cloud` parse the usage/token line before applying the bounded 64-line post-finish cap — usage arriving exactly at the cap boundary is no longer dropped.
@@ -117,18 +134,18 @@ All notable changes to OhMyLLM are documented here. Format follows
 - **R7-01/02/03 GUI**: mic-live Listening/Transcribing status is no longer clobbered by `pollState`/`refreshStatus` repaints (talking/transcribing guards; “Transcribing…” stays honest until the stop POST settles); Ctrl+E keyup is modal-gated like keydown and voice repaints are approval-aware (“Waiting for approval” survives talkStop); help lists the Ctrl+Q quit row + confirm. Pinned by 12 new guarded regressions (`tests/test_r7ux_regressions.py`) and 72 new live checker checks (12 per width).
 - Y1–Y5 + T5/T12 + R7-04 pinned by 10 new guarded regressions (`tests/test_r7cor_regressions.py`).
 
-### Verified
+#### Verified
 - R7 combined gate run 2 (fresh runs at c8ed95d + uncommitted R7 waves and gate fixes): integration gate **2167 passed / 0 failed / 5 deselected** (2172 collected; the same 5 standing subprocess exclusions). GUI headless check **476/476** at 320/420/768/1280/1720/2560 px, Chromium sandbox retained. mypy: 83 files clean. ruff clean. cargo fmt/check/test offline green (7/7). TUI smoke green at 80x24, 100x30, 140x46. e2e check OK.
 - Batteries: Jason R5 re-run **0 CONFIRMED / 101 HELD / 31 REFUTED** (his report sha256 unchanged); Ethan E1–E8 repros **56/56 REFUTED**; SSRF **27 HELD / 5 INFO**; bridge auth **26 HELD** (B24 = known safe 403-no-ACAO probe artifact); Alex S1–S7 **28/28 REFUTED** incl. H1 both shapes (6/6 controls held, deny floor intact); Sam R7 **6 NOT-REPRODUCED + 36 CONTROL-GREEN**; Cindy R6 **5 NOT-REPRODUCED + 7 CONTROL-GREEN** (C4 via Taylor's documented derivative — her original C4 probe's PROBE-ERROR on the fixed tree is an expected artifact).
 - Family-fix legitimacy: Mark R3 + Ben R4 probes green; R1–R7 security regression stack + gate-fix pins **1059/1059**; no existing test pins modified (tracked tests diff = 0); over-block spot probes clean (non-destructive unclosed-tail shapes stay silent-allowed; bash-parity baseline held).
 - Terry R7 audit: **7/7 REAL** (`.validation/terry-r7audit-report.md`).
 
-## [Unreleased] — R6 quality loop
+### R6 quality loop
 
-### Security
+#### Security
 - **E1–E8 family fix (shared grammars)**: root-operand, env-flag-skip, clustered-flag-value, and assignment-value parsing now live in one shared grammar in `safety/normalize.py` (`ROOT_OPERAND_RX`, `_skip_env_flags`, `_cluster_flag_value`, `_assignment_values_raw`) composed by both `policy` and `risk` — dot-suffix root operands, `exec -a` verb hiding, `env -S` quote-splice clusters, `sed`/`cp`/`mv`/`ln`/`install` clustered `-t` misroutes, and wrapper/assignment spellings can no longer desync the gates from each other. Pinned by 277 new guarded regressions (`tests/test_r6sec_regressions.py`) including a fuzz battery of 126 root permutations plus cluster/wrapper/assignment spellings; pre-fix controls captured 201 FAIL / 76 PASS at pristine 2dbd215 → 277/277 post-fix.
 
-### Fixed
+#### Fixed
 - **C1 voice stop-grace swallow**: a second voice start inside the stop grace window is no longer swallowed with a false `already=True` — `bridge.py` adds a `voice_stop_gen` counter the grace loop re-checks.
 - **C2/C2b bounded post-finish trailer**: `lmstudio` and `cloud` post-finish reads are bounded (64-line cap counting ALL SSE lines incl. comment keepalives, 2 s deadline, `wait_for` per read); late `event:error` after a stashed terminal is non-fatal — no indefinite TUI-uncancellable hang, no destroyed complete answer.
 - **C3 deferred-yolo TOCTOU**: busy-check + `request_yolo` now atomic under one `turn_lock` acquisition — no orphaned pending arm delaying the bypass one prompt.
@@ -137,7 +154,7 @@ All notable changes to OhMyLLM are documented here. Format follows
 - **R6-01 wording**: README doctor line and `docs/TROUBLESHOOTING.md` port wording reconciled.
 - C1–C4 + E9 + R6-01 pinned by 10 new guarded regressions (`tests/test_r6cor_regressions.py`); pre-fix 8 FAIL / 2 PASS → 10/10.
 
-### Verified
+#### Verified
 - R6 combined gate (fresh runs at 2dbd215 + uncommitted R6 waves): integration gate **1749 passed / 0 failed / 5 deselected** (1754 collected; the same 5 standing subprocess exclusions). GUI headless check **404/404** at 320/420/768/1280/1720/2560 px, Chromium sandbox retained. mypy: 83 files clean. ruff clean. cargo fmt/check/test offline green (7/7). TUI smoke green at 80x24, 100x30, 140x46. e2e check OK.
 - Batteries: Jason R5 re-run **0 CONFIRMED / 101 HELD / 31 REFUTED** (his report sha256 unchanged); Ethan E1–E8 repros **56/56 REFUTED**; SSRF **27 HELD / 5 INFO**; bridge auth **26 HELD** (B23/E9 now clean 401; B24 = known safe 403-no-ACAO probe artifact). Cindy C1/C2/C2b/C3 **NOT-REPRODUCED**; C4 **NOT-REPRODUCED** via Taylor's documented derivative (her original C4 probe hard-asserts the bug precondition — its PROBE-ERROR on the fixed tree is an expected artifact).
 - Family-fix legitimacy: all prior controls green — Mark R3 probes, Ben R4 (8/8 REFUTED + controls 15/15), R1–R6 security regression stack 672/672, r5cor 15, r4cor 10; no existing test pins modified this round.

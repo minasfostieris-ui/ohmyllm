@@ -3,7 +3,7 @@
 Concrete things you can do with a local model (Ollama or LM Studio) and the
 `oml` alias. Everything below runs on your machine; cloud providers are
 opt-in per key, and nothing phones home by default. Examples target the
-0.1.1 release surface; a few commands (`state`, `chats search`, `/steer`,
+0.1.2 release surface; a few commands (`state`, `chats search`, `/steer`,
 `@diff`/`@folder` references) are finalized in this release cycle.
 
 ## 1. Offline working-tree review before you commit
