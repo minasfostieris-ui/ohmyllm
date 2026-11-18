@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import threading
 import time
 
@@ -671,6 +672,7 @@ def test_cg5_reload_carry_marker_never_persisted(bridge, oml_env):
         _disarm(bridge)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows hosted-runner latency: /api/status p95 <10ms is Linux-calibrated")
 def test_cg7_status_perf_p95(bridge):
     """Control (Noah cg7): /api/status p95 stays under 10ms (n=200) — the
     config mutex must not slow the status path (it never takes it unless

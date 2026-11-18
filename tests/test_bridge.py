@@ -272,7 +272,7 @@ def test_gui_uses_styled_modals_not_native_dialogs():
     offenders = re.findall(r"(?<!\w)(?:window\.)?(?<!Modal)(prompt|confirm)\s*\(", js)
     assert not offenders, f"native dialogs in app.js: {offenders}"
     assert "function promptModal" in js and "function confirmModal" in js
-    html = (Path(__file__).parent.parent / "src/ohmyllm/gui_static/index.html").read_text()
+    html = (Path(__file__).parent.parent / "src/ohmyllm/gui_static/index.html").read_text(encoding="utf-8")
     assert 'id="confirm-modal"' in html
 
 
