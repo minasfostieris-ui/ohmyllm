@@ -40,8 +40,9 @@ from .risk import RiskScorer, _basename, level_for
 #: without a redirect operator.
 #: R7 S7: truncate/chmod/chown join too — a destructive system-file write
 #: must get the SAME system-location approval an equivalent redirect gets.
+#: R12 M1: touch/mkdir are system writes too (touch /etc/f, mkdir /etc/d).
 _WRITE_VERBS = frozenset({"sed", "tee", "cp", "mv", "ln", "install", "dd", "perl", "sponge",
-                          "truncate", "chmod", "chown"})
+                          "truncate", "chmod", "chown", "touch", "mkdir"})
 
 #: R7 S7: chmod mode operand (octal 0777/777 or symbolic u+x,go-w) — the mode
 #: is not a destination; chown's OWNER[:GROUP] first operand is skipped too.
@@ -617,6 +618,23 @@ class PolicyEngine:
             crisk = self.scorer.score_command(cmd)
             risk = max(risk, crisk.score)
             reasons.extend(crisk.reasons)
+            # R12 M1: a system-location write carries the S-2 risk floor
+            # (>=9) in EVERY mode's gate — the sandbox allowlist deny and
+            # the dangerous approval lane must not report the raw low verb
+            # score (touch/mkdir/mv score 3). Computed ONCE, reused below.
+            inline0 = self._inline_write_targets(cmd)
+            sys_write = inline0 is None
+            if inline0 is not None:
+                for tgt in _redirect_targets(cmd) + inline0:
+                    if tgt.lower() in ("/dev/null", "/dev/stdout", "/dev/stderr"):
+                        continue
+                    try:
+                        resolved = str(resolve_path(tgt, base=Path(cwd), reject_symlinks=False))
+                    except (OSError, ValueError, UnsafePathError, RuntimeError):
+                        continue
+                    if self.is_system(resolved) and not self._explicitly_allows(resolved):
+                        sys_write = True
+                        break
             if mode is PermissionMode.SANDBOXED:
                 allowed = SAFE_COMMANDS | {c.lower() for c in self.config.safety.command_allowlist_extra}
                 stripped = cmd.strip()
@@ -625,11 +643,13 @@ class PolicyEngine:
                                     (*reasons, "variable-indirect executable cannot be verified in the sandbox"))
                 base = _basename(stripped.split()[0] if stripped else "")
                 if base not in allowed:
-                    return Decision(False, False, risk, (*reasons, f"{base!r} is not on the sandbox allowlist"))
+                    return Decision(False, False, max(risk, 9) if sys_write else risk,
+                                    (*reasons, f"{base!r} is not on the sandbox allowlist"))
                 subs = SUBCOMMAND_ALLOWLIST.get(base)
                 second = cmd.lower().split()[1] if len(cmd.split()) > 1 else ""
                 if subs is not None and second and second not in subs:
-                    return Decision(False, False, risk, (*reasons, f"{base} {second} is not on the sandbox allowlist"))
+                    return Decision(False, False, max(risk, 9) if sys_write else risk,
+                                    (*reasons, f"{base} {second} is not on the sandbox allowlist"))
                 if crisk.catastrophic or crisk.score >= 6:
                     return Decision(False, False, risk, (*reasons, "too dangerous for the sandbox allowlist"))
                 norm = normalize_command(cmd)
@@ -641,7 +661,7 @@ class PolicyEngine:
                     return Decision(False, False, max(risk, 9), (*reasons, "output redirect into a system location"))
                 if self._redirect_outside(cmd):
                     return Decision(True, True, max(risk, 6), (*reasons, "output redirect outside the workspace"))
-                inline = self._inline_write_targets(cmd)
+                inline = inline0
                 if inline is None:
                     return Decision(False, False, max(risk, 9),
                                     (*reasons, "unresolved quoted write target (fail-closed)"))
@@ -656,11 +676,12 @@ class PolicyEngine:
                     return Decision(False, False, risk, (*reasons, "cwd outside workspace"))
                 return Decision(True, True, risk, (*reasons, "fresh one-shot shell approval required"))
             if mode is PermissionMode.DANGEROUS:
+                drisk = max(risk, 9) if sys_write else risk
                 if crisk.catastrophic:
-                    return Decision(True, True, risk, (*reasons, "catastrophic: explicit approval required"))
+                    return Decision(True, True, drisk, (*reasons, "catastrophic: explicit approval required"))
                 if not self.within_workspace(cwd):
-                    return Decision(True, True, risk, (*reasons, "cwd outside workspace"))
-                return Decision(True, True, risk, (*reasons, "fresh one-shot shell approval required"))
+                    return Decision(True, True, drisk, (*reasons, "cwd outside workspace"))
+                return Decision(True, True, drisk, (*reasons, "fresh one-shot shell approval required"))
             # full_access
             if crisk.catastrophic and not self.config.safety.catastrophic_override:
                 return Decision(False, False, risk, (*reasons, "catastrophic command blocked (settings override)"))
@@ -693,7 +714,7 @@ class PolicyEngine:
             # R3 S2: system writes via shell mirror the WRITE gate — redirects
             # and piped/sudo tee / sed -i are never silent in full_access.
             writes = _redirect_targets(cmd)
-            inline = self._inline_write_targets(cmd)
+            inline = inline0
             if inline is None:
                 return Decision(False, False, max(risk, 9),
                                 (*reasons, "unresolved quoted write target (fail-closed)"))
@@ -900,7 +921,45 @@ class PolicyEngine:
         if base == "tee":
             return args
         if base in ("cp", "mv", "ln", "install"):
-            return PolicyEngine._copy_dest_args(tokens[1:], dirs_only=base == "install")
+            # R12 M1: mv REMOVES its sources — a system source (mv /etc/f
+            # /tmp/g) is a destructive system operation, so mv gates sources
+            # AND destination; cp/ln/install only write the destination.
+            return PolicyEngine._copy_dest_args(
+                tokens[1:], dirs_only=base == "install",
+                include_sources=base == "mv")
+        if base == "touch":
+            # R12 M1: every file operand is touched; separated -r/-d/-t
+            # reference/date/stamp values are READS, not destinations
+            # (attached -rFILE/-dDATE/-tSTAMP are flags, already excluded).
+            files = []
+            skip = False
+            for t in tokens[1:]:
+                if skip:
+                    skip = False
+                    continue
+                if t in ("-r", "--reference", "-d", "--date", "-t", "--time"):
+                    skip = True
+                    continue
+                if t.startswith("-"):
+                    continue
+                files.append(t)
+            return files
+        if base == "mkdir":
+            # R12 M1: every operand is a created directory; separated
+            # -m/--mode values are not destinations (-p is boolean).
+            files = []
+            skip = False
+            for t in tokens[1:]:
+                if skip:
+                    skip = False
+                    continue
+                if t in ("-m", "--mode"):
+                    skip = True
+                    continue
+                if t.startswith("-"):
+                    continue
+                files.append(t)
+            return files
         if base == "dd":
             return [t[3:] for t in tokens[1:] if t.startswith("of=") and len(t) > 3]
         if base == "truncate":
@@ -1007,11 +1066,14 @@ class PolicyEngine:
         return targets
 
     @staticmethod
-    def _copy_dest_args(flags: list[str], *, dirs_only: bool = False) -> list[str]:
+    def _copy_dest_args(flags: list[str], *, dirs_only: bool = False,
+                        include_sources: bool = False) -> list[str]:
         """Destination operands of cp/mv/ln/install: ``-t DIR`` wins, else the
         last operand (``install -d`` creates every operand directory). Flags
         that consume a separated argument (-t/-m/-o/-g/-S/-D…) are skipped so
-        their values are never mistaken for destinations."""
+        their values are never mistaken for destinations. R12 M1:
+        ``include_sources`` (mv) returns ALL operands — the sources are
+        removed by the move, so a system source is gated too."""
         operands: list[str] = []
         target_dir: str | None = None
         make_dirs = False
@@ -1049,8 +1111,10 @@ class PolicyEngine:
                 continue
             operands.append(tok)
         if target_dir:
-            return [target_dir]
+            return [target_dir] + operands if include_sources else [target_dir]
         if make_dirs:
+            return operands
+        if include_sources:
             return operands
         return operands[-1:] if operands else []
 
@@ -1064,6 +1128,10 @@ class PolicyEngine:
         home = str(Path.home())
 
         def absolutize(tok: str) -> str | None:
+            # R12 OB2: the empty-IFS no-split sentinel masks whitespace inside
+            # ONE operand (a filename containing spaces) — restore it for path
+            # resolution; the word stays ONE target (never re-split).
+            tok = tok.replace("\ue002", " ")
             tok = tok.replace("${HOME}", home).replace("$HOME", home)
             if tok.startswith(("~", "/")):
                 return tok

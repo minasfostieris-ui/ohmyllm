@@ -988,6 +988,10 @@ class Handler(BaseHTTPRequestHandler):
             # the serializer hardening — could corrupt the whole config file
             if _pg(pid) is None and not (is_custom(pid) and pid in self.state.svc.config.cloud.customs):
                 return 400, {"error": f"unknown provider {pid!r} — connect customs first"}
+            # R11 C5: pre-mutation snapshot + shared M8 rollback persist — a
+            # failed save must not leave the key live-only (live!=disk).
+            svc = self.state.svc
+            pre = svc.config.model_copy(deep=True)
             cl = self.state.svc.config.cloud
             models = str(body.get("models") or "").strip()
             if models:
@@ -1001,7 +1005,7 @@ class Handler(BaseHTTPRequestHandler):
                 if cl.provider == pid:
                     cl.provider = ""
                 self._revert_cloud_default_if_orphaned()
-            self.state.svc.save_config()
+            svc._persist_with_rollback(pre)
         payload = self._providers_state()
         # the GUI asks for a live /models probe (probe: true) so it only
         # falls back to asking for model ids when the gateway has no
@@ -1022,9 +1026,11 @@ class Handler(BaseHTTPRequestHandler):
                 return 400, {"error": f"unknown provider {pid!r}"}
             if not key_for(pid, cl.keys):
                 return 400, {"error": "connect a key for this provider first"}
+            # R11 C5: snapshot + shared M8 rollback persist (see _providers_key).
+            pre = self.state.svc.config.model_copy(deep=True)
             cl.provider = pid
             self.state.svc.config.default_backend = BackendName.CLOUD
-            self.state.svc.save_config()
+            self.state.svc._persist_with_rollback(pre)
         return 200, self._providers_state()
 
     def _providers_forget(self, body: dict) -> tuple[int, dict]:
@@ -1033,12 +1039,14 @@ class Handler(BaseHTTPRequestHandler):
         # applying a pre-forget copy (M11) — mutate + save under the mutex.
         cm = getattr(self.state, "config_mutex", None)
         with cm if cm is not None else contextlib.nullcontext():
+            # R11 C5: snapshot + shared M8 rollback persist (see _providers_key).
+            pre = self.state.svc.config.model_copy(deep=True)
             cl = self.state.svc.config.cloud
             cl.keys.pop(pid, None)
             if cl.provider == pid:
                 cl.provider = ""  # a provider without a key is not "active"
             self._revert_cloud_default_if_orphaned()
-            self.state.svc.save_config()
+            self.state.svc._persist_with_rollback(pre)
         return 200, self._providers_state()
 
     def _providers_custom(self, body: dict) -> tuple[int, dict]:
@@ -1067,12 +1075,14 @@ class Handler(BaseHTTPRequestHandler):
                 pid = f"custom-{slug}-{int(_t.time()) % 100000}-{n}"
                 n += 1
             cl = self.state.svc.config.cloud
+            # R11 C5: snapshot + shared M8 rollback persist (see _providers_key).
+            pre = self.state.svc.config.model_copy(deep=True)
             cl.customs[pid] = name
             cl.bases[pid] = base
             models = str(body.get("models") or "").strip()
             if models:
                 cl.model_lists[pid] = models
-            self.state.svc.save_config()
+            self.state.svc._persist_with_rollback(pre)
         return 200, self._providers_state()
 
     async def _voice_transcribe(self, body: dict) -> tuple[int, dict]:

@@ -333,29 +333,37 @@ class Services:
         if security_changed:
             self.approvals.invalidate_all()
         if persist:
-            try:
-                self.save_config()
-            except Exception:
-                # R10 M8: restore the non-runtime fields in place from the
-                # pre-apply snapshot (live==disk(old)), refresh the backend
-                # cache, and re-raise so the caller still reports the failure.
-                # save_config stays the persist/injection point.
-                assert pre_apply is not None
-                for name in Config.model_fields:
-                    live_sec = getattr(self.config, name)
-                    old_sec = getattr(pre_apply, name)
-                    sub_fields = getattr(type(live_sec), "model_fields", None)
-                    if sub_fields is not None:
-                        for sub_name, sub_info in sub_fields.items():
-                            if not sub_info.exclude:
-                                setattr(live_sec, sub_name,
-                                        copy.deepcopy(getattr(old_sec, sub_name)))
-                    elif Config.model_fields[name].exclude:
-                        continue  # runtime-only top-level flag: live wins
-                    else:
-                        setattr(self.config, name, copy.deepcopy(old_sec))
-                self._backend_cache.clear()
-                raise
+            assert pre_apply is not None
+            self._persist_with_rollback(pre_apply)
+
+    def _persist_with_rollback(self, pre_apply: Config) -> None:
+        """R10 M8 / R11 C5: the ONE failed-save persist path for every config
+        mutator (apply, set_mode, bridge providers key/use/forget/custom).
+        Save; on failure restore the non-runtime fields in place from the
+        pre-mutation snapshot (live==disk(old)), refresh the backend cache,
+        and re-raise so the caller still reports the failure. Runtime exclude
+        flags are NEVER restored; any retire/invalidate that already ran stays
+        (fail-closed); policy_generation rolls back with the snapshot.
+        save_config stays the persist/injection point.
+        """
+        try:
+            self.save_config()
+        except Exception:
+            for name in Config.model_fields:
+                live_sec = getattr(self.config, name)
+                old_sec = getattr(pre_apply, name)
+                sub_fields = getattr(type(live_sec), "model_fields", None)
+                if sub_fields is not None:
+                    for sub_name, sub_info in sub_fields.items():
+                        if not sub_info.exclude:
+                            setattr(live_sec, sub_name,
+                                    copy.deepcopy(getattr(old_sec, sub_name)))
+                elif Config.model_fields[name].exclude:
+                    continue  # runtime-only top-level flag: live wins
+                else:
+                    setattr(self.config, name, copy.deepcopy(old_sec))
+            self._backend_cache.clear()
+            raise
 
     def reload_config(self) -> Config:
         """Re-read config.toml from disk without writing anything back: the
@@ -389,13 +397,17 @@ class Services:
         # for TUI/plain/CLI (single-threaded). Phrase check + audit stay outside.
         mutex = getattr(self, "_config_mutex", None)
         with mutex if mutex is not None else contextlib.nullcontext():
+            # R11 C5: snapshot BEFORE mutation and persist through the shared
+            # M8 rollback helper — a failed save must not leave live flipped
+            # while disk is stale. The retire/invalidate below stay fail-closed.
+            pre = self.config.model_copy(deep=True)
             changed = self.config.permission_mode is not mode
             self.config.permission_mode = mode
             if changed:
                 self.config.policy_generation += 1
                 self._retire_runtimes()
                 self.approvals.invalidate_all()
-            self.save_config()
+            self._persist_with_rollback(pre)
         self.audit.log(
             mode=mode.value, tool="__permission_mode__", args={"new_mode": mode.value},
             approval="user", success=True, duration_ms=0, event="permission_mode_changed",
