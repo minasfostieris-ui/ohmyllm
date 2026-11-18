@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import copy
 import inspect
 import re
 import threading
@@ -53,13 +55,31 @@ def _tone_create(ctx, args: dict) -> ToolResult:
     if ctx.config.permission_mode.value == "strict":
         return ToolResult(False, "", "strict permission mode does not allow creating tones — the user can "
                                      "switch modes or pick a built-in tone in Settings")
-    agent.custom_tones = {**agent.custom_tones, name: fragment}
-    agent.tone = name
-    if ctx.config_saver is not None:
-        try:
-            ctx.config_saver()
-        except Exception as exc:  # noqa: BLE001
-            return ToolResult(False, "", f"tone created but config could not be saved: {exc}")
+    # R13: serialize config mutation under config_mutex (NEVER turn_lock), snapshot before
+    # mutating, and persist through the shared snapshot-rollback helper when wired so a
+    # failed save cannot leave the tone armed live while disk stays stale (R12 M8 law).
+    cm = getattr(ctx, "config_mutex", None)
+    with cm if cm is not None else contextlib.nullcontext():
+        pre = ctx.config.model_copy(deep=True)
+        agent.custom_tones = {**agent.custom_tones, name: fragment}
+        agent.tone = name
+        rollback_saver = getattr(ctx, "config_rollback_saver", None)
+        if rollback_saver is not None:
+            try:
+                rollback_saver(pre)
+            except Exception as exc:  # noqa: BLE001
+                return ToolResult(False, "", f"tone not created — config could not be saved "
+                                             f"(rolled back): {exc}")
+        elif ctx.config_saver is not None:
+            try:
+                ctx.config_saver()
+            except Exception as exc:  # noqa: BLE001
+                # Unwired ctx fallback: restore ONLY the two touched non-exclude fields;
+                # runtime exclude flags are never restored.
+                agent.custom_tones = copy.deepcopy(pre.agent.custom_tones)
+                agent.tone = pre.agent.tone
+                return ToolResult(False, "", f"tone not created — config could not be saved "
+                                             f"(rolled back): {exc}")
     return ToolResult(True, f"tone '{name}' created and armed — it shapes every reply from the next turn. "
                             "The user can switch back with /tone default or pick it in Settings.")
 

@@ -174,6 +174,8 @@ class Services:
             soul=self.soul,
             skills=self.skills,
             config_saver=self.save_config,
+            config_mutex=getattr(self, "_config_mutex", None),
+            config_rollback_saver=self._persist_with_rollback,
         )
         self._runtimes.add(runtime)
         return runtime

@@ -40,6 +40,8 @@ class ToolContext:
     status_provider: Callable[[], dict[str, Any]] | None = None
     user_requested_memory: bool = False
     config_saver: Callable[[], None] | None = None
+    config_mutex: Any = None  # Services._config_mutex seam (NEVER turn_lock); None = unwired
+    config_rollback_saver: Callable[[Config], None] | None = None  # snapshot-rollback persist
     cancel_event: Event | None = None
 
     def check_cancelled(self) -> None:

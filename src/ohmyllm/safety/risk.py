@@ -182,7 +182,12 @@ class RiskScorer:
             # catastrophe as `rm -rf /` (structural, order-free). Transparent
             # prefixes (busybox/nice/…) must not hide the rm verb.
             first_seg = _strip_transparent_prefixes(re.split(r"[;&|\n]+", command)[0])
-            if not exe_spliced and _rm_root_order_free(first_seg.split()):
+            # R13 LOW: bash command lookup is case-sensitive — 'RM' is
+            # ENOENT, never rm. _rm_root_order_free lowercases internally,
+            # so guard the executable's ORIGINAL case before calling it.
+            fst = first_seg.split()
+            if not exe_spliced and fst and _basename_case(fst[0]) == "rm" \
+                    and _rm_root_order_free(fst):
                 score = max(score, 10)
                 if "rm of root filesystem" not in reasons:
                     reasons.append("rm of root filesystem")
@@ -245,7 +250,7 @@ class RiskScorer:
                 i += 1
             if i >= len(tokens):
                 continue
-            base = _basename(tokens[i])
+            base = _basename_case(tokens[i])
             if base.startswith(":("):
                 verbs.add(":")
             verbs.add(base)
@@ -327,10 +332,18 @@ def level_for(score: int) -> str:
     return "low"
 
 
-def _basename(tok: str) -> str:
+def _basename_case(tok: str) -> str:
+    """R13 LOW: case-PRESERVING basename — bash command lookup is
+    case-sensitive ('RM' is ENOENT, never rm). Destructive-verb matching
+    must not lowercase the executable; flag/operand spellings keep their
+    own rules."""
     tok = tok.strip("\"'`")
     tok = tok.replace("\\", "/")
-    return tok.rsplit("/", 1)[-1].lower()
+    return tok.rsplit("/", 1)[-1]
+
+
+def _basename(tok: str) -> str:
+    return _basename_case(tok).lower()
 
 
 _INTERPRETERS = frozenset({"python", "python3", "node", "perl", "ruby"})

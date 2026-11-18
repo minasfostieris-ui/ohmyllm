@@ -130,6 +130,8 @@ class AgentRuntime:
         soul: SoulManager | None,
         skills: Any = None,
         config_saver: Any = None,
+        config_mutex: Any = None,
+        config_rollback_saver: Any = None,
         clock: Callable[[], float] | None = None,
         state_path: Path | None = None,
         git_runner: Any = None,
@@ -145,6 +147,8 @@ class AgentRuntime:
         self.validator = ToolCallValidator(registry)
         self.skills = skills
         self.config_saver = config_saver
+        self.config_mutex = config_mutex
+        self.config_rollback_saver = config_rollback_saver
         self.prompt_builder = PromptBuilder(config, registry, soul, skills=skills,
                                             workspace=policy.workspace)
         self.last_usage: dict[str, Any] = {}
@@ -312,6 +316,8 @@ class AgentRuntime:
             status_provider=self._status_provider(model),
             user_requested_memory=user_requested_memory,
             config_saver=self.config_saver,
+            config_mutex=getattr(self, "config_mutex", None),
+            config_rollback_saver=getattr(self, "config_rollback_saver", None),
         )
         native_pref = self.config.agent.native_tools
         native = native_pref == "force"

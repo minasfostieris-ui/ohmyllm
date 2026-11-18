@@ -32,8 +32,9 @@ from .normalize import (
     normalize_command,
     procsub_interiors,
     unresolved_destructive_operands,
+    unresolved_exec_read_source,
 )
-from .risk import RiskScorer, _basename, level_for
+from .risk import RiskScorer, _basename, _basename_case, level_for
 
 #: In-place write verbs whose destinations bypass redirect detection (S2/S2g).
 #: R5 A28-A29: perl -i and sponge join the family — they edit/soak files
@@ -475,16 +476,20 @@ class PolicyEngine:
                 first_word = re.split(r"[ \t]+", low.strip(), maxsplit=1)[0]
                 if any(ord(ch) < 0x20 for ch in first_word):
                     continue
-                tokens = low.split()
+                tokens = variant.split()
                 # fork bomb is structural: its "executable" is `:(){`
                 if tokens and tokens[0].startswith(":(") and re.search(
                         r":\(\)\s*\{\s*:\|:\s*&\s*\}\s*;", low):
                     return True
-                while tokens and re.match(r"[a-z_][a-z0-9_]*=", tokens[0]):
+                # R13 LOW: bash command lookup is case-sensitive — 'RM' is
+                # ENOENT, never rm. Executable matching keeps ORIGINAL case
+                # (assignment skip included); flag/operand regexes keep
+                # their own IGNORECASE spelling rules.
+                while tokens and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
                     tokens = tokens[1:]
                 if not tokens:
                     continue
-                exe = _basename(tokens[0])
+                exe = _basename_case(tokens[0])
                 # sudo/doas/env/busybox/nice/… are transparent: position-match
                 # the real verb (R4-S1, R5 A04-A13).
                 if not _quotes_balanced(cmd) and (
@@ -499,9 +504,10 @@ class PolicyEngine:
                 tokens = payload.split()
                 if not tokens:
                     continue
-                exe = _basename(tokens[0])
+                exe = _basename_case(tokens[0])
                 # R5 A01-A03: rf flags + root operand in ANY order.
-                if _rm_root_order_free(tokens):
+                # R13: case guard — _rm_root_order_free lowercases internally.
+                if exe == "rm" and _rm_root_order_free(tokens):
                     return True
                 for verbs, rx in self._CATASTROPHIC_RULES:
                     if (exe in verbs or any(exe.startswith(v + ".") for v in verbs)) \
@@ -635,6 +641,12 @@ class PolicyEngine:
                     if self.is_system(resolved) and not self._explicitly_allows(resolved):
                         sys_write = True
                         break
+            # R13 MED (L02/L20): an unresolved read-subst EXEC source
+            # ($(cat f)/$(<f) feeding sh/eval) is DESTRUCTIVE_UNRESOLVABLE
+            # by construction — GATED floor: SB/DA risk >= 9. full_access
+            # keeps the codified silent-ALLOW exemption (a scorer floor
+            # would flip catastrophic=score>=9 and break the FA contract).
+            unres_src = unresolved_exec_read_source(cmd)
             if mode is PermissionMode.SANDBOXED:
                 allowed = SAFE_COMMANDS | {c.lower() for c in self.config.safety.command_allowlist_extra}
                 stripped = cmd.strip()
@@ -643,12 +655,12 @@ class PolicyEngine:
                                     (*reasons, "variable-indirect executable cannot be verified in the sandbox"))
                 base = _basename(stripped.split()[0] if stripped else "")
                 if base not in allowed:
-                    return Decision(False, False, max(risk, 9) if sys_write else risk,
+                    return Decision(False, False, max(risk, 9) if (sys_write or unres_src) else risk,
                                     (*reasons, f"{base!r} is not on the sandbox allowlist"))
                 subs = SUBCOMMAND_ALLOWLIST.get(base)
                 second = cmd.lower().split()[1] if len(cmd.split()) > 1 else ""
                 if subs is not None and second and second not in subs:
-                    return Decision(False, False, max(risk, 9) if sys_write else risk,
+                    return Decision(False, False, max(risk, 9) if (sys_write or unres_src) else risk,
                                     (*reasons, f"{base} {second} is not on the sandbox allowlist"))
                 if crisk.catastrophic or crisk.score >= 6:
                     return Decision(False, False, risk, (*reasons, "too dangerous for the sandbox allowlist"))
@@ -676,7 +688,7 @@ class PolicyEngine:
                     return Decision(False, False, risk, (*reasons, "cwd outside workspace"))
                 return Decision(True, True, risk, (*reasons, "fresh one-shot shell approval required"))
             if mode is PermissionMode.DANGEROUS:
-                drisk = max(risk, 9) if sys_write else risk
+                drisk = max(risk, 9) if (sys_write or unres_src) else risk
                 if crisk.catastrophic:
                     return Decision(True, True, drisk, (*reasons, "catastrophic: explicit approval required"))
                 if not self.within_workspace(cwd):
@@ -1159,7 +1171,10 @@ class PolicyEngine:
         exe_spliced = any(ord(ch) < 0x20 for ch in raw_first)
         for seg in re.split(r"[;&|\n]+", norm):
             toks = seg.split()
-            exe = _basename(toks[0]) if toks else ""
+            # R13 LOW: case-PRESERVING exe — 'RM' is ENOENT, so its bare
+            # root operand is not a destruction target (same boundary as
+            # the catastrophic gate; quoted literals keep legacy silence).
+            exe = _basename_case(toks[0]) if toks else ""
             for tok in toks[1:]:
                 if tok.startswith("-"):
                     continue

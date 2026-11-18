@@ -481,9 +481,9 @@ def _sub_refs(text: str, values: dict[str, str]) -> str:
     downstream gates see the real words. Empty IFS means NO splitting.
 
     R10 F12: ``${VAR@OP}`` parameter transforms are part of the SAME
-    substitution grammar. @Q quotes the value — substituted ONLY when the
-    value is a single word (a quoted multi-word value is ONE ENOENT command
-    name, never a fabricated ``rm -rf /`` — X1 superseded by X1b). @E/@P
+    substitution grammar. @Q quotes the value — a multi-word value stays
+    ONE quoted word (R13: masked whitespace inside the SQ wrap, never a
+    fabricated ``rm -rf /`` — X1 superseded by X1b). @E/@P
     substitute the decoded value (eval re-parses it), @U/@u/@L/@l case-fold,
     other ops substitute the value as-is."""
     if not values:
@@ -502,7 +502,13 @@ def _sub_refs(text: str, values: dict[str, str]) -> str:
             return m.group(0)
         if op == "Q":
             if re.search(r"\s", val):
-                return m.group(0)
+                # R13 LOW: multi-word @Q is ONE SQ-quoted word — bash never
+                # re-splits it (GT rc=127 ENOENT: 'shred /dev/sda' is one
+                # nonexistent command name). Mask the whitespace INSIDE the
+                # quote so no lane can fabricate verb+operands; single-word
+                # @Q + eval reparse (X1b) keeps the deny.
+                masked = re.sub(r"\s", "\ue002", val)
+                return "'" + masked.replace("'", "'\\''") + "'"
             return "'" + val.replace("'", "'\\''") + "'"
         if op in ("E", "P"):
             return _decode_shell_escapes(val)
@@ -525,6 +531,14 @@ def _sub_refs(text: str, values: dict[str, str]) -> str:
             # Empty IFS: mask whitespace with a sentinel so downstream
             # tokenizers cannot re-split the ONE word (path consumers
             # restore it to a space).
+            return re.sub(r"\s", "\ue002", val)
+        if split_chars and not any(ch.isspace() for ch in (ifs_raw or "")) \
+                and not any(ch in val for ch in split_chars):
+            # R13 LOW: non-empty IFS with NO IFS whitespace and no delimiter
+            # present in the value → bash performs NO split: ONE word (GT
+            # rc=127 ENOENT). Mask whitespace so downstream tokenizers
+            # cannot fabricate a destructive command line. IFS containing
+            # whitespace keeps the legacy split (bash splits on it too).
             return re.sub(r"\s", "\ue002", val)
         for ch in split_chars:
             val = val.replace(ch, " ")
@@ -1133,6 +1147,19 @@ def _quotes_balanced(text: str) -> bool:
                     n += 1
                     j -= 1
                 ansi = n % 2 == 0
+                # R13 LOW: $$ is the COMPLETE PID parameter — a following
+                # '…' is a PLAIN SQ span (bash: eval $$'rm -rf /' is valid
+                # PID-concat, GT rc=127). Only the desync shape (inner \')
+                # then fails closed; valid $$ shapes stay balanced. The
+                # first $ must itself be unescaped (\$$'…' IS ANSI-C).
+                if ansi and j >= 0 and text[j] == "$":
+                    k = j - 1
+                    n2 = 0
+                    while k >= 0 and text[k] == "\\":
+                        n2 += 1
+                        k -= 1
+                    if n2 % 2 == 0:
+                        ansi = False
             i += 1
             continue
         i += 1
@@ -2534,6 +2561,11 @@ def _update_cd_state(seg: str, vdir: str | None, cdpath: str,
             k += 1
         if k < len(toks) and toks[k] == "--":
             k += 1
+        if k >= len(toks):
+            # R13 LOW: bare cd / cd -- (flags only) lands HOME (bash GT).
+            # Track the landing as ~ — relative collapse stays inert for ~
+            # (workspace-relative cleanup keeps its approvable form).
+            return "~", cdpath, True
         if k < len(toks) and not toks[k].startswith("-"):
             target = toks[k]
             if target.startswith("/"):
@@ -2643,6 +2675,7 @@ def _exec_payloads(text: str, written: dict[str, str] | None = None,
     consume THIS list, so a site can never be wired in one lane and unwired
     in another (the F5 class). Never executes anything."""
     segs = _raw_segments(text, posix=posix)
+    raw_segs = segs
     if written is None:
         written = _written_files(segs)
     folded = _sub_literal_subshells(_fold_read_subst(text, written), written)
@@ -2661,6 +2694,32 @@ def _exec_payloads(text: str, written: dict[str, str] | None = None,
         s = _sub_refs(s, values)
         return _sub_literal_subshells(_fold_read_subst(s, written), written)
 
+    # R13 HIGH (exec site 9): substitution-stdout EXEC — when the FIRST
+    # word of a segment IS a command substitution, its static stdout is
+    # the command line the shell executes (`printf '%b' '\0162m -rf /'`
+    # runs rm -rf /). Read from the RAW segments: the pre-fold above only
+    # folds LITERAL subshells, and the lead lanes' _strip_tricks destroys
+    # the escape spellings BEFORE any fold — the decoded stdout must come
+    # from the ONE static reader (_static_output) on the raw interior.
+    # Match at the SEGMENT head (_tokens_raw does not quote backtick
+    # words); the substitution must BE the whole first word.
+    # ONE wiring: all 3 lanes consume this list (decision/exposure/scorer).
+    for _sep9, rseg9 in raw_segs:
+        s9 = rseg9.lstrip()
+        m9 = _SUBST_RX.match(s9)
+        if m9 is None:
+            continue
+        rest9 = s9[m9.end():]
+        if rest9 and not rest9[0].isspace():
+            continue
+        inner9 = m9.group(1) if m9.group(1) is not None else m9.group(2)
+        isegs9 = _raw_segments(inner9)
+        if not isegs9:
+            continue
+        lit9 = _static_output(isegs9, len(isegs9) - 1)
+        if lit9 and lit9.strip():
+            add(resolve(lit9))
+
     for body in _coproc_bodies(text):
         add(resolve(body))
     for body in _function_bodies(text).values():
@@ -2678,6 +2737,14 @@ def _exec_payloads(text: str, written: dict[str, str] | None = None,
                     lit = _static_output(isegs, len(isegs) - 1)
                     if lit and lit.strip():
                         add(resolve(lit))
+                    else:
+                        # R13 MED (L02): the interior stdout is not fully
+                        # static, but an UNRESOLVED read-subst source
+                        # ($(cat f)/$(<f)) inside the resolved interior is
+                        # unresolved BY CONSTRUCTION — emit it so the gated
+                        # floor sees it (tracked files already folded).
+                        for mm in _UNRES_EXEC_SRC_RX.finditer(resolve(inner)):
+                            add(mm.group(0))
         if base in _SHELL_WRAPPERS and "-c" in rtoks[1:3]:
             ci = rtoks.index("-c")
             if ci + 1 < len(rtoks):
@@ -2736,6 +2803,26 @@ def unresolved_destructive_operands(command: str) -> bool:
     closed on either pass."""
     cmd = str(command)
     return _scan_unresolved(cmd, [], 0) or _scan_unresolved(cmd, [], 0, posix=True)
+
+
+# R13 MED (L02/L20): an exec payload that IS a read-subst of an UNTRACKED
+# file — single cat, no flags, or $(<file) — is unresolved BY CONSTRUCTION
+# (tracked sources fold to their content during resolve). Flagged cat and
+# multi-command interiors are OUTSIDE the boundary.
+_UNRES_EXEC_SRC_RX = re.compile(
+    r"\$\((?:cat\s+[^()<>|;&\s]+|<\s*[^()<>|;&\s]+)\s*\)")
+
+
+def unresolved_exec_read_source(command: str) -> bool:
+    """R13 MED decision (DESTRUCTIVE_UNRESOLVABLE, GATED): True when an
+    exec-site payload is an unresolved read-subst source. The policy floor
+    (SB/DA risk >= 9) consumes this; full_access keeps its silent-ALLOW
+    exemption — a scorer floor would flip catastrophic=score>=9 and break
+    the FA contract. Non-exec consumers (echo \"$X\") never fire."""
+    for p in _exec_payloads(str(command)):
+        if _UNRES_EXEC_SRC_RX.fullmatch(p.strip()):
+            return True
+    return False
 
 
 def _scan_unresolved(text: str, positionals: list[str], depth: int,

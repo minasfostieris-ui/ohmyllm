@@ -247,7 +247,7 @@ danger_threshold = 0.55
 
 ```bash
 uv sync --extra dev            # or pip install -e ".[dev]"
-pytest tests/ -q               # 2902 tests (2897 run under the guarded gate + 5 standing exclusions), no network, no model required
+pytest tests/ -q               # 3033 tests (3028 run under the guarded gate + 5 standing exclusions), no network, no model required
 ruff check src tests scripts
 mypy src/ohmyllm
 python scripts/e2e_check.py    # scripted agent: memory + tools + audit
